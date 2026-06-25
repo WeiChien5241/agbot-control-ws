@@ -1,0 +1,22 @@
+<launch>
+  <!-- Required: absolute path to the exported segmentation model, e.g.
+       $(find agbot_vision_nav)/../DINOv3-Segmentation-Training/out/corn_field_navigation/exported_models/exported_best.pt -->
+  <arg name="model_path" />
+
+  <!-- Real robot default shown; for Gazebo, override both of these since its
+       camera plugin typically publishes raw sensor_msgs/Image instead of
+       CompressedImage, e.g.:
+       roslaunch agbot_vision_nav vision_nav.launch model_path:=... \
+         camera_topic:=/front/image_raw camera_topic_is_compressed:=false -->
+  <arg name="camera_topic" default="/usb_cam/image_raw/compressed" />
+  <arg name="camera_topic_is_compressed" default="true" />
+  <arg name="cmd_vel_topic" default="/cmd_vel" />
+
+  <node name="vision_nav_node" pkg="agbot_vision_nav" type="vision_nav_node.py" output="screen">
+    <rosparam file="$(find agbot_vision_nav)/config/params.yaml" command="load" />
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="camera_topic" value="$(arg camera_topic)" />
+    <param name="camera_topic_is_compressed" value="$(arg camera_topic_is_compressed)" />
+    <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
+  </node>
+</launch>

@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>agbot_bringup</name>
+  <version>0.0.1</version>
+  <description>Bringup package for P-AgBot: launches Jackal in the virtual maize field with a simulated camera and RViz.</description>
+  <maintainer email="weichien241@gmail.com">weichien241</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>roslaunch</build_depend>
+
+  <exec_depend>jackal_description</exec_depend>
+  <exec_depend>jackal_gazebo</exec_depend>
+  <exec_depend>jackal_control</exec_depend>
+  <exec_depend>virtual_maize_field</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>xacro</exec_depend>
+</package>

@@ -1,0 +1,35 @@
+# Third-party ROS packages (clone separately — see CLAUDE.md for sources)
+jackal/
+virtual_maize_field/
+
+# Catkin build artifacts (lives outside src/ anyway)
+../build/
+../devel/
+../logs/
+../install/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Model weights — large binary, distribute separately
+*.pt
+*.pth
+*.onnx
+
+# ROS generated files
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Windows metadata files created when downloading in Windows then accessing via WSL
+*:Zone.Identifier

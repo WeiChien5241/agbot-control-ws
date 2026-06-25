@@ -1,0 +1,28 @@
+# Defaults for vision_nav_node. model_path has no entry here -- it must be
+# set explicitly via the model_path launch arg, since the .pt file lives
+# outside any catkin package; picking a fragile relative path here would
+# fail silently/wrongly if it moved.
+
+# Real-robot defaults shown below. For Gazebo, override camera_topic and set
+# camera_topic_is_compressed: false via launch args, since Gazebo's camera
+# plugin typically publishes raw sensor_msgs/Image rather than CompressedImage.
+camera_topic: /usb_cam/image_raw/compressed
+camera_topic_is_compressed: true
+cmd_vel_topic: /cmd_vel
+debug_image_topic: "~debug/image"
+publish_debug_image: true
+
+# Scanline-midpoint centerline estimation (see centerline_estimator.py).
+scan_row_fractions: [0.65, 0.78, 0.92]
+scan_row_weights: [0.2, 0.3, 0.5]
+min_traversable_fraction: 0.10
+
+# Proportional control law (see controller.py). k_slope starts disabled --
+# enable as a deliberate second experiment once the plain offset-only
+# controller is confirmed working.
+k_p: 1.0
+k_slope: 0.0
+linear_x_cruise: 0.15
+angular_z_max: 0.3
+invalid_frame_stop_count: 5
+max_data_age_sec: 0.5

@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- Show Gazebo GUI window; pass gui:=false for headless runs -->
+  <arg name="gui" default="true"/>
+
+  <!-- Spawn position in the corn field.
+       Tune x/y to place the robot at the start of a row.
+       z:=0.5 keeps the robot above the ground plane at spawn. -->
+  <arg name="x" default="0.0"/>
+  <arg name="y" default="0.0"/>
+  <arg name="z" default="0.5"/>
+
+  <!-- Set false to disable teleop (e.g. when running autonomous control only) -->
+  <arg name="joystick" default="true"/>
+
+  <!-- 1. Start Gazebo with the virtual maize field world.
+       World file: ~/.ros/virtual_maize_field/generated.world
+       If that file doesn't exist yet, run:
+         rosrun virtual_maize_field generate_world.py -->
+  <include file="$(find virtual_maize_field)/launch/simulation.launch">
+    <arg name="gui" value="$(arg gui)"/>
+  </include>
+
+  <!-- 2. Load Jackal robot description, controllers, teleop, and spawn
+       the model into Gazebo. Does NOT start a second Gazebo instance.
+       Note: this sets /robot_description WITHOUT the camera extras;
+       it is overridden by the <param> block below. -->
+  <include file="$(find jackal_gazebo)/launch/spawn_jackal.launch">
+    <arg name="x"        value="$(arg x)"/>
+    <arg name="y"        value="$(arg y)"/>
+    <arg name="z"        value="$(arg z)"/>
+    <arg name="joystick" value="$(arg joystick)"/>
+  </include>
+
+  <!-- 3. Override /robot_description with camera-inclusive URDF.
+       Placed AFTER spawn_jackal so this param wins (ROS1 processes
+       all <param> commands in order before any node starts, so
+       robot_state_publisher and spawn_model both read this version).
+       The script sets JACKAL_URDF_EXTRAS before running xacro so the
+       $(optenv JACKAL_URDF_EXTRAS) hook in jackal.urdf.xacro picks
+       up our camera file. -->
+  <param name="robot_description"
+         command="$(find agbot_bringup)/scripts/load_robot_description.sh
+                  $(find agbot_bringup)/urdf/agbot_camera.urdf.xacro
+                  $(find jackal_description)/urdf/jackal.urdf.xacro" />
+
+  <!-- 4. RViz: RobotModel + TF + live camera feed from /camera/image_raw -->
+  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+        args="-d $(find agbot_bringup)/rviz/agbot.rviz"/>
+
+</launch>
