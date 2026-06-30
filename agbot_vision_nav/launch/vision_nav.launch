@@ -3,20 +3,32 @@
        $(find agbot_vision_nav)/../DINOv3-Segmentation-Training/out/corn_field_navigation/exported_models/exported_best.pt -->
   <arg name="model_path" />
 
-  <!-- Real robot default shown; for Gazebo, override both of these since its
-       camera plugin typically publishes raw sensor_msgs/Image instead of
-       CompressedImage, e.g.:
+  <!-- Real robot default shown; for Gazebo, override both of these:
        roslaunch agbot_vision_nav vision_nav.launch model_path:=... \
-         camera_topic:=/front/image_raw camera_topic_is_compressed:=false -->
-  <arg name="camera_topic" default="/usb_cam/image_raw/compressed" />
+         camera_topic:=/camera/image_raw camera_topic_is_compressed:=false -->
+  <arg name="camera_topic"              default="/usb_cam/image_raw/compressed" />
   <arg name="camera_topic_is_compressed" default="true" />
-  <arg name="cmd_vel_topic" default="/cmd_vel" />
+  <arg name="cmd_vel_topic"             default="/cmd_vel" />
+
+  <!-- MPC primary tuning knobs (override at launch for quick iteration;
+       all other MPC params come from config/params.yaml).
+       Tune in this order: q_offset -> r_delta -> alpha -> beta -> q_heading -->
+  <arg name="mpc_q_offset"  default="10.0" />   <!-- lateral error weight -->
+  <arg name="mpc_q_heading" default="1.0"  />   <!-- heading error weight -->
+  <arg name="mpc_alpha"     default="0.10" />   <!-- lateral coupling constant -->
+  <arg name="mpc_beta"      default="0.10" />   <!-- control effectiveness constant -->
+  <arg name="mpc_r_delta"   default="0.5"  />   <!-- smoothness / jerk suppression -->
 
   <node name="vision_nav_node" pkg="agbot_vision_nav" type="vision_nav_node.py" output="screen">
     <rosparam file="$(find agbot_vision_nav)/config/params.yaml" command="load" />
-    <param name="model_path" value="$(arg model_path)" />
-    <param name="camera_topic" value="$(arg camera_topic)" />
+    <param name="model_path"               value="$(arg model_path)" />
+    <param name="camera_topic"             value="$(arg camera_topic)" />
     <param name="camera_topic_is_compressed" value="$(arg camera_topic_is_compressed)" />
-    <param name="cmd_vel_topic" value="$(arg cmd_vel_topic)" />
+    <param name="cmd_vel_topic"            value="$(arg cmd_vel_topic)" />
+    <param name="mpc_q_offset"             value="$(arg mpc_q_offset)" />
+    <param name="mpc_q_heading"            value="$(arg mpc_q_heading)" />
+    <param name="mpc_alpha"                value="$(arg mpc_alpha)" />
+    <param name="mpc_beta"                 value="$(arg mpc_beta)" />
+    <param name="mpc_r_delta"              value="$(arg mpc_r_delta)" />
   </node>
 </launch>

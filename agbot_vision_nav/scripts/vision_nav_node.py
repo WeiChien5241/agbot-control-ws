@@ -25,7 +25,7 @@ from geometry_msgs.msg import Twist
 from sensor_msgs.msg import CompressedImage, Image
 
 from agbot_vision_nav.centerline_estimator import estimate_centerline
-from agbot_vision_nav.controller import RowCenteringController
+from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
 from agbot_vision_nav.segmentation_model import SegmentationModel
 
@@ -58,11 +58,18 @@ class VisionNavNode(object):
         self._max_data_age_sec = rospy.get_param("~max_data_age_sec", 0.5)
         self._publish_debug_image = rospy.get_param("~publish_debug_image", True)
 
-        self._controller = RowCenteringController(
-            k_p=rospy.get_param("~k_p", 1.0),
-            k_slope=rospy.get_param("~k_slope", 0.0),
+        self._controller = MPCRowController(
+            N=rospy.get_param("~mpc_horizon", 8),
+            dt=rospy.get_param("~mpc_dt", 0.1),
+            alpha=rospy.get_param("~mpc_alpha", 0.10),
+            beta=rospy.get_param("~mpc_beta", 0.10),
+            q_offset=rospy.get_param("~mpc_q_offset", 10.0),
+            q_heading=rospy.get_param("~mpc_q_heading", 1.0),
+            r_control=rospy.get_param("~mpc_r_control", 0.1),
+            r_delta=rospy.get_param("~mpc_r_delta", 0.5),
             linear_x_cruise=rospy.get_param("~linear_x_cruise", 0.15),
             angular_z_max=rospy.get_param("~angular_z_max", 0.3),
+            delta_angular_z_max=rospy.get_param("~delta_angular_z_max", 0.2),
             invalid_frame_stop_count=rospy.get_param("~invalid_frame_stop_count", 5),
         )
 

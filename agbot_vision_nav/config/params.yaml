@@ -17,12 +17,32 @@ scan_row_fractions: [0.65, 0.78, 0.92]
 scan_row_weights: [0.2, 0.3, 0.5]
 min_traversable_fraction: 0.10
 
-# Proportional control law (see controller.py). k_slope starts disabled --
-# enable as a deliberate second experiment once the plain offset-only
-# controller is confirmed working.
-k_p: 1.0
-k_slope: 0.0
-linear_x_cruise: 0.15
-angular_z_max: 0.3
-invalid_frame_stop_count: 5
-max_data_age_sec: 0.5
+# MPC controller (see controller.py / MPCRowController).
+#
+# Dynamics model:  x[k+1] = A x[k] + B u[k]
+#   A = [[1, alpha], [0, 1]]   B = [[0], [beta]]
+#   State:   x = [offset_norm, slope_term]   (normalized image-space)
+#   Control: u = angular_z  (rad/s)
+#
+# Tuning priority (once in simulation):
+#   1. Confirm sign convention (manual off-center test, watch /cmd_vel)
+#   2. Tune alpha/beta (model accuracy: lateral coupling + control effectiveness)
+#   3. Tune q_offset (how aggressively the robot re-centers laterally)
+#   4. Tune r_delta  (smoothness; increase if steering is jerky/oscillatory)
+#   5. Tune q_heading (anticipatory heading correction strength)
+#   6. Tune r_control (penalizes large angular_z commands)
+
+mpc_horizon: 8           # prediction steps (N)
+mpc_dt: 0.1              # seconds per step; set to match your inference rate
+mpc_alpha: 0.10          # lateral coupling: offset_norm += alpha * slope_term per step
+mpc_beta: 0.10           # control effectiveness: slope_term += beta * angular_z per step
+mpc_q_offset: 10.0       # lateral error cost weight (primary tuning knob)
+mpc_q_heading: 1.0       # heading error cost weight (anticipatory correction)
+mpc_r_control: 0.1       # control effort cost weight
+mpc_r_delta: 0.5         # control rate cost weight (smoothness / jerk suppression)
+
+linear_x_cruise: 0.15       # forward speed (m/s); conservative for first sim runs
+angular_z_max: 0.3           # hard clamp on |angular_z| (rad/s)
+delta_angular_z_max: 0.2     # max angular_z change per step (rad/s); rate limiter
+invalid_frame_stop_count: 5  # consecutive invalid frames before publishing zero Twist
+max_data_age_sec: 0.5        # watchdog: zero Twist if no inference in this window
