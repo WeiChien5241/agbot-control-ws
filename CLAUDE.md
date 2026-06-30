@@ -2,20 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Git and GitHub workflow — follow this every session
+## Git and GitHub workflow — MANDATORY, follow every session
 
-This repo is tracked in git and mirrored on GitHub. **After every meaningful unit of work, commit and push.** Never let a session end with uncommitted changes. Clean commit messages, present-tense imperative ("Add camera URDF", "Fix robot_description override", "Update launch args").
+This repo is tracked in git and mirrored on GitHub. **Commit and push after every meaningful unit of work — not just at session end.** If a session ends with uncommitted changes, that work is at risk. Treat each logical step (new file written, bug fixed, launch tested) as a commit boundary.
+
+**Commit rules:**
+- **After each file created or meaningfully changed** — don't batch a whole session into one commit
+- **Before switching tasks** — if you were working on the world file and are now changing a launch file, commit the world file first
+- **After a successful test** — commit the state that works so you can roll back if needed
+- **Never use `git add .`** — always stage specific files by name to avoid accidentally committing build artifacts, model weights, or generated files
 
 ```bash
-# Stage only the files you changed (never git add .)
+# Stage only the files you changed
 git add agbot_bringup/launch/agbot_gazebo.launch agbot_bringup/urdf/agbot_camera.urdf.xacro
 
-# Commit with a clear message
+# Commit with a clear present-tense imperative message
 git commit -m "Fix camera URDF injection via load_robot_description.sh"
 
-# Push to GitHub
+# Push immediately — don't let commits pile up
 git push
 ```
+
+**Commit message style**: present-tense imperative, concise, describes the change not the task.
+- Good: `"Add lightweight corn-row world with 4 rows"`, `"Fix spawn position default to x=-2.0"`
+- Bad: `"fixed the world thing"`, `"changes"`, `"wip"`
 
 **Branch strategy**: work on `main` for now (small team, single user). If an experiment might break things, create a feature branch:
 ```bash
@@ -60,15 +70,14 @@ Single command to start everything in simulation:
 ```bash
 roslaunch agbot_bringup agbot_gazebo.launch
 # Optional overrides:
-# x:=1.5 y:=0.0          — robot spawn position in corn field
+# x:=-2.0 y:=0.0        — robot spawn position (default: 2 m before row start)
 # gui:=false             — headless Gazebo
 # joystick:=false        — disable teleop (autonomous-only run)
 ```
 
-**Before first launch**, generate the corn world if `~/.ros/virtual_maize_field/generated.world` doesn't exist:
-```bash
-rosrun virtual_maize_field generate_world.py
-```
+**World**: `agbot_bringup/worlds/agbot_corn_rows.world` — lightweight custom world,
+4 rows of corn (36 plants each, 0.75 m row spacing) on flat ground. No heightmap terrain.
+No pre-generation step needed (unlike the old virtual_maize_field generated.world).
 
 **Camera topic** (simulation): `/camera/image_raw` (`sensor_msgs/Image`, raw, 640×480, 30 Hz).
 When launching the vision-nav controller in simulation:

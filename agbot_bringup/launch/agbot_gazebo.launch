@@ -5,21 +5,37 @@
   <arg name="gui" default="true"/>
 
   <!-- Spawn position in the corn field.
-       Tune x/y to place the robot at the start of a row.
+       x=-2.0 places the robot 2 m before the row start (corn begins at x=0).
+       y=0.0  centres the robot in the primary corridor (between rows at y=±0.375).
        z:=0.5 keeps the robot above the ground plane at spawn. -->
-  <arg name="x" default="0.0"/>
+  <arg name="x" default="-2.0"/>
   <arg name="y" default="0.0"/>
   <arg name="z" default="0.5"/>
 
   <!-- Set false to disable teleop (e.g. when running autonomous control only) -->
   <arg name="joystick" default="true"/>
 
-  <!-- 1. Start Gazebo with the virtual maize field world.
-       World file: ~/.ros/virtual_maize_field/generated.world
-       If that file doesn't exist yet, run:
-         rosrun virtual_maize_field generate_world.py -->
-  <include file="$(find virtual_maize_field)/launch/simulation.launch">
-    <arg name="gui" value="$(arg gui)"/>
+  <!-- 1. Start Gazebo with our lightweight custom corn-row world.
+       OLD (too heavy — heightmap terrain + 615 models):
+         <include file="$(find virtual_maize_field)/launch/simulation.launch">
+           <arg name="gui" value="$(arg gui)"/>
+         </include>
+       NEW: flat ground, 4 rows × 36 corns = 144 static models only. -->
+
+  <!-- Ensure Gazebo can resolve model://maize_01 and model://maize_02.
+       Sourcing the workspace normally handles this via the virtual_maize_field
+       package.xml export; this env tag is a belt-and-suspenders fallback. -->
+  <env name="GAZEBO_MODEL_PATH"
+       value="$(find virtual_maize_field)/models:$(optenv GAZEBO_MODEL_PATH)"/>
+
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="$(find agbot_bringup)/worlds/agbot_corn_rows.world"/>
+    <arg name="paused"       value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui"          value="$(arg gui)"/>
+    <arg name="headless"     value="false"/>
+    <arg name="debug"        value="false"/>
+    <arg name="verbose"      value="false"/>
   </include>
 
   <!-- 2. Load Jackal robot description, controllers, teleop, and spawn

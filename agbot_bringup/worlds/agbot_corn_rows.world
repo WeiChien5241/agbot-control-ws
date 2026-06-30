@@ -1,0 +1,916 @@
+<?xml version="1.0"?>
+<!--
+  Lightweight Gazebo world for P-AgBot row-centering simulation.
+  4 rows of corn on flat ground — no heightmap terrain.
+
+  Layout:
+    Row 0: y = -1.125 m  (outer left)
+    Row 1: y = -0.375 m  (inner left)   ← left wall of primary corridor
+    Row 2: y =  0.375 m  (inner right)  ← right wall of primary corridor
+    Row 3: y =  1.125 m  (outer right)
+
+    Robot spawns at x=-2.0, y=0.0, facing +x (before row start at x=0).
+    Primary corridor width: 0.75 m (y = -0.375 to +0.375).
+    Row spacing: 0.75 m.  In-row spacing: 0.30 m.
+    40 positions per row, 4 missing = 36 corns per row = 144 total.
+
+  Model path: virtual_maize_field/models/ (set via GAZEBO_MODEL_PATH in launch).
+-->
+<sdf version="1.6">
+  <world name="agbot_corn_rows">
+
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+
+    <scene>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Row 0: y = -1.125 m -->
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c00</name>
+      <pose>0.00 -1.125 0.0  0 0 0.10</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c01</name>
+      <pose>0.30 -1.125 0.0  0 0 -0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c02</name>
+      <pose>0.60 -1.125 0.0  0 0 0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c03</name>
+      <pose>0.90 -1.125 0.0  0 0 -0.22</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c04</name>
+      <pose>1.20 -1.125 0.0  0 0 0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c06</name>
+      <pose>1.80 -1.125 0.0  0 0 0.30</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c07</name>
+      <pose>2.10 -1.125 0.0  0 0 -0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c08</name>
+      <pose>2.40 -1.125 0.0  0 0 0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c09</name>
+      <pose>2.70 -1.125 0.0  0 0 -0.25</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c10</name>
+      <pose>3.00 -1.125 0.0  0 0 0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c11</name>
+      <pose>3.30 -1.125 0.0  0 0 -0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c12</name>
+      <pose>3.60 -1.125 0.0  0 0 0.21</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c13</name>
+      <pose>3.90 -1.125 0.0  0 0 -0.18</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c15</name>
+      <pose>4.50 -1.125 0.0  0 0 -0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c16</name>
+      <pose>4.80 -1.125 0.0  0 0 0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c17</name>
+      <pose>5.10 -1.125 0.0  0 0 -0.09</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c18</name>
+      <pose>5.40 -1.125 0.0  0 0 0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c19</name>
+      <pose>5.70 -1.125 0.0  0 0 -0.16</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c20</name>
+      <pose>6.00 -1.125 0.0  0 0 0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c21</name>
+      <pose>6.30 -1.125 0.0  0 0 -0.20</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c22</name>
+      <pose>6.60 -1.125 0.0  0 0 0.13</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c23</name>
+      <pose>6.90 -1.125 0.0  0 0 -0.03</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c24</name>
+      <pose>7.20 -1.125 0.0  0 0 0.26</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c25</name>
+      <pose>7.50 -1.125 0.0  0 0 -0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c27</name>
+      <pose>8.10 -1.125 0.0  0 0 -0.23</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c28</name>
+      <pose>8.40 -1.125 0.0  0 0 0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c29</name>
+      <pose>8.70 -1.125 0.0  0 0 -0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c30</name>
+      <pose>9.00 -1.125 0.0  0 0 0.19</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c31</name>
+      <pose>9.30 -1.125 0.0  0 0 -0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c32</name>
+      <pose>9.60 -1.125 0.0  0 0 0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c33</name>
+      <pose>9.90 -1.125 0.0  0 0 -0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c34</name>
+      <pose>10.20 -1.125 0.0  0 0 0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c35</name>
+      <pose>10.50 -1.125 0.0  0 0 -0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c36</name>
+      <pose>10.80 -1.125 0.0  0 0 0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r0_c38</name>
+      <pose>11.40 -1.125 0.0  0 0 0.22</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r0_c39</name>
+      <pose>11.70 -1.125 0.0  0 0 -0.13</pose>
+      <static>true</static>
+    </include>
+
+    <!-- Row 1: y = -0.375 m -->
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c00</name>
+      <pose>0.00 -0.375 0.0  0 0 0.10</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c01</name>
+      <pose>0.30 -0.375 0.0  0 0 -0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c02</name>
+      <pose>0.60 -0.375 0.0  0 0 0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c03</name>
+      <pose>0.90 -0.375 0.0  0 0 -0.22</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c04</name>
+      <pose>1.20 -0.375 0.0  0 0 0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c05</name>
+      <pose>1.50 -0.375 0.0  0 0 -0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c06</name>
+      <pose>1.80 -0.375 0.0  0 0 0.30</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c07</name>
+      <pose>2.10 -0.375 0.0  0 0 -0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c09</name>
+      <pose>2.70 -0.375 0.0  0 0 -0.25</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c10</name>
+      <pose>3.00 -0.375 0.0  0 0 0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c11</name>
+      <pose>3.30 -0.375 0.0  0 0 -0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c12</name>
+      <pose>3.60 -0.375 0.0  0 0 0.21</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c13</name>
+      <pose>3.90 -0.375 0.0  0 0 -0.18</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c14</name>
+      <pose>4.20 -0.375 0.0  0 0 0.04</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c15</name>
+      <pose>4.50 -0.375 0.0  0 0 -0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c16</name>
+      <pose>4.80 -0.375 0.0  0 0 0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c17</name>
+      <pose>5.10 -0.375 0.0  0 0 -0.09</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c18</name>
+      <pose>5.40 -0.375 0.0  0 0 0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c20</name>
+      <pose>6.00 -0.375 0.0  0 0 0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c21</name>
+      <pose>6.30 -0.375 0.0  0 0 -0.20</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c22</name>
+      <pose>6.60 -0.375 0.0  0 0 0.13</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c23</name>
+      <pose>6.90 -0.375 0.0  0 0 -0.03</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c24</name>
+      <pose>7.20 -0.375 0.0  0 0 0.26</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c25</name>
+      <pose>7.50 -0.375 0.0  0 0 -0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c26</name>
+      <pose>7.80 -0.375 0.0  0 0 0.09</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c27</name>
+      <pose>8.10 -0.375 0.0  0 0 -0.23</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c28</name>
+      <pose>8.40 -0.375 0.0  0 0 0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c29</name>
+      <pose>8.70 -0.375 0.0  0 0 -0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c30</name>
+      <pose>9.00 -0.375 0.0  0 0 0.19</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c32</name>
+      <pose>9.60 -0.375 0.0  0 0 0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c33</name>
+      <pose>9.90 -0.375 0.0  0 0 -0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c34</name>
+      <pose>10.20 -0.375 0.0  0 0 0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c35</name>
+      <pose>10.50 -0.375 0.0  0 0 -0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r1_c36</name>
+      <pose>10.80 -0.375 0.0  0 0 0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c37</name>
+      <pose>11.10 -0.375 0.0  0 0 -0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r1_c39</name>
+      <pose>11.70 -0.375 0.0  0 0 -0.13</pose>
+      <static>true</static>
+    </include>
+
+    <!-- Row 2: y = 0.375 m -->
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c00</name>
+      <pose>0.00 0.375 0.0  0 0 0.10</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c01</name>
+      <pose>0.30 0.375 0.0  0 0 -0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c02</name>
+      <pose>0.60 0.375 0.0  0 0 0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c04</name>
+      <pose>1.20 0.375 0.0  0 0 0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c05</name>
+      <pose>1.50 0.375 0.0  0 0 -0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c06</name>
+      <pose>1.80 0.375 0.0  0 0 0.30</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c07</name>
+      <pose>2.10 0.375 0.0  0 0 -0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c08</name>
+      <pose>2.40 0.375 0.0  0 0 0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c09</name>
+      <pose>2.70 0.375 0.0  0 0 -0.25</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c10</name>
+      <pose>3.00 0.375 0.0  0 0 0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c11</name>
+      <pose>3.30 0.375 0.0  0 0 -0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c12</name>
+      <pose>3.60 0.375 0.0  0 0 0.21</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c13</name>
+      <pose>3.90 0.375 0.0  0 0 -0.18</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c14</name>
+      <pose>4.20 0.375 0.0  0 0 0.04</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c15</name>
+      <pose>4.50 0.375 0.0  0 0 -0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c16</name>
+      <pose>4.80 0.375 0.0  0 0 0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c18</name>
+      <pose>5.40 0.375 0.0  0 0 0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c19</name>
+      <pose>5.70 0.375 0.0  0 0 -0.16</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c20</name>
+      <pose>6.00 0.375 0.0  0 0 0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c21</name>
+      <pose>6.30 0.375 0.0  0 0 -0.20</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c22</name>
+      <pose>6.60 0.375 0.0  0 0 0.13</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c23</name>
+      <pose>6.90 0.375 0.0  0 0 -0.03</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c24</name>
+      <pose>7.20 0.375 0.0  0 0 0.26</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c25</name>
+      <pose>7.50 0.375 0.0  0 0 -0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c26</name>
+      <pose>7.80 0.375 0.0  0 0 0.09</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c27</name>
+      <pose>8.10 0.375 0.0  0 0 -0.23</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c29</name>
+      <pose>8.70 0.375 0.0  0 0 -0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c30</name>
+      <pose>9.00 0.375 0.0  0 0 0.19</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c31</name>
+      <pose>9.30 0.375 0.0  0 0 -0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c32</name>
+      <pose>9.60 0.375 0.0  0 0 0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c33</name>
+      <pose>9.90 0.375 0.0  0 0 -0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c34</name>
+      <pose>10.20 0.375 0.0  0 0 0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c36</name>
+      <pose>10.80 0.375 0.0  0 0 0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c37</name>
+      <pose>11.10 0.375 0.0  0 0 -0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r2_c38</name>
+      <pose>11.40 0.375 0.0  0 0 0.22</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r2_c39</name>
+      <pose>11.70 0.375 0.0  0 0 -0.13</pose>
+      <static>true</static>
+    </include>
+
+    <!-- Row 3: y = 1.125 m -->
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c00</name>
+      <pose>0.00 1.125 0.0  0 0 0.10</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c01</name>
+      <pose>0.30 1.125 0.0  0 0 -0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c02</name>
+      <pose>0.60 1.125 0.0  0 0 0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c03</name>
+      <pose>0.90 1.125 0.0  0 0 -0.22</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c04</name>
+      <pose>1.20 1.125 0.0  0 0 0.17</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c05</name>
+      <pose>1.50 1.125 0.0  0 0 -0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c07</name>
+      <pose>2.10 1.125 0.0  0 0 -0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c08</name>
+      <pose>2.40 1.125 0.0  0 0 0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c09</name>
+      <pose>2.70 1.125 0.0  0 0 -0.25</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c10</name>
+      <pose>3.00 1.125 0.0  0 0 0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c12</name>
+      <pose>3.60 1.125 0.0  0 0 0.21</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c13</name>
+      <pose>3.90 1.125 0.0  0 0 -0.18</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c14</name>
+      <pose>4.20 1.125 0.0  0 0 0.04</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c15</name>
+      <pose>4.50 1.125 0.0  0 0 -0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c16</name>
+      <pose>4.80 1.125 0.0  0 0 0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c17</name>
+      <pose>5.10 1.125 0.0  0 0 -0.09</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c18</name>
+      <pose>5.40 1.125 0.0  0 0 0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c19</name>
+      <pose>5.70 1.125 0.0  0 0 -0.16</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c20</name>
+      <pose>6.00 1.125 0.0  0 0 0.07</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c21</name>
+      <pose>6.30 1.125 0.0  0 0 -0.20</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c23</name>
+      <pose>6.90 1.125 0.0  0 0 -0.03</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c24</name>
+      <pose>7.20 1.125 0.0  0 0 0.26</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c25</name>
+      <pose>7.50 1.125 0.0  0 0 -0.14</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c26</name>
+      <pose>7.80 1.125 0.0  0 0 0.09</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c27</name>
+      <pose>8.10 1.125 0.0  0 0 -0.23</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c28</name>
+      <pose>8.40 1.125 0.0  0 0 0.15</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c29</name>
+      <pose>8.70 1.125 0.0  0 0 -0.06</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c30</name>
+      <pose>9.00 1.125 0.0  0 0 0.19</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c31</name>
+      <pose>9.30 1.125 0.0  0 0 -0.11</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c32</name>
+      <pose>9.60 1.125 0.0  0 0 0.28</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c34</name>
+      <pose>10.20 1.125 0.0  0 0 0.05</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c35</name>
+      <pose>10.50 1.125 0.0  0 0 -0.24</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c36</name>
+      <pose>10.80 1.125 0.0  0 0 0.12</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c37</name>
+      <pose>11.10 1.125 0.0  0 0 -0.08</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_01</uri>
+      <name>maize_r3_c38</name>
+      <pose>11.40 1.125 0.0  0 0 0.22</pose>
+      <static>true</static>
+    </include>
+    <include>
+      <uri>model://maize_02</uri>
+      <name>maize_r3_c39</name>
+      <pose>11.70 1.125 0.0  0 0 -0.13</pose>
+      <static>true</static>
+    </include>
+
+
+  </world>
+</sdf>
