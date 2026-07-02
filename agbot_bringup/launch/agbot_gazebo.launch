@@ -15,21 +15,21 @@
   <!-- Set false to disable teleop (e.g. when running autonomous control only) -->
   <arg name="joystick" default="true"/>
 
-  <!-- 1. Start Gazebo with our lightweight custom corn-row world.
-       OLD (too heavy — heightmap terrain + 615 models):
-         <include file="$(find virtual_maize_field)/launch/simulation.launch">
-           <arg name="gui" value="$(arg gui)"/>
-         </include>
-       NEW: flat ground, 4 rows × 36 corns = 144 static models only. -->
-
   <!-- Ensure Gazebo can resolve model://maize_01, model://maize_02 (from
        virtual_maize_field) and model://dirt_ground (our custom ground model).
        Sourcing the workspace normally handles this via package.xml exports;
        this env tag is a belt-and-suspenders fallback that works without a
-       rebuild. -->
+       rebuild. Needed by BOTH world options below. -->
   <env name="GAZEBO_MODEL_PATH"
        value="$(find agbot_bringup)/models:$(find virtual_maize_field)/models:$(optenv GAZEBO_MODEL_PATH)"/>
 
+  <!-- ============================================================= -->
+  <!-- 1. WORLD SELECTION — enable exactly ONE of the two blocks below -->
+  <!-- ============================================================= -->
+
+  <!-- OPTION A (default): lightweight custom corn-row world.
+       Flat dirt ground + sky, 4 rows × 36 corns = 144 static models only.
+       Fast; no pre-generation step needed. -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
     <arg name="world_name" value="$(find agbot_bringup)/worlds/agbot_corn_rows.world"/>
     <arg name="paused"       value="false"/>
@@ -39,6 +39,23 @@
     <arg name="debug"        value="false"/>
     <arg name="verbose"      value="false"/>
   </include>
+
+  <!-- OPTION B: full virtual_maize_field world (heightmap terrain, heavier).
+       Comment out OPTION A above and uncomment this block to use it.
+       PREREQUISITE: generate the world first (creates
+       ~/.ros/virtual_maize_field/generated.world):
+         rosrun virtual_maize_field generate_world.py
+       simulation.launch only starts Gazebo with that world; the robot is
+       still spawned by section 2 below, same as OPTION A. -->
+  <!--
+  <include file="$(find virtual_maize_field)/launch/simulation.launch">
+    <arg name="gui"          value="$(arg gui)"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="paused"       value="false"/>
+    <arg name="headless"     value="false"/>
+  </include>
+  -->
+  <!-- ============================================================= -->
 
   <!-- 2. Load Jackal robot description, controllers, teleop, and spawn
        the model into Gazebo. Does NOT start a second Gazebo instance.
