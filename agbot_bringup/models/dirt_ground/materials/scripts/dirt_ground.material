@@ -1,0 +1,25 @@
+// Ogre material for the P-AgBot dirt ground plane.
+// Tiles the dirt texture across the large ground plane so the segmentation
+// model (trained to recognize dirt / sky / corn) sees a soil-like surface
+// instead of Gazebo's default grey checkerboard.
+material DirtGround/Diffuse
+{
+  technique
+  {
+    pass
+    {
+      ambient 0.7 0.7 0.7 1.0
+      diffuse 1.0 1.0 1.0 1.0
+      specular 0.0 0.0 0.0 1.0 0.0
+
+      texture_unit
+      {
+        texture dirt.png
+        // Plane is 50 m; tile ~ every 2 m so the soil pattern reads at
+        // camera scale. Exact tiling is not critical for segmentation.
+        scale 25 25
+        filtering trilinear
+      }
+    }
+  }
+}
