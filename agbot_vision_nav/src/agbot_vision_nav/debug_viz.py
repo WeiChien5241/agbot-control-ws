@@ -16,7 +16,7 @@ VALID_TEXT_COLOR_BGR = (0, 255, 0)
 INVALID_TEXT_COLOR_BGR = (0, 0, 255)
 
 
-def render_debug_image(frame_bgr, mask, centerline_result, linear_x=None, angular_z=None, alpha=0.5):
+def render_debug_image(frame_bgr, mask, centerline_result, linear_x=None, angular_z=None, alpha=0.5, state_name=None):
     """Returns an annotated copy of frame_bgr for rqt_image_view inspection."""
     height, width = frame_bgr.shape[:2]
     cx = width // 2
@@ -32,9 +32,25 @@ def render_debug_image(frame_bgr, mask, centerline_result, linear_x=None, angula
         cv2.line(result, (0, y), (width - 1, y), SCAN_ROW_COLOR_BGR, 1)
         if scan_row.x_mid is not None:
             cv2.circle(result, (int(round(scan_row.x_mid)), y), 4, MIDPOINT_COLOR_BGR, -1)
+            # normalized corridor width -- the row-exit detector's main
+            # signal, drawn per scan row so its threshold can be tuned by eye
+            width_norm = (scan_row.x_right - scan_row.x_left + 1) / float(width)
+            cv2.putText(
+                result,
+                "w={:.2f}".format(width_norm),
+                (width - 78, y - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                SCAN_ROW_COLOR_BGR,
+                1,
+                cv2.LINE_AA,
+            )
 
     text_color = VALID_TEXT_COLOR_BGR if centerline_result.valid else INVALID_TEXT_COLOR_BGR
-    lines = [
+    lines = []
+    if state_name is not None:
+        lines.append("state={}".format(state_name))
+    lines += [
         "valid={}".format(centerline_result.valid),
         "offset_norm={:+.3f}".format(centerline_result.offset_norm),
         "slope_term={:+.3f}".format(centerline_result.slope_term),
