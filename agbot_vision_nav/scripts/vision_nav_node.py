@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """ROS1 node: segmentation mask -> row-centering cmd_vel.
 
 Only this file (and its cv_bridge/ROS message handling) touches rospy/ROS
@@ -15,6 +15,7 @@ back up. A 5 Hz watchdog publishes zero Twist if no successful inference has
 completed within max_data_age_sec.
 """
 
+import math
 import threading
 
 import cv2
@@ -22,12 +23,22 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image
 
 from agbot_vision_nav.centerline_estimator import estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
+from agbot_vision_nav.mission_fsm import MissionFSM
+from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
+
+
+def _quaternion_to_yaw(q):
+    """Yaw from a geometry_msgs/Quaternion (avoids a tf dependency)."""
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
 
 
 class VisionNavNode(object):
@@ -73,6 +84,34 @@ class VisionNavNode(object):
             invalid_frame_stop_count=rospy.get_param("~invalid_frame_stop_count", 5),
         )
 
+        # Optional multi-row mission mode (headland turns). Default off:
+        # plain row-following, identical to pre-mission behavior.
+        self._mission_enabled = rospy.get_param("~mission_enabled", False)
+        self._fsm = None
+        if self._mission_enabled:
+            detector = RowExitDetector(
+                exit_width_threshold=rospy.get_param("~exit_width_threshold", 0.8),
+                exit_detect_frames=rospy.get_param("~exit_detect_frames", 5),
+                min_in_row_distance=rospy.get_param("~min_in_row_distance", 2.0),
+                blocked_min_traversable_fraction=rospy.get_param(
+                    "~blocked_min_traversable_fraction", 0.15
+                ),
+            )
+            self._fsm = MissionFSM(
+                self._controller,
+                detector,
+                num_rows=rospy.get_param("~num_rows", 3),
+                first_turn_direction=rospy.get_param("~first_turn_direction", "left"),
+                row_spacing=rospy.get_param("~row_spacing", 0.75),
+                headland_clearance=rospy.get_param("~headland_clearance", 1.0),
+                turn_rate=rospy.get_param("~turn_rate", 0.4),
+                yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 5.0),
+                reacquire_speed=rospy.get_param("~reacquire_speed", 0.08),
+                reacquire_max_width=rospy.get_param("~reacquire_max_width", 0.6),
+                reacquire_frames=rospy.get_param("~reacquire_frames", 3),
+                reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 1.5),
+            )
+
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
         self._model = SegmentationModel(model_path)
         rospy.loginfo("Model loaded.")
@@ -85,6 +124,12 @@ class VisionNavNode(object):
 
         self._last_success_lock = threading.Lock()
         self._last_success_time = None
+
+        self._odom_lock = threading.Lock()
+        self._odom_pose = None  # (x, y, yaw)
+        if self._mission_enabled:
+            odom_topic = rospy.get_param("~odom_topic", "/odometry/filtered")
+            rospy.Subscriber(odom_topic, Odometry, self._odom_cb, queue_size=1)
 
         self._cmd_vel_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
         self._debug_pub = None
@@ -126,6 +171,12 @@ class VisionNavNode(object):
             rospy.logwarn_throttle(5.0, "cv_bridge conversion failed: %s", exc)
             return
         self._store_frame(frame)
+
+    def _odom_cb(self, msg):
+        pose = msg.pose.pose
+        yaw = _quaternion_to_yaw(pose.orientation)
+        with self._odom_lock:
+            self._odom_pose = (pose.position.x, pose.position.y, yaw)
 
     def _store_frame(self, frame):
         with self._frame_condition:
@@ -172,16 +223,27 @@ class VisionNavNode(object):
             min_traversable_fraction=self._min_traversable_fraction,
         )
 
-        linear_x, angular_z = self._controller.compute(
-            result.offset_norm, result.slope_term, result.valid
-        )
+        state_name = None
+        if self._fsm is not None:
+            with self._odom_lock:
+                odom_pose = self._odom_pose
+            linear_x, angular_z, state_name, done = self._fsm.update(
+                result, odom_pose, mask.shape[1]
+            )
+            if done:
+                rospy.loginfo_throttle(10.0, "Mission DONE (rows_driven=%d)",
+                                       self._fsm.rows_driven)
+        else:
+            linear_x, angular_z = self._controller.compute(
+                result.offset_norm, result.slope_term, result.valid
+            )
         self._publish_twist(linear_x, angular_z)
 
         with self._last_success_lock:
             self._last_success_time = rospy.Time.now()
 
         if self._debug_pub is not None:
-            self._publish_debug(frame, mask, result, linear_x, angular_z)
+            self._publish_debug(frame, mask, result, linear_x, angular_z, state_name)
 
     def _publish_twist(self, linear_x, angular_z):
         twist = Twist()
@@ -189,9 +251,11 @@ class VisionNavNode(object):
         twist.angular.z = angular_z
         self._cmd_vel_pub.publish(twist)
 
-    def _publish_debug(self, frame, mask, result, linear_x, angular_z):
+    def _publish_debug(self, frame, mask, result, linear_x, angular_z, state_name=None):
         try:
-            debug_img = render_debug_image(frame, mask, result, linear_x, angular_z)
+            debug_img = render_debug_image(
+                frame, mask, result, linear_x, angular_z, state_name=state_name
+            )
             msg = self._bridge.cv2_to_imgmsg(debug_img, encoding="bgr8")
             self._debug_pub.publish(msg)
         except Exception as exc:

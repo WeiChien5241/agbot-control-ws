@@ -46,3 +46,24 @@ angular_z_max: 0.3           # hard clamp on |angular_z| (rad/s)
 delta_angular_z_max: 0.2     # max angular_z change per step (rad/s); rate limiter
 invalid_frame_stop_count: 5  # consecutive invalid frames before publishing zero Twist
 max_data_age_sec: 0.5        # watchdog: zero Twist if no inference in this window
+
+# Multi-row mission (headland turns; see mission_fsm.py / row_exit_detector.py).
+# mission_enabled: false keeps plain row-following, identical to before --
+# safe default while MPC params are still being tuned.
+mission_enabled: false
+odom_topic: /odometry/filtered   # Jackal EKF odom (wheel + IMU)
+num_rows: 3                # corridors to drive; 0 = keep going until no rows left
+first_turn_direction: left # headland turn direction for the FIRST transition;
+                           # alternates automatically afterwards (boustrophedon)
+row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
+headland_clearance: 1.0    # m to drive past the last plants before turning
+turn_rate: 0.4             # rad/s during in-place 90-degree turns
+yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
+reacquire_speed: 0.08      # m/s creep while searching for the next corridor
+reacquire_max_width: 0.6   # corridor must look narrower than this (normalized)
+reacquire_frames: 3        # consecutive corridor frames to re-enter FOLLOW_ROW
+reacquire_max_distance: 1.5  # m of creep without a corridor => no rows left => DONE
+exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
+exit_detect_frames: 5      # consecutive frames of exit signature required
+min_in_row_distance: 2.0   # m of in-row travel before exit detection arms
+blocked_min_traversable_fraction: 0.15  # ground still visible when blocked ahead

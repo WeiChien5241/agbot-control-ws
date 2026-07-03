@@ -1,7 +1,7 @@
 <launch>
   <!-- Required: absolute path to the exported segmentation model, e.g.
        $(find agbot_vision_nav)/../DINOv3-Segmentation-Training/out/corn_field_navigation/exported_models/exported_best.pt -->
-  <arg name="model_path" />
+  <arg name="model_path" default="/home/chien21/agbot_control_ws/src/agbot_vision_nav/config/exported_best.pt"/>
 
   <!-- Real robot default shown; for Gazebo, override both of these:
        roslaunch agbot_vision_nav vision_nav.launch model_path:=... \
@@ -19,6 +19,11 @@
   <arg name="mpc_beta"      default="0.10" />   <!-- control effectiveness constant -->
   <arg name="mpc_r_delta"   default="0.5"  />   <!-- smoothness / jerk suppression -->
 
+  <!-- Multi-row mission (headland turns). Off by default: plain row-following.
+       Enable in Gazebo with:  mission_enabled:=true num_rows:=3 -->
+  <arg name="mission_enabled" default="false" />
+  <arg name="num_rows"        default="3" />    <!-- 0 = until no rows left -->
+
   <node name="vision_nav_node" pkg="agbot_vision_nav" type="vision_nav_node.py" output="screen">
     <rosparam file="$(find agbot_vision_nav)/config/params.yaml" command="load" />
     <param name="model_path"               value="$(arg model_path)" />
@@ -30,5 +35,7 @@
     <param name="mpc_alpha"                value="$(arg mpc_alpha)" />
     <param name="mpc_beta"                 value="$(arg mpc_beta)" />
     <param name="mpc_r_delta"              value="$(arg mpc_r_delta)" />
+    <param name="mission_enabled"          value="$(arg mission_enabled)" />
+    <param name="num_rows"                 value="$(arg num_rows)" />
   </node>
 </launch>
