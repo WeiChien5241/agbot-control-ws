@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repo is tracked in git and mirrored on GitHub. **Commit and push after every meaningful unit of work — not just at session end.** If a session ends with uncommitted changes, that work is at risk. Treat each logical step (new file written, bug fixed, launch tested) as a commit boundary.
 
+**This instruction is standing authorization to commit and push without asking first**, as long as each commit follows the rules below (specific files staged by name, clean present-tense message, nothing in the "what NOT to commit" list). Don't wait for the user to say "commit this" — do it proactively as you finish each unit of work, and push right after so nothing sits unpushed between sessions.
+
 **Commit rules:**
 - **After each file created or meaningfully changed** — don't batch a whole session into one commit
 - **Before switching tasks** — if you were working on the world file and are now changing a launch file, commit the world file first
@@ -95,9 +97,11 @@ roslaunch agbot_vision_nav vision_nav.launch \
 Architecture (rospy-free algorithmic core, unit-testable without ROS):
 - `src/agbot_vision_nav/segmentation_model.py` — wraps `lightly_train.load_model()`/`.predict()`, force-resizes output mask to input resolution with nearest-neighbor interpolation.
 - `src/agbot_vision_nav/centerline_estimator.py` — pure numpy: scans mask rows outward from image centre until hitting a non-traversable pixel, returns normalized lateral `offset_norm`.
-- `src/agbot_vision_nav/controller.py` — P-controller: `angular_z = -(k_p * offset_norm + k_slope * slope_term)`. Sign convention: centerline left of image-centre → positive `angular.z` (left turn, REP-103).
-- `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view`.
-- `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog.
+- `src/agbot_vision_nav/controller.py` — `MPCRowController`: SLSQP receding-horizon MPC (N=8) over state `[offset_norm, slope_term]` in normalized image space. Requires `scipy`. Sign convention: centerline left of image-centre → positive `angular.z` (left turn, REP-103).
+- `src/agbot_vision_nav/row_exit_detector.py` — detects end-of-row from the mask (corridor widening to open field, or blocked-ahead wall); debounced, armed only after `min_in_row_distance` m of odometry travel.
+- `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left).
+- `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view` (mask wash, scan rows, midpoints, per-row corridor width `w=`, mission state HUD).
+- `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog, optional odometry subscriber. Mission mode is gated behind `~mission_enabled` (default **false** → plain row-following, identical to pre-mission behavior).
 
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
@@ -132,4 +136,19 @@ roslaunch agbot_vision_nav vision_nav.launch \
   model_path:=/absolute/path/to/exported_best.pt \
   camera_topic:=/camera/image_raw \
   camera_topic_is_compressed:=false
+```
+
+Multi-row mission mode (headland turns between rows; requires `/odometry/filtered`):
+```bash
+roslaunch agbot_vision_nav vision_nav.launch \
+  model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
+  mission_enabled:=true num_rows:=3
+```
+
+Smoke-test the segmentation model on one saved image (no ROS; uses the
+`~/agbot_venv` virtualenv where `lightly_train`/`torch` are installed):
+```bash
+source ~/agbot_venv/bin/activate
+cd ~/agbot_control_ws/src/agbot_vision_nav
+PYTHONPATH=src python3 smoke_test_segmentation.py   # edit paths at top of file
 ```
