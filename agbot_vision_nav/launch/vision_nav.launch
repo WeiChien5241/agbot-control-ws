@@ -19,6 +19,13 @@
   <arg name="mpc_beta"      default="0.10" />   <!-- control effectiveness constant -->
   <arg name="mpc_r_delta"   default="0.5"  />   <!-- smoothness / jerk suppression -->
 
+  <!-- Speed/steering envelope (exposed for tuning runs; defaults match params.yaml) -->
+  <arg name="linear_x_cruise"     default="0.3"  />  <!-- forward speed (m/s) -->
+  <arg name="angular_z_max"       default="0.6"  />  <!-- steering clamp (rad/s) -->
+  <arg name="delta_angular_z_max" default="0.35" />  <!-- max command change per step -->
+
+
+
   <!-- Multi-row mission (headland turns). Off by default: plain row-following.
        Enable in Gazebo with:  mission_enabled:=true num_rows:=3 -->
   <arg name="mission_enabled" default="false" />
@@ -35,6 +42,9 @@
     <param name="mpc_alpha"                value="$(arg mpc_alpha)" />
     <param name="mpc_beta"                 value="$(arg mpc_beta)" />
     <param name="mpc_r_delta"              value="$(arg mpc_r_delta)" />
+    <param name="linear_x_cruise"          value="$(arg linear_x_cruise)" />
+    <param name="angular_z_max"            value="$(arg angular_z_max)" />
+    <param name="delta_angular_z_max"      value="$(arg delta_angular_z_max)" />
     <param name="mission_enabled"          value="$(arg mission_enabled)" />
     <param name="num_rows"                 value="$(arg num_rows)" />
   </node>
