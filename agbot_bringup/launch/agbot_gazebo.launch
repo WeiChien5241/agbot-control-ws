@@ -9,16 +9,18 @@
        ~/.ros/virtual_maize_field/robot_spawner.launch (also printed by
        scripts/generate_small_maize_world.sh and switch_maize_world.sh) and
        pass x:= y:= z:= yaw:= if it differs from these defaults.
-       Defaults below are for the FULL maize world snapshot.
-       (For the lightweight agbot_corn_rows.world / OPTION A use
-       x=-2.0 y=0.0 z=0.5 yaw=0, i.e. 2 m before row start, centered corridor.) -->
-  <arg name="x" default="3.16"/>
-  <arg name="y" default="-9.31"/>
-  <arg name="z" default="0.36"/>
+       Defaults below are for the SMALL maize world (agbot_maize_small.yaml,
+       seed 42 so the pose is stable across regenerations).
+       Other worlds:
+         full maize snapshot:  x=3.16 y=-9.31 z=0.36 yaw=1.791
+         agbot_corn_rows.world (OPTION A): x=-2.0 y=0.0 z=0.5 yaw=0 -->
+  <arg name="x" default="0.777"/>
+  <arg name="y" default="-4.331"/>
+  <arg name="z" default="0.35"/>
   <!-- yaw aligns the robot with the row direction at this spawn point.
        Roll/pitch (~1 deg terrain slope) are not settable via spawn_jackal;
        the robot settles onto the terrain under gravity. -->
-  <arg name="yaw" default="1.791"/>
+  <arg name="yaw" default="1.536"/>
 
   <!-- Set false to disable teleop (e.g. when running autonomous control only) -->
   <arg name="joystick" default="true"/>
