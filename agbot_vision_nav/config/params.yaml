@@ -34,18 +34,21 @@ min_traversable_fraction: 0.10
 
 mpc_horizon: 8           # prediction steps (N)
 mpc_dt: 0.1              # seconds per step; set to match your inference rate
-mpc_alpha: 0.20          # lateral coupling: offset_norm += alpha * slope_term per step;
-                         # scales with forward speed (0.10 was tuned at 0.15 m/s)
+mpc_alpha: 0.10          # lateral coupling: offset_norm += alpha * slope_term per step;
+                         # scales with forward speed (this value is for 0.15 m/s --
+                         # scale proportionally when raising linear_x_cruise)
 mpc_beta: 0.10           # control effectiveness: slope_term += beta * angular_z per step
 mpc_q_offset: 10.0       # lateral error cost weight (primary tuning knob)
 mpc_q_heading: 1.0       # heading error cost weight (anticipatory correction)
 mpc_r_control: 0.1       # control effort cost weight
 mpc_r_delta: 0.5         # control rate cost weight (smoothness / jerk suppression)
 
-linear_x_cruise: 0.3        # forward speed (m/s)
-angular_z_max: 0.6           # hard clamp on |angular_z| (rad/s); scaled with speed
-                             # to preserve max path curvature (angular/linear)
-delta_angular_z_max: 0.35    # max angular_z change per step (rad/s); rate limiter
+# Speed envelope: sim-validated defaults (Gazebo demo). Raise on the real
+# robot via launch args, scaling angular_z_max, delta_angular_z_max, and
+# mpc_alpha proportionally with linear_x_cruise to preserve path curvature.
+linear_x_cruise: 0.15        # forward speed (m/s)
+angular_z_max: 0.3           # hard clamp on |angular_z| (rad/s)
+delta_angular_z_max: 0.2     # max angular_z change per step (rad/s); rate limiter
 invalid_frame_stop_count: 5  # consecutive invalid frames before publishing zero Twist
 max_data_age_sec: 0.5        # watchdog: zero Twist if no inference in this window
 

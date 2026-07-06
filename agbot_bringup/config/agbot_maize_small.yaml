@@ -1,0 +1,18 @@
+# Small virtual_maize_field world for slow laptops (RTF < 0.1 on the full
+# world). Same maize models and ground texture as the full FRE world, so the
+# segmentation model sees identical visuals -- only the cost drivers change:
+# a coarse, nearly flat heightmap and ~1/4 the plant count.
+#
+# Master copy lives here (agbot_bringup is tracked in git);
+# scripts/generate_small_maize_world.sh copies it into
+# virtual_maize_field/config/ (third-party, untracked) before generating,
+# because generate_world.py only reads configs from its own package.
+row_length: 6              # m (full FRE worlds: 10-12)
+rows_count: 4              # 4 rows -> 3 corridors (matches mission num_rows:=3)
+row_segments:
+  - straight               # real corn fields are straight
+ground_resolution: 0.15    # coarse heightmap (the _fast preset value); biggest RTF win
+ground_elevation_max: 0.01 # nearly flat ground
+hole_prob: 0.0             # no gaps in rows: deterministic corridors for FSM testing
+hole_size_max: 0
+seed: 42                   # reproducible layout AND reproducible spawn pose
