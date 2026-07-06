@@ -1,9 +1,9 @@
 # HANDOFF3.md
 
 Handoff for the P-AgBot vision-nav work: MPC row-following (demoed in Gazebo)
-plus the newly implemented multi-row headland-turn mission (unit-tested, not
-yet run in sim). Written so a fresh Claude Code session can continue with zero
-context loss. Supersedes the previous HANDOFF3 content (pre-demo).
+plus the multi-row headland-turn mission (now SIM-VALIDATED: first Gazebo run
+succeeded with default thresholds). Written so a fresh Claude Code session can
+continue with zero context loss. Supersedes the previous HANDOFF3 content.
 
 ---
 
@@ -13,10 +13,12 @@ Build a vision-based navigation stack for the Purdue P-AgBot (Clearpath Jackal
 UGV): a DINOv3 segmentation model turns camera frames into traversability
 masks; pure-geometry state estimation + image-space MPC keep the robot
 centered in a corn row. **Row-following works — there is a working demo in
-Gazebo (recorded, on YouTube).** The next milestone is multi-row coverage:
-detect the end of a row, execute a headland turn into the next row, repeat for
-N rows. That mission layer is now fully implemented and unit-tested but has
-NEVER run in simulation.
+Gazebo (recorded, on YouTube).** **Multi-row coverage also works**: with
+`mission_enabled:=true num_rows:=3` the robot followed a corridor, executed
+the odometry-closed-loop headland turns, drove 3 rows boustrophedon, and
+stopped cleanly at the end of row 3 — on the FIRST sim run, with the default
+(guessed) thresholds, in the small maize world. Next milestones: mission
+robustness runs, field deployment (speed tuning happens there), go-home.
 
 ---
 
@@ -31,12 +33,23 @@ NEVER run in simulation.
   model standalone and saves a visual overlay
   (`~/agbot_control_ws/src/tmp/segmentation_overlay.jpg` — good frame: green
   wash on dirt path, red midpoint dots centered, `valid=True`).
-- **MPC parameters are NOT yet fine-tuned** — defaults only
-  (`mpc_alpha=0.10, mpc_beta=0.10, mpc_q_offset=10.0, mpc_r_delta=0.5`). The
-  user is actively tuning these; that work happens with `mission_enabled:=false`.
+- **MPC speed tuning is DEFERRED TO THE FIELD.** A 0.3 m/s attempt oscillated
+  badly in the laptop sim — but that sim ran at RTF < 0.1 with ~3.5 Hz jittery
+  `/cmd_vel`, so gain tuning there does not transfer to the real robot
+  (RTX 4080). Defaults are reverted to the demoed-working 0.15 m/s envelope
+  (`linear_x_cruise=0.15, angular_z_max=0.3, delta_angular_z_max=0.2,
+  mpc_alpha=0.10`). Field-tuning interface: all of these plus the MPC weights
+  are `vision_nav.launch` args. **Scaling rule**: when raising
+  `linear_x_cruise`, scale `angular_z_max`, `delta_angular_z_max`, and
+  `mpc_alpha` proportionally (preserves path curvature; alpha is per-step
+  lateral drift, which grows with speed). Field protocol: measure
+  `rostopic hz /cmd_vel` first, then step 0.2 → 0.25 → 0.3 watching
+  angular_z for oscillation. Note: `mpc_dt` is accepted but UNUSED by
+  `MPCRowController` — alpha/beta ARE the per-step dynamics.
 
-**Multi-row mission (implemented this session — commits `45a4c78`, `9b77ff9`,
-`c39c390`, `0fe6dc3` — unit-tested, NOT yet run in Gazebo):**
+**Multi-row mission (commits `45a4c78`, `9b77ff9`, `c39c390`, `0fe6dc3` —
+SIM-VALIDATED: first Gazebo run succeeded with default thresholds, 3 rows,
+clean DONE):**
 - `row_exit_detector.py` — end-of-row detection from the mask.
 - `mission_fsm.py` — headland state machine with odometry-closed-loop turns.
 - `vision_nav_node.py` — odom subscriber + FSM wiring behind `~mission_enabled`
@@ -46,14 +59,34 @@ NEVER run in simulation.
   `num_rows` launch args. `package.xml` gained `nav_msgs`.
 - **38/38 unit tests pass** (`cd agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -v`).
 
+**Small maize world workflow (commits `e427cc6`, `738c9cd`):** the user's
+laptop ran the full virtual_maize_field world at RTF < 0.1 / ~2 fps; the small
+world runs at **RTF 1.0 / ~44 fps** with identical visuals (same maize models
++ ground texture, so segmentation quality is preserved — the user confirmed
+segmentation is much better in maize worlds than in `agbot_corn_rows.world`).
+- `agbot_bringup/config/agbot_maize_small.yaml` — 4 straight rows × 6 m
+  (3 corridors), `ground_resolution 0.15` (vs 0.02 full — the main RTF win),
+  nearly flat, no row holes, `seed: 42` (reproducible layout + spawn pose).
+- `agbot_bringup/scripts/generate_small_maize_world.sh` — snapshots the current
+  world to `~/.ros/virtual_maize_field_snapshots/full/` first, generates the
+  small world, snapshots it as `small/`, prints the spawn pose.
+- `agbot_bringup/scripts/switch_maize_world.sh full|small` — swaps a snapshot
+  into the canonical cache folder (the world SDF hard-references its heightmap
+  there) and clears Gazebo's terrain paging cache.
+- Spawn poses: small world = launch defaults (x=0.777, y=-4.331, z=0.35,
+  yaw=1.536); full world = x=3.16, y=-9.31, z=0.36, yaw=1.791 (pass as args
+  after switching). Each generated world's pose lives in
+  `~/.ros/virtual_maize_field/robot_spawner.launch`.
+
 **Presentation:** `AgBot_MPC.pptx` at repo root (12 slides, plain black/white,
 explains the whole pipeline for the professor). Not committed (binary
 deliverable). Slide 4 is a placeholder for the YouTube demo video.
 
 ### Not yet done
-- Mission mode has never run in Gazebo — exit-detection thresholds and turn
-  parameters are educated guesses.
-- MPC fine-tuning in progress (user's current focus).
+- Mission robustness beyond the one successful run: different start corridors,
+  `first_turn_direction:=right`, `num_rows:=0` (no-rows-left termination),
+  full-world run.
+- Field deployment + speed tuning on the real robot (see scaling rule above).
 - Go-home functionality — deliberately deferred (see NEXT STEPS / plan file
   `~/.claude/plans/as-for-now-we-wild-moth.md`).
 
@@ -113,9 +146,23 @@ When built: U-turn and re-run the mission in reverse with mirrored turn
 directions (reuses `MissionFSM` as-is). Vision re-centers every row so odom
 drift doesn't accumulate. Do NOT do pure odom path-replay.
 
+### Sim world: SMALL generated maize world (supersedes the old corn-rows decision)
+The user found segmentation quality much better in virtual_maize_field worlds
+than in the lightweight `agbot_corn_rows.world`, but the full maize world ran
+at RTF < 0.1 on the laptop. Resolution: generate a small maize world
+(`agbot_maize_small.yaml` — same maize models/ground texture, 4×6 m straight
+rows, coarse heightmap → RTF 1.0) and keep full/small snapshots switchable via
+`switch_maize_world.sh`. Do NOT go back to `agbot_corn_rows.world` for
+vision work.
+
+### Speed tuning belongs in the field, not the laptop sim
+The 0.3 m/s attempt oscillated in a sim running at RTF < 0.1 with ~3.5 Hz
+jittery /cmd_vel — that timing has nothing in common with the RTX 4080 robot.
+Sim validates LOGIC (FSM, sign conventions, thresholds); gains and speed are
+tuned on hardware. Defaults stay at the demoed 0.15 m/s envelope; launch args
+override in the field, scaling clamps and mpc_alpha with speed.
+
 ### Environment/infra decisions (from earlier sessions, still binding)
-- Lightweight `agbot_corn_rows.world` (144 static corn, flat ground) — do NOT
-  revert to virtual_maize_field's generated 615-model heightmap world.
 - Camera URDF injection via `scripts/load_robot_description.sh` exporting
   `JACKAL_URDF_EXTRAS` — `<env>` tags do NOT reach `<param command>` in ROS1.
 - scipy SLSQP is fine (<1 ms for the 8-var QP) — don't switch to osqp/casadi
@@ -143,8 +190,11 @@ drift doesn't accumulate. Do NOT do pure odom path-replay.
 ### `agbot_bringup/` — simulation
 | File | Purpose |
 |---|---|
-| `launch/agbot_gazebo.launch` | Gazebo (corn world) + Jackal spawn (x=−2.0) + camera URDF override + RViz. |
-| `worlds/agbot_corn_rows.world` | 4 rows × 36 corn, rows along +x at y = −1.125/−0.375/+0.375/+1.125; corridor at y=0; corn spans x = 0→11.7 m. |
+| `launch/agbot_gazebo.launch` | Gazebo (virtual_maize_field generated world) + Jackal spawn (defaults = small-world pose) + camera URDF override + RViz. |
+| `config/agbot_maize_small.yaml` | Small maize world config (4×6 m straight rows, coarse flat heightmap, seed 42). |
+| `scripts/generate_small_maize_world.sh` | Snapshots current world, generates the small one, prints spawn pose. |
+| `scripts/switch_maize_world.sh` | Swap active world between `full`/`small` snapshots; clears Gazebo terrain cache. |
+| `worlds/agbot_corn_rows.world` | Lightweight non-maize fallback (4 rows × 36 corn, straight, flat). Segmentation is noticeably worse here than in maize worlds — kept for reference only. |
 | `scripts/load_robot_description.sh` | The `JACKAL_URDF_EXTRAS` export fix. |
 
 ### Not in git
@@ -158,46 +208,38 @@ drift doesn't accumulate. Do NOT do pure odom path-replay.
 
 ## 5. NEXT STEPS (priority order)
 
-### 1. Fine-tune MPC parameters (user's current task; `mission_enabled:=false`)
+### 1. Mission robustness runs (small maize world, RTF 1.0)
+The first mission run passed with default thresholds. Now vary:
 ```bash
 roslaunch agbot_vision_nav vision_nav.launch \
   model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
-  mpc_q_offset:=15.0 mpc_r_delta:=1.0 mpc_alpha:=0.15 mpc_beta:=0.10
+  mission_enabled:=true num_rows:=3          # + variations below
 ```
-Order: alpha/beta (model accuracy) → q_offset (recentering aggression) →
-r_delta (smoothness) → q_heading/r_control. Oscillation → lower alpha or raise
-r_delta; sluggish → raise q_offset.
+- Start from a different corridor / opposite end (pass spawn x/y/yaw to
+  agbot_gazebo.launch), with `first_turn_direction:=right` where the field
+  lies to the robot's right.
+- `num_rows:=0` — verify the no-rows-left termination (REACQUIRE creeps
+  `reacquire_max_distance` without a corridor → DONE).
+- One run in the FULL world (`switch_maize_world.sh full`, spawn
+  x:=3.16 y:=-9.31 z:=0.36 yaw:=1.791) to confirm behavior in curved rows —
+  accept slow RTF, it's a logic check.
+If any run misbehaves, tune from the HUD: exit early/late →
+`exit_width_threshold` (0.8) / `exit_detect_frames` (5); never arms →
+`min_in_row_distance` (2.0 — rows are only 6 m in the small world); clips last
+plants → `headland_clearance` (1.0); turn overshoot → `turn_rate` (0.4) /
+`yaw_tolerance_deg` (5); REACQUIRE never accepts → `reacquire_max_width` (0.6).
 
-### 2. First mission-mode run in Gazebo
-```bash
-# Pre-check: odom topic exists
-rostopic hz /odometry/filtered      # if absent, find it and pass odom_topic:=...
+### 2. Field deployment (real robot, RTX 4080) — speed tuning happens HERE
+1. `rostopic hz /cmd_vel` to measure the real control rate.
+2. Start at the 0.15 defaults; raise via launch args stepwise
+   (0.2 → 0.25 → 0.3), scaling `angular_z_max`, `delta_angular_z_max`,
+   `mpc_alpha` proportionally. Watch angular_z: square-wave at the clamp =
+   too fast for the loop; growing smooth oscillation = raise `mpc_r_delta`
+   or lower `mpc_q_offset`; drifts wide on bends = raise `mpc_q_heading`.
 
-roslaunch agbot_vision_nav vision_nav.launch \
-  model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
-  mission_enabled:=true num_rows:=3
-rqt_image_view /vision_nav_node/debug/image   # watch state= and w= labels
-```
-Expected: FOLLOW_ROW down corridor 1 → EXIT_CLEAR after last plants →
-left 90° / 0.75 m / left 90° → REACQUIRE → corridor 2 → (right turns) →
-corridor 3 → DONE. Final odom |y − y0| ≈ 1.5 m.
+### 3. Then: go-home (design already decided — see KEY DECISIONS)
 
-### 3. Tune exit detection using the debug HUD
-Watch the `w=` labels approaching row end. If exit fires too early/late,
-adjust `exit_width_threshold` (0.8) / `exit_detect_frames` (5). If the robot
-never arms (row too short before end), lower `min_in_row_distance` (2.0) —
-note spawn is 2 m before the corn, so in-row distance starts counting from
-wherever FOLLOW_ROW's entry pose was recorded.
-
-### 4. Tune the headland geometry
-`headland_clearance` (1.0 m) — too small clips the last plants; `turn_rate`
-(0.4 rad/s) and `yaw_tolerance_deg` (5°) — overshoot means lower rate or
-tighten tolerance; `reacquire_max_width` (0.6) — raise if REACQUIRE never
-accepts the corridor, lower if it accepts open field.
-
-### 5. Then: go-home (design already decided — see KEY DECISIONS)
-
-### 6. Commit and push after each step (CLAUDE.md mandate)
+### 4. Commit and push after each step (CLAUDE.md mandate)
 
 ---
 
@@ -213,10 +255,11 @@ All `catkin`/`roslaunch`/`rostopic` commands run on the user's WSL2 Ubuntu
 user's machine (this is how the smoke test and the working demo ran). Any
 command importing `segmentation_model` needs that venv activated.
 
-### GOTCHA 3: Mission mode is completely sim-unvalidated
-All thresholds in the mission block of `params.yaml` are educated guesses.
-Expect the first Gazebo run to need tuning — that's what the `state=`/`w=`
-debug HUD is for. Do not treat a failed first run as a design failure.
+### GOTCHA 3: Mission thresholds validated in ONE configuration only
+The first mission run (small maize world, 3 rows, default thresholds) passed,
+but the thresholds have not been exercised across start corridors, turn
+directions, `num_rows:=0`, or the curved full world. Use the `state=`/`w=`
+debug HUD when a new configuration misbehaves.
 
 ### GOTCHA 4: Exit detector arms on odometry distance
 If `/odometry/filtered` is missing/renamed, `distance_in_row` stays None and
@@ -268,7 +311,7 @@ roslaunch agbot_vision_nav vision_nav.launch \
   model_path:=/home/chien21/agbot_control_ws/src/agbot_vision_nav/config/exported_best.pt \
   camera_topic:=/camera/image_raw camera_topic_is_compressed:=false
 
-# 3b. Multi-row mission (first-ever run still pending)
+# 3b. Multi-row mission (sim-validated)
 roslaunch agbot_vision_nav vision_nav.launch \
   model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
   mission_enabled:=true num_rows:=3

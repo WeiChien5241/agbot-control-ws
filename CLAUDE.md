@@ -77,9 +77,19 @@ roslaunch agbot_bringup agbot_gazebo.launch
 # joystick:=false        — disable teleop (autonomous-only run)
 ```
 
-**World**: `agbot_bringup/worlds/agbot_corn_rows.world` — lightweight custom world,
-4 rows of corn (36 plants each, 0.75 m row spacing) on flat ground. No heightmap terrain.
-No pre-generation step needed (unlike the old virtual_maize_field generated.world).
+**World**: the launch includes `virtual_maize_field/launch/simulation.launch`,
+which loads whatever generated world is active in `~/.ros/virtual_maize_field/`.
+Two snapshots are kept under `~/.ros/virtual_maize_field_snapshots/` and swapped
+with `scripts/switch_maize_world.sh full|small`:
+- **small** (default; matches the launch spawn-pose defaults): generated from
+  `config/agbot_maize_small.yaml` — 4 straight rows × 6 m, coarse flat
+  heightmap, seed 42. RTF ≈ 1.0 on the dev laptop. Regenerate with
+  `scripts/generate_small_maize_world.sh` (snapshots the current world first).
+- **full**: the original FRE-style world (curved rows, dense heightmap).
+  RTF < 0.1 on the laptop; spawn pose x:=3.16 y:=-9.31 z:=0.36 yaw:=1.791.
+
+Maize worlds are preferred over the legacy `agbot_bringup/worlds/agbot_corn_rows.world`
+because segmentation quality is much better on their visuals.
 
 **Camera topic** (simulation): `/camera/image_raw` (`sensor_msgs/Image`, raw, 640×480, 30 Hz).
 When launching the vision-nav controller in simulation:
@@ -99,7 +109,7 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 - `src/agbot_vision_nav/centerline_estimator.py` — pure numpy: scans mask rows outward from image centre until hitting a non-traversable pixel, returns normalized lateral `offset_norm`.
 - `src/agbot_vision_nav/controller.py` — `MPCRowController`: SLSQP receding-horizon MPC (N=8) over state `[offset_norm, slope_term]` in normalized image space. Requires `scipy`. Sign convention: centerline left of image-centre → positive `angular.z` (left turn, REP-103).
 - `src/agbot_vision_nav/row_exit_detector.py` — detects end-of-row from the mask (corridor widening to open field, or blocked-ahead wall); debounced, armed only after `min_in_row_distance` m of odometry travel.
-- `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left).
+- `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left). Sim-validated: first Gazebo mission run (small maize world, 3 rows) succeeded with the default thresholds.
 - `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view` (mask wash, scan rows, midpoints, per-row corridor width `w=`, mission state HUD).
 - `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog, optional odometry subscriber. Mission mode is gated behind `~mission_enabled` (default **false** → plain row-following, identical to pre-mission behavior).
 
@@ -137,6 +147,11 @@ roslaunch agbot_vision_nav vision_nav.launch \
   camera_topic:=/camera/image_raw \
   camera_topic_is_compressed:=false
 ```
+
+Speed tuning happens on the real robot (RTX 4080), not in the laptop sim
+(RTF-limited): raise `linear_x_cruise` via launch args, scaling
+`angular_z_max`, `delta_angular_z_max`, and `mpc_alpha` proportionally with
+speed. Defaults stay at the sim-validated 0.15 m/s envelope.
 
 Multi-row mission mode (headland turns between rows; requires `/odometry/filtered`):
 ```bash
