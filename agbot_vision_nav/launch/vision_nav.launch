@@ -15,7 +15,7 @@
        Tune in this order: q_offset -> r_delta -> alpha -> beta -> q_heading -->
   <arg name="mpc_q_offset"  default="10.0" />   <!-- lateral error weight -->
   <arg name="mpc_q_heading" default="1.0"  />   <!-- heading error weight -->
-  <arg name="mpc_alpha"     default="0.10" />   <!-- lateral coupling constant -->
+  <arg name="mpc_alpha"     default="0.20" />   <!-- lateral coupling constant (scales with speed) -->
   <arg name="mpc_beta"      default="0.10" />   <!-- control effectiveness constant -->
   <arg name="mpc_r_delta"   default="0.5"  />   <!-- smoothness / jerk suppression -->
 
