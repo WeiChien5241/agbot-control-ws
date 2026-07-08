@@ -2,6 +2,9 @@
 jackal/
 virtual_maize_field/
 
+# Lab papers — kept locally, not published to GitHub
+Papers/
+
 # Catkin build artifacts (lives outside src/ anyway)
 ../build/
 ../devel/
