@@ -7,6 +7,12 @@ Adapted from the Agronav paper's per-scanline boundary-midpoint centerline
 definition: for each scan row, the centerline point is the midpoint of the
 left/right traversable-region boundaries on that row. This is the image-space
 analog of the lab's LiDAR-based d_l/d_r centering approach.
+
+On a few horizontal scan lines, find the drivable lane, take its middle point, 
+and compare that middle to the middle of the image. If the lane's middle sits 
+left of the image's middle, the lane is off to your left, which means you're 
+standing too far to the right — so you need to steer left. 
+That gap between "middle of the lane" and "middle of the image" is your steering error.
 """
 
 from collections import namedtuple
