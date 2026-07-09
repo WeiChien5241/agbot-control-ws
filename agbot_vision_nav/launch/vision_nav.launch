@@ -1,7 +1,8 @@
 <launch>
-  <!-- Required: absolute path to the exported segmentation model, e.g.
-       $(find agbot_vision_nav)/../DINOv3-Segmentation-Training/out/corn_field_navigation/exported_models/exported_best.pt -->
-  <arg name="model_path" default="/home/chien21/agbot_control_ws/src/agbot_vision_nav/config/exported_best.pt"/>
+  <!-- Path to the exported segmentation model. Default resolves inside the
+       package so it works on any machine/home dir; override with
+       model_path:=/absolute/path/to/exported_best.pt if the weights live elsewhere. -->
+  <arg name="model_path" default="$(find agbot_vision_nav)/config/exported_best.pt"/>
 
   <!-- Environment switch. Defaults target the REAL ROBOT (compressed usb_cam
        topic); pass sim:=true for Gazebo (raw /camera/image_raw). Explicit
@@ -21,6 +22,14 @@
   <arg name="mpc_alpha"     default="0.10" />   <!-- lateral coupling constant (scales with speed) -->
   <arg name="mpc_beta"      default="0.10" />   <!-- control effectiveness constant -->
   <arg name="mpc_r_delta"   default="0.5"  />   <!-- smoothness / jerk suppression -->
+  <arg name="mpc_dt"        default="0.1"  />   <!-- MPC step (s): set to the REAL control
+                                                     period (1/inference rate); 0.5 on a
+                                                     CPU-only robot at ~2 Hz -->
+
+  <!-- Watchdog: newest inference older than this -> zero Twist. 0.5 suits a
+       GPU (10+ Hz); raise to ~1.5-3.0 on a CPU-only robot (~2 Hz inference)
+       or the robot stutters. Trade-off: also the max blind-coast time. -->
+  <arg name="max_data_age_sec" default="0.5" />
 
   <!-- Speed/steering envelope (exposed for tuning runs; defaults match params.yaml).
        When raising linear_x_cruise, scale angular_z_max, delta_angular_z_max,
@@ -51,6 +60,8 @@
     <param name="mpc_alpha"                value="$(arg mpc_alpha)" />
     <param name="mpc_beta"                 value="$(arg mpc_beta)" />
     <param name="mpc_r_delta"              value="$(arg mpc_r_delta)" />
+    <param name="mpc_dt"                   value="$(arg mpc_dt)" />
+    <param name="max_data_age_sec"         value="$(arg max_data_age_sec)" />
     <param name="linear_x_cruise"          value="$(arg linear_x_cruise)" />
     <param name="angular_z_max"            value="$(arg angular_z_max)" />
     <param name="delta_angular_z_max"      value="$(arg delta_angular_z_max)" />
