@@ -11,8 +11,10 @@ Architecture: the camera subscriber only stashes the latest frame
 inference thread waits for a new frame, runs the model + control law, and
 publishes cmd_vel right after each successful inference -- decoupled from
 camera framerate, so a slow model never lets the subscriber's callback queue
-back up. A 5 Hz watchdog publishes zero Twist if no successful inference has
-completed within max_data_age_sec.
+back up. A 10 Hz keep-alive timer republishes the last computed command
+between inferences (the Jackal base brakes if cmd_vel goes silent for a few
+hundred ms, so a slow model must not starve it) and publishes zero Twist
+instead once no successful inference has completed within max_data_age_sec.
 """
 
 import math
@@ -124,6 +126,7 @@ class VisionNavNode(object):
 
         self._last_success_lock = threading.Lock()
         self._last_success_time = None
+        self._last_cmd = (0.0, 0.0)
 
         self._odom_lock = threading.Lock()
         self._odom_pose = None  # (x, y, yaw)
@@ -153,7 +156,7 @@ class VisionNavNode(object):
         self._inference_thread.daemon = True
         self._inference_thread.start()
 
-        rospy.Timer(rospy.Duration(1.0 / 5.0), self._watchdog_cb)
+        rospy.Timer(rospy.Duration(1.0 / 10.0), self._watchdog_cb)
 
         rospy.loginfo("vision_nav_node ready, listening on %s", camera_topic)
 
@@ -187,11 +190,16 @@ class VisionNavNode(object):
     def _watchdog_cb(self, event):
         with self._last_success_lock:
             last_success_time = self._last_success_time
+            linear_x, angular_z = self._last_cmd
         if last_success_time is None:
             return
         age = (rospy.Time.now() - last_success_time).to_sec()
         if age > self._max_data_age_sec:
             self._publish_twist(0.0, 0.0)
+        else:
+            # Keep-alive: the base controller brakes if cmd_vel goes silent,
+            # so hold the last command until the next inference lands.
+            self._publish_twist(linear_x, angular_z)
 
     def _inference_loop(self):
         last_processed_seq = -1
@@ -241,6 +249,7 @@ class VisionNavNode(object):
 
         with self._last_success_lock:
             self._last_success_time = rospy.Time.now()
+            self._last_cmd = (linear_x, angular_z)
 
         if self._debug_pub is not None:
             self._publish_debug(frame, mask, result, linear_x, angular_z, state_name)
