@@ -20,9 +20,12 @@ Two exit signatures (both observed in the segmentation masks):
 Guards against false positives:
 - Debounce: the signature must persist for `exit_detect_frames` consecutive
   frames.
-- Arming distance: detection is disabled until the robot has travelled
-  `min_in_row_distance` meters (odometry) inside the current row, so the
-  open-field view at row entry cannot trigger an exit.
+- Arming distance, per signature: the OPEN signature is disabled until the
+  robot has travelled `min_in_row_distance` meters (odometry) inside the
+  current row, so the open-field view at row entry cannot trigger an exit.
+  The BLOCKED signature arms much earlier (`blocked_arming_distance`) so an
+  obstacle shortly after row entry is still caught -- it cannot false-fire
+  at entry because it requires zero visible corridor at every scan row.
 """
 
 EXIT_NONE = "none"
@@ -55,11 +58,13 @@ class RowExitDetector:
         exit_detect_frames=5,
         min_in_row_distance=2.0,
         blocked_min_traversable_fraction=0.15,
+        blocked_arming_distance=0.3,
     ):
         self.exit_width_threshold = exit_width_threshold
         self.exit_detect_frames = exit_detect_frames
         self.min_in_row_distance = min_in_row_distance
         self.blocked_min_traversable_fraction = blocked_min_traversable_fraction
+        self.blocked_arming_distance = blocked_arming_distance
         self._consecutive_open = 0
         self._consecutive_blocked = 0
 
@@ -78,9 +83,15 @@ class RowExitDetector:
                 current row (meters). None (no odometry yet) keeps the
                 detector unarmed.
         """
-        if distance_in_row is None or distance_in_row < self.min_in_row_distance:
-            # Not armed yet -- also drop any partial debounce so a streak
-            # cannot straddle the arming boundary.
+        if distance_in_row is None:
+            self.reset()
+            return EXIT_NONE
+
+        # Per-signature arming; while a signature is unarmed its debounce
+        # counter is held at zero so a streak cannot straddle the boundary.
+        open_armed = distance_in_row >= self.min_in_row_distance
+        blocked_armed = distance_in_row >= self.blocked_arming_distance
+        if not open_armed and not blocked_armed:
             self.reset()
             return EXIT_NONE
 
@@ -97,9 +108,13 @@ class RowExitDetector:
             >= self.blocked_min_traversable_fraction
         )
 
-        self._consecutive_open = self._consecutive_open + 1 if open_signature else 0
+        self._consecutive_open = (
+            self._consecutive_open + 1 if (open_signature and open_armed) else 0
+        )
         self._consecutive_blocked = (
-            self._consecutive_blocked + 1 if blocked_signature else 0
+            self._consecutive_blocked + 1
+            if (blocked_signature and blocked_armed)
+            else 0
         )
 
         if self._consecutive_open >= self.exit_detect_frames:

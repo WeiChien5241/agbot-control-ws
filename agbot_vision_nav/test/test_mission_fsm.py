@@ -10,6 +10,11 @@ from agbot_vision_nav.centerline_estimator import (
     estimate_centerline,
 )
 from agbot_vision_nav.mission_fsm import (
+    STATE_BACKOUT,
+    STATE_BACKOUT_CLEAR,
+    STATE_BACKOUT_TRAVERSE,
+    STATE_BACKOUT_TURN_1,
+    STATE_BACKOUT_TURN_2,
     STATE_DONE,
     STATE_EXIT_CLEAR,
     STATE_FOLLOW_ROW,
@@ -40,10 +45,18 @@ class StubController:
         return (self.linear_x_cruise, 0.0) if valid else (0.0, 0.0)
 
 
-def corridor_result():
+class SteeringStubController(StubController):
+    """Stub that steers with the real controller's sign convention:
+    offset_norm < 0 (centerline left) -> angular_z > 0 (turn left)."""
+
+    def compute(self, offset_norm, slope_term, valid):
+        return (self.linear_x_cruise, -offset_norm) if valid else (0.0, 0.0)
+
+
+def corridor_result(shift=0):
     mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
     mask[:20, :] = CLASS_SKY
-    cx = WIDTH // 2
+    cx = WIDTH // 2 + shift
     mask[20:, cx - 30 : cx + 31] = CLASS_TRAVERSABLE
     return estimate_centerline(mask)
 
@@ -51,6 +64,16 @@ def corridor_result():
 def open_result():
     mask = np.full((HEIGHT, WIDTH), CLASS_TRAVERSABLE, dtype=np.uint8)
     mask[:20, :] = CLASS_SKY
+    return estimate_centerline(mask)
+
+
+def blocked_result():
+    """Wall of crop ahead: center columns blocked at every scan row, ground
+    still visible at the sides (same signature as test_row_exit_detector)."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_TRAVERSABLE, dtype=np.uint8)
+    mask[:20, :] = CLASS_SKY
+    cx = WIDTH // 2
+    mask[20:96, cx - 40 : cx + 41] = CLASS_OBSTACLE
     return estimate_centerline(mask)
 
 
@@ -206,4 +229,191 @@ def test_controller_reset_on_new_row():
     for _ in range(3):
         fsm.update(corridor, pose, WIDTH)
     assert fsm.state == STATE_FOLLOW_ROW
+    assert fsm._controller.reset_calls == resets_before + 1
+
+
+# ---------------------------------------------------------------- back-out --
+def drive_row_to_block(fsm, start=(0.0, 0.0, 0.0)):
+    """Follow a row past arming, then feed blocked frames until BACKOUT.
+
+    Returns the pose at which the block fired (the robot's block point).
+    """
+    corridor = corridor_result()
+    blocked = blocked_result()
+    x0, y0, yaw = start
+    pose = None
+    for i in range(30):  # 3 m in-row
+        d = 0.1 * (i + 1)
+        pose = (x0 + d * math.cos(yaw), y0 + d * math.sin(yaw), yaw)
+        _, _, state, _ = fsm.update(corridor, pose, WIDTH)
+        assert state == STATE_FOLLOW_ROW
+    for _ in range(3):  # blocked signature, debounced over 3 frames
+        _, _, state, done = fsm.update(blocked, pose, WIDTH)
+    return pose, state, done
+
+
+def run_backout(fsm, pose, turn_sign):
+    """Drive the FSM through BACKOUT -> BACKOUT_CLEAR -> BACKOUT_TURN_1 ->
+    BACKOUT_TRAVERSE -> BACKOUT_TURN_2, simulating perfect odometry.
+    Returns the pose entering REACQUIRE."""
+    front = blocked_result()
+    x, y, yaw = pose
+
+    assert fsm.state == STATE_BACKOUT
+    # reverse along -heading until the block distance is unwound
+    for i in range(1, 60):
+        p = (x - i * 0.1 * math.cos(yaw), y - i * 0.1 * math.sin(yaw), yaw)
+        lin, ang, state, _ = fsm.update(front, p, WIDTH)
+        if state == STATE_BACKOUT_CLEAR:
+            x, y = p[0], p[1]
+            break
+        assert lin < 0.0
+    assert fsm.state == STATE_BACKOUT_CLEAR
+
+    # keep reversing headland_clearance (1.0 m) past the row entrance
+    for i in range(1, 20):
+        p = (x - i * 0.1 * math.cos(yaw), y - i * 0.1 * math.sin(yaw), yaw)
+        lin, ang, state, _ = fsm.update(front, p, WIDTH)
+        if state == STATE_BACKOUT_TURN_1:
+            x, y = p[0], p[1]
+            break
+        assert lin < 0.0 and ang == 0.0
+    assert fsm.state == STATE_BACKOUT_TURN_1
+
+    # first 90 deg of the lane change: current turn sign
+    for i in range(1, 20):
+        p = (x, y, yaw + turn_sign * i * 0.1)
+        lin, ang, state, _ = fsm.update(front, p, WIDTH)
+        if state == STATE_BACKOUT_TRAVERSE:
+            yaw = p[2]
+            break
+        assert lin == 0.0
+        assert math.copysign(1, ang) == turn_sign
+    assert fsm.state == STATE_BACKOUT_TRAVERSE
+
+    # sidestep one row spacing (0.75 m), forward
+    for i in range(1, 15):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        lin, ang, state, _ = fsm.update(front, p, WIDTH)
+        if state == STATE_BACKOUT_TURN_2:
+            x, y = p[0], p[1]
+            break
+        assert lin > 0 and ang == 0.0
+    assert fsm.state == STATE_BACKOUT_TURN_2
+
+    # second 90 deg COUNTER-rotates (S-shaped lane change)
+    for i in range(1, 20):
+        p = (x, y, yaw - turn_sign * i * 0.1)
+        lin, ang, state, _ = fsm.update(front, p, WIDTH)
+        if state == STATE_REACQUIRE:
+            yaw = p[2]
+            break
+        assert math.copysign(1, ang) == -turn_sign
+    assert fsm.state == STATE_REACQUIRE
+    return (x, y, yaw)
+
+
+def test_blocked_exit_enters_backout_not_exit_clear():
+    fsm = make_fsm(num_rows=3)
+    pose, state, done = drive_row_to_block(fsm)
+    assert state == STATE_BACKOUT
+    assert not done
+    assert fsm.rows_driven == 1
+    assert len(fsm.blocked_events) == 1
+    row, dist = fsm.blocked_events[0]
+    assert row == 1
+    assert dist == pytest.approx(3.0, abs=0.2)
+    # next tick actually reverses
+    lin, ang, state, _ = fsm.update(blocked_result(), pose, WIDTH)
+    assert lin < 0.0
+    assert state == STATE_BACKOUT
+
+
+def test_backout_rear_steering_signs():
+    fsm = MissionFSM(
+        SteeringStubController(),
+        RowExitDetector(exit_detect_frames=3, min_in_row_distance=2.0),
+        num_rows=3,
+    )
+    pose, _, _ = drive_row_to_block(fsm)
+    front = blocked_result()
+    # rear centerline LEFT of image center -> positive angular_z (turn left);
+    # shift keeps the corridor overlapping the center column so the
+    # centerline result stays valid
+    lin, ang, _, _ = fsm.update(
+        front, pose, WIDTH, rear_centerline_result=corridor_result(shift=-20)
+    )
+    assert lin < 0.0
+    assert ang > 0.0
+    # rear centerline RIGHT of image center -> negative angular_z
+    lin, ang, _, _ = fsm.update(
+        front, pose, WIDTH, rear_centerline_result=corridor_result(shift=20)
+    )
+    assert ang < 0.0
+
+
+def test_backout_without_rear_result_reverses_straight():
+    fsm = make_fsm(num_rows=3, backout_speed=0.12)
+    pose, _, _ = drive_row_to_block(fsm)
+    lin, ang, state, _ = fsm.update(blocked_result(), pose, WIDTH)
+    assert (lin, ang) == (pytest.approx(-0.12), 0.0)
+    assert state == STATE_BACKOUT
+
+
+def test_backout_full_sequence_and_flip_suppression():
+    fsm = make_fsm(num_rows=3, first_turn_direction="left")
+    pose, _, _ = drive_row_to_block(fsm)  # row 1 blocked
+    pose = run_backout(fsm, pose, turn_sign=+1)
+
+    # reacquire the next row: turn sign must NOT flip (same world direction)
+    corridor = corridor_result()
+    for _ in range(3):
+        _, _, state, _ = fsm.update(corridor, pose, WIDTH)
+    assert state == STATE_FOLLOW_ROW
+    assert fsm._turn_sign == +1
+
+    # row 2 exits normally: headland still turns LEFT, and the flip at the
+    # following reacquire happens again (no double suppression)
+    pose, state, _ = drive_row_to_exit(fsm, start=pose)
+    assert state == STATE_EXIT_CLEAR
+    assert fsm.rows_driven == 2
+    pose = run_headland(fsm, pose, turn_sign=+1)
+    for _ in range(3):
+        _, _, state, _ = fsm.update(corridor, pose, WIDTH)
+    assert state == STATE_FOLLOW_ROW
+    assert fsm._turn_sign == -1
+
+
+def test_blocked_final_row_backs_out_then_done():
+    fsm = make_fsm(num_rows=1)
+    pose, state, done = drive_row_to_block(fsm)
+    assert state == STATE_BACKOUT
+    assert not done  # backs out before stopping
+    front = blocked_result()
+    x, y, yaw = pose
+    done = False
+    for i in range(1, 60):
+        p = (x - i * 0.1 * math.cos(yaw), y - i * 0.1 * math.sin(yaw), yaw)
+        lin, ang, state, done = fsm.update(front, p, WIDTH)
+        if done:
+            break
+        assert lin <= 0.0  # only ever reverses (or holds at transitions)
+    assert state == STATE_DONE
+    assert done
+    assert fsm.blocked_events == [(1, pytest.approx(3.0, abs=0.2))]
+
+
+def test_backout_states_stop_without_odom():
+    fsm = make_fsm(num_rows=3)
+    drive_row_to_block(fsm)
+    lin, ang, state, done = fsm.update(blocked_result(), None, WIDTH)
+    assert (lin, ang) == (0.0, 0.0)
+    assert state == STATE_BACKOUT  # holds state, doesn't advance
+    assert not done
+
+
+def test_controller_reset_on_backout_entry():
+    fsm = make_fsm(num_rows=3)
+    resets_before = fsm._controller.reset_calls
+    drive_row_to_block(fsm)
     assert fsm._controller.reset_calls == resets_before + 1

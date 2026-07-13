@@ -109,6 +109,28 @@ def test_debounce_does_not_straddle_arming_boundary():
     assert feed(det, mask, distance=2.1, n=1) == EXIT_ROW_END_OPEN
 
 
+def test_blocked_arms_earlier_than_open():
+    det = RowExitDetector(
+        min_in_row_distance=2.0, blocked_arming_distance=0.3, exit_detect_frames=5
+    )
+    blocked = make_blocked_ahead_mask()
+    # below the blocked arming distance: nothing
+    assert feed(det, blocked, distance=0.2, n=20) == EXIT_NONE
+    # between blocked arming and open arming: blocked fires
+    assert feed(det, blocked, distance=1.0, n=5) == EXIT_ROW_END_BLOCKED
+    # open stays gated by min_in_row_distance in the same window
+    det.reset()
+    assert feed(det, make_open_field_mask(), distance=1.0, n=20) == EXIT_NONE
+
+
+def test_blocked_debounce_does_not_straddle_arming_boundary():
+    det = RowExitDetector(blocked_arming_distance=0.3, exit_detect_frames=5)
+    blocked = make_blocked_ahead_mask()
+    assert feed(det, blocked, distance=0.2, n=4) == EXIT_NONE
+    assert feed(det, blocked, distance=0.4, n=4) == EXIT_NONE
+    assert feed(det, blocked, distance=0.4, n=1) == EXIT_ROW_END_BLOCKED
+
+
 def test_interrupted_streak_resets():
     det = RowExitDetector(exit_detect_frames=5)
     open_mask = make_open_field_mask()

@@ -28,12 +28,22 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image
 
-from agbot_vision_nav.centerline_estimator import estimate_centerline
+from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
-from agbot_vision_nav.mission_fsm import MissionFSM
+from agbot_vision_nav.mission_fsm import STATE_BACKOUT, MissionFSM
 from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
+
+# Placeholder front result passed to the FSM on rear-camera ticks (the FSM
+# ignores front perception in STATE_BACKOUT; this only keeps the signature).
+_INVALID_RESULT = CenterlineResult(
+    offset_norm=0.0,
+    slope_term=0.0,
+    valid=False,
+    traversable_fraction=0.0,
+    scan_rows=(),
+)
 
 
 def _quaternion_to_yaw(q):
@@ -98,6 +108,9 @@ class VisionNavNode(object):
                 blocked_min_traversable_fraction=rospy.get_param(
                     "~blocked_min_traversable_fraction", 0.15
                 ),
+                blocked_arming_distance=rospy.get_param(
+                    "~blocked_arming_distance", 0.3
+                ),
             )
             self._fsm = MissionFSM(
                 self._controller,
@@ -112,7 +125,18 @@ class VisionNavNode(object):
                 reacquire_max_width=rospy.get_param("~reacquire_max_width", 0.6),
                 reacquire_frames=rospy.get_param("~reacquire_frames", 3),
                 reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 1.5),
+                backout_speed=rospy.get_param("~backout_speed", 0.10),
             )
+
+        # Optional rear camera: only consulted during the blocked-row
+        # back-out (STATE_BACKOUT); normal operation runs front-only.
+        self._rear_camera_enabled = self._mission_enabled and rospy.get_param(
+            "~rear_camera_enabled", False
+        )
+        rear_camera_topic = rospy.get_param("~rear_camera_topic", "/camera_rear/image_raw")
+        rear_camera_topic_is_compressed = rospy.get_param(
+            "~rear_camera_topic_is_compressed", False
+        )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
         self._model = SegmentationModel(model_path)
@@ -123,6 +147,9 @@ class VisionNavNode(object):
         self._frame_condition = threading.Condition()
         self._latest_frame = None
         self._latest_frame_seq = 0
+        self._latest_rear_frame = None
+        self._latest_rear_frame_seq = 0
+        self._mission_done_logged = False
 
         self._last_success_lock = threading.Lock()
         self._last_success_time = None
@@ -152,6 +179,25 @@ class VisionNavNode(object):
                 camera_topic, Image, self._image_cb, queue_size=1, buff_size=2 ** 24
             )
 
+        if self._rear_camera_enabled:
+            if rear_camera_topic_is_compressed:
+                rospy.Subscriber(
+                    rear_camera_topic,
+                    CompressedImage,
+                    self._rear_compressed_image_cb,
+                    queue_size=1,
+                    buff_size=2 ** 24,
+                )
+            else:
+                rospy.Subscriber(
+                    rear_camera_topic,
+                    Image,
+                    self._rear_image_cb,
+                    queue_size=1,
+                    buff_size=2 ** 24,
+                )
+            rospy.loginfo("Rear camera enabled on %s", rear_camera_topic)
+
         self._inference_thread = threading.Thread(target=self._inference_loop)
         self._inference_thread.daemon = True
         self._inference_thread.start()
@@ -175,6 +221,21 @@ class VisionNavNode(object):
             return
         self._store_frame(frame)
 
+    def _rear_compressed_image_cb(self, msg):
+        frame = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            rospy.logwarn_throttle(5.0, "Failed to decode rear CompressedImage frame")
+            return
+        self._store_rear_frame(frame)
+
+    def _rear_image_cb(self, msg):
+        try:
+            frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        except Exception as exc:
+            rospy.logwarn_throttle(5.0, "rear cv_bridge conversion failed: %s", exc)
+            return
+        self._store_rear_frame(frame)
+
     def _odom_cb(self, msg):
         pose = msg.pose.pose
         yaw = _quaternion_to_yaw(pose.orientation)
@@ -186,6 +247,23 @@ class VisionNavNode(object):
             self._latest_frame = frame
             self._latest_frame_seq += 1
             self._frame_condition.notify()
+
+    def _store_rear_frame(self, frame):
+        with self._frame_condition:
+            self._latest_rear_frame = frame
+            self._latest_rear_frame_seq += 1
+            self._frame_condition.notify()
+
+    def _use_rear_camera(self):
+        # Rear inference only while actively reversing down the row; the
+        # other BACKOUT_* states are odometry-only, so the front camera
+        # resumes there harmlessly. FSM state is only mutated by the
+        # inference thread itself, so this read is race-free.
+        return (
+            self._rear_camera_enabled
+            and self._fsm is not None
+            and self._fsm.state == STATE_BACKOUT
+        )
 
     def _watchdog_cb(self, event):
         with self._last_success_lock:
@@ -202,22 +280,39 @@ class VisionNavNode(object):
             self._publish_twist(linear_x, angular_z)
 
     def _inference_loop(self):
-        last_processed_seq = -1
+        last_front_seq = -1
+        last_rear_seq = -1
         while not rospy.is_shutdown():
             with self._frame_condition:
-                while (
-                    self._latest_frame is None
-                    or self._latest_frame_seq == last_processed_seq
-                ) and not rospy.is_shutdown():
+                frame = None
+                is_rear = False
+                while not rospy.is_shutdown():
+                    # Pick the source per wakeup so a state change mid-wait
+                    # (e.g. entering/leaving BACKOUT) switches cameras on the
+                    # very next frame.
+                    is_rear = self._use_rear_camera()
+                    if is_rear:
+                        if (
+                            self._latest_rear_frame is not None
+                            and self._latest_rear_frame_seq != last_rear_seq
+                        ):
+                            frame = self._latest_rear_frame
+                            last_rear_seq = self._latest_rear_frame_seq
+                            break
+                    elif (
+                        self._latest_frame is not None
+                        and self._latest_frame_seq != last_front_seq
+                    ):
+                        frame = self._latest_frame
+                        last_front_seq = self._latest_frame_seq
+                        break
                     self._frame_condition.wait(timeout=0.2)
                 if rospy.is_shutdown():
                     return
-                frame = self._latest_frame
-                last_processed_seq = self._latest_frame_seq
 
-            self._process_frame(frame)
+            self._process_frame(frame, is_rear)
 
-    def _process_frame(self, frame):
+    def _process_frame(self, frame, is_rear=False):
         try:
             mask = self._model.predict(frame)
         except Exception as exc:
@@ -235,12 +330,34 @@ class VisionNavNode(object):
         if self._fsm is not None:
             with self._odom_lock:
                 odom_pose = self._odom_pose
-            linear_x, angular_z, state_name, done = self._fsm.update(
-                result, odom_pose, mask.shape[1]
-            )
-            if done:
-                rospy.loginfo_throttle(10.0, "Mission DONE (rows_driven=%d)",
-                                       self._fsm.rows_driven)
+            if is_rear:
+                linear_x, angular_z, state_name, done = self._fsm.update(
+                    _INVALID_RESULT,
+                    odom_pose,
+                    mask.shape[1],
+                    rear_centerline_result=result,
+                )
+                state_name = state_name + " (REAR)"
+            else:
+                linear_x, angular_z, state_name, done = self._fsm.update(
+                    result, odom_pose, mask.shape[1]
+                )
+            if done and not self._mission_done_logged:
+                self._mission_done_logged = True
+                blocked = self._fsm.blocked_events
+                summary = (
+                    ", ".join(
+                        "row %d blocked at %.2f m" % (row, dist)
+                        for row, dist in blocked
+                    )
+                    if blocked
+                    else "none"
+                )
+                rospy.loginfo(
+                    "Mission DONE: rows_driven=%d, blocked rows: %s",
+                    self._fsm.rows_driven,
+                    summary,
+                )
         else:
             linear_x, angular_z = self._controller.compute(
                 result.offset_norm, result.slope_term, result.valid

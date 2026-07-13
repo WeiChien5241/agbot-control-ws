@@ -91,7 +91,7 @@ with `scripts/switch_maize_world.sh full|small`:
 Maize worlds are preferred over the legacy `agbot_bringup/worlds/agbot_corn_rows.world`
 because segmentation quality is much better on their visuals.
 
-**Camera topic** (simulation): `/camera/image_raw` (`sensor_msgs/Image`, raw, 640×480, 30 Hz).
+**Camera topics** (simulation): front `/camera/image_raw`, rear `/camera_rear/image_raw` (both `sensor_msgs/Image`, raw, 640×480, 30 Hz). The rear camera is only consumed in mission mode with `rear_camera_enabled:=true` (blocked-row back-out). `roslaunch agbot_bringup display.launch.xml` shows the URDF in RViz without Gazebo (camera-placement iteration).
 When launching the vision-nav controller in simulation:
 ```bash
 roslaunch agbot_vision_nav vision_nav.launch \
@@ -108,8 +108,8 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 - `src/agbot_vision_nav/segmentation_model.py` — wraps `lightly_train.load_model()`/`.predict()`, force-resizes output mask to input resolution with nearest-neighbor interpolation.
 - `src/agbot_vision_nav/centerline_estimator.py` — pure numpy: scans mask rows outward from image centre until hitting a non-traversable pixel, returns normalized lateral `offset_norm`.
 - `src/agbot_vision_nav/controller.py` — `MPCRowController`: SLSQP receding-horizon MPC (N=8) over state `[offset_norm, slope_term]` in normalized image space. Requires `scipy`. Sign convention: centerline left of image-centre → positive `angular.z` (left turn, REP-103).
-- `src/agbot_vision_nav/row_exit_detector.py` — detects end-of-row from the mask (corridor widening to open field, or blocked-ahead wall); debounced, armed only after `min_in_row_distance` m of odometry travel.
-- `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left). Sim-validated: first Gazebo mission run (small maize world, 3 rows) succeeded with the default thresholds.
+- `src/agbot_vision_nav/row_exit_detector.py` — detects end-of-row from the mask (corridor widening to open field, or blocked-ahead wall); debounced, per-signature arming: open after `min_in_row_distance` m, blocked already after `blocked_arming_distance` m (0.3) so mid-row obstacles near the entrance are still caught.
+- `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left). Sim-validated: first Gazebo mission run (small maize world, 3 rows) succeeded with the default thresholds. Blocked-row branch (BACKOUT → BACKOUT_CLEAR → BACKOUT_TURN_1 → BACKOUT_TRAVERSE → BACKOUT_TURN_2 → REACQUIRE): on a blocked-ahead signal the robot reverses out the end it entered (rear-camera-steered, odometry-bounded), S-turns into the next row (traveled in the SAME direction; the boustrophedon flip is suppressed once), records `blocked_events` reported at mission DONE. Rear steering reuses the MPC controller with UNCHANGED signs (image mirror + reversed motion cancel).
 - `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view` (mask wash, scan rows, midpoints, per-row corridor width `w=`, mission state HUD).
 - `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog, optional odometry subscriber. Mission mode is gated behind `~mission_enabled` (default **false** → plain row-following, identical to pre-mission behavior).
 

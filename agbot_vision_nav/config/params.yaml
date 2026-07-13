@@ -70,5 +70,21 @@ reacquire_frames: 3        # consecutive corridor frames to re-enter FOLLOW_ROW
 reacquire_max_distance: 1.5  # m of creep without a corridor => no rows left => DONE
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
 exit_detect_frames: 5      # consecutive frames of exit signature required
-min_in_row_distance: 2.0   # m of in-row travel before exit detection arms
+min_in_row_distance: 2.0   # m of in-row travel before OPEN exit detection arms
 blocked_min_traversable_fraction: 0.15  # ground still visible when blocked ahead
+blocked_arming_distance: 0.3  # m of in-row travel before BLOCKED detection arms
+                              # (much earlier than open, so obstacles right
+                              # after row entry still trigger the back-out)
+
+# Blocked-row back-out (rear camera; see mission_fsm.py BACKOUT states).
+# On a blocked-ahead signal the robot reverses out of the row steering from
+# the rear camera, then lane-changes into the next row. Rear inference only
+# runs during BACKOUT, so normal operation cost is unchanged. With
+# rear_camera_enabled: false the back-out still works, reversing straight
+# on odometry alone.
+rear_camera_enabled: false
+rear_camera_topic: /camera_rear/image_raw   # sim (Gazebo rear camera);
+                                            # real robot later: e.g.
+                                            # /usb_cam_rear/image_raw/compressed
+rear_camera_topic_is_compressed: false      # true for a real usb_cam
+backout_speed: 0.10        # m/s reverse speed while backing out

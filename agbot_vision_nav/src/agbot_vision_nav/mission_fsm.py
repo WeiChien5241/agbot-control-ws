@@ -5,10 +5,26 @@ driving) and RowExitDetector (end-of-row detection); does not modify either.
 
 State graph (boustrophedon coverage):
 
-  FOLLOW_ROW --exit detected--> EXIT_CLEAR --> TURN_1 (90 deg)
-      ^                                            |
-      |                                            v
+  FOLLOW_ROW --open exit--> EXIT_CLEAR --> TURN_1 (90 deg)
+      ^                                        |
+      |                                        v
   REACQUIRE <-- TURN_2 (90 deg, same dir) <-- TRAVERSE (row_spacing m)
+
+Blocked-row back-out branch (rows are too tight to turn around in; the
+robot reverses out the end it entered, steering from the REAR camera):
+
+  FOLLOW_ROW --blocked exit--> BACKOUT (reverse d_block, rear-steered)
+      --> BACKOUT_CLEAR (reverse headland_clearance more, straight)
+      --> BACKOUT_TURN_1 (90 deg, turn_sign)
+      --> BACKOUT_TRAVERSE (row_spacing m, forward)
+      --> BACKOUT_TURN_2 (90 deg, MINUS turn_sign: S-shaped lane change)
+      --> REACQUIRE
+
+  The next row is entered from the SAME end and traveled in the SAME world
+  direction as the blocked attempt, so the boustrophedon turn-direction
+  flip at the following REACQUIRE is suppressed exactly once. A blocked
+  FINAL row (num_rows reached) still backs fully out of the crop
+  (BACKOUT -> BACKOUT_CLEAR) before stopping in DONE.
 
 - All maneuver segments are closed-loop on wheel odometry: turns integrate
   measured yaw until 90 degrees is swept; EXIT_CLEAR / TRAVERSE integrate
@@ -31,6 +47,7 @@ import math
 
 from agbot_vision_nav.row_exit_detector import (
     EXIT_NONE,
+    EXIT_ROW_END_BLOCKED,
     normalized_corridor_widths,
 )
 
@@ -41,6 +58,23 @@ STATE_TRAVERSE = "TRAVERSE"
 STATE_TURN_2 = "TURN_2"
 STATE_REACQUIRE = "REACQUIRE"
 STATE_DONE = "DONE"
+STATE_BACKOUT = "BACKOUT"
+STATE_BACKOUT_CLEAR = "BACKOUT_CLEAR"
+STATE_BACKOUT_TURN_1 = "BACKOUT_TURN_1"
+STATE_BACKOUT_TRAVERSE = "BACKOUT_TRAVERSE"
+STATE_BACKOUT_TURN_2 = "BACKOUT_TURN_2"
+
+# States of the blocked-row back-out branch (exported for the ROS node,
+# which switches inference to the rear camera while in STATE_BACKOUT).
+BACKOUT_STATES = frozenset(
+    {
+        STATE_BACKOUT,
+        STATE_BACKOUT_CLEAR,
+        STATE_BACKOUT_TURN_1,
+        STATE_BACKOUT_TRAVERSE,
+        STATE_BACKOUT_TURN_2,
+    }
+)
 
 
 def _wrap_angle(a):
@@ -69,6 +103,7 @@ class MissionFSM:
         reacquire_max_width=0.6,
         reacquire_frames=3,
         reacquire_max_distance=1.5,
+        backout_speed=0.10,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -83,16 +118,21 @@ class MissionFSM:
         self.reacquire_max_width = reacquire_max_width
         self.reacquire_frames = reacquire_frames
         self.reacquire_max_distance = reacquire_max_distance
+        self.backout_speed = abs(backout_speed)
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
 
         self.state = STATE_FOLLOW_ROW
         self.rows_driven = 0
+        self.blocked_events = []   # (row_index, distance_m) per blocked row
         self._entry_xy = None      # (x, y) at state entry, for distance legs
         self._last_yaw = None      # previous yaw sample, for sweep integration
         self._swept = 0.0          # accumulated yaw swept in current turn
         self._reacquire_hits = 0   # consecutive corridor-looking frames
+        self._backout_target = None    # meters to reverse in BACKOUT
+        self._done_after_backout = False
+        self._suppress_flip = False    # skip one turn-sign flip at REACQUIRE
 
     # ------------------------------------------------------------ helpers --
     def _enter(self, state, odom_pose):
@@ -104,6 +144,10 @@ class MissionFSM:
         if state == STATE_FOLLOW_ROW:
             self._controller.reset()
             self._detector.reset()
+        elif state == STATE_BACKOUT:
+            # Clear the MPC rate-limiter history from forward driving before
+            # the controller starts steering the reverse leg.
+            self._controller.reset()
 
     def _distance_from_entry(self, odom_pose):
         if odom_pose is None or self._entry_xy is None:
@@ -136,13 +180,18 @@ class MissionFSM:
         return mean_width < self.reacquire_max_width
 
     # ------------------------------------------------------------- update --
-    def update(self, centerline_result, odom_pose, image_width):
+    def update(self, centerline_result, odom_pose, image_width,
+               rear_centerline_result=None):
         """Advance one tick. Returns (linear_x, angular_z, state, done).
 
         Args:
-            centerline_result: CenterlineResult for the current frame.
+            centerline_result: CenterlineResult for the current FRONT frame.
             odom_pose: (x, y, yaw) from odometry, or None if unavailable.
             image_width: mask width in pixels.
+            rear_centerline_result: CenterlineResult from the rear camera,
+                or None. Only used in STATE_BACKOUT; the sign conventions of
+                the front controller apply unchanged (the 180-deg image
+                mirror and the reversed motion cancel exactly).
         """
         if self.state == STATE_FOLLOW_ROW:
             # Lazily record the row-entry pose (covers mission start, where
@@ -160,7 +209,22 @@ class MissionFSM:
             )
             if exit_signal != EXIT_NONE:
                 self.rows_driven += 1
-                if self.num_rows > 0 and self.rows_driven >= self.num_rows:
+                mission_complete = (
+                    self.num_rows > 0 and self.rows_driven >= self.num_rows
+                )
+                if exit_signal == EXIT_ROW_END_BLOCKED:
+                    # Blocked ahead (mid-row obstacle or crop wall at the row
+                    # end): reverse out the end we entered. d_block is never
+                    # None here -- the detector only fires when armed, which
+                    # requires odometry.
+                    d_block = self._distance_from_entry(odom_pose)
+                    self.blocked_events.append((self.rows_driven, d_block))
+                    self._backout_target = d_block
+                    self._done_after_backout = mission_complete
+                    self._suppress_flip = True
+                    self._enter(STATE_BACKOUT, odom_pose)
+                    return 0.0, 0.0, self.state, False
+                if mission_complete:
                     self._enter(STATE_DONE, odom_pose)
                     return 0.0, 0.0, self.state, True
                 self._enter(STATE_EXIT_CLEAR, odom_pose)
@@ -180,19 +244,60 @@ class MissionFSM:
                 return 0.0, 0.0, self.state, False
             return self._controller.linear_x_cruise, 0.0, self.state, False
 
-        if self.state in (STATE_TURN_1, STATE_TURN_2):
+        if self.state == STATE_BACKOUT:
+            if self._distance_from_entry(odom_pose) >= self._backout_target:
+                self._enter(STATE_BACKOUT_CLEAR, odom_pose)
+                return 0.0, 0.0, self.state, False
+            # Steer from the rear camera; the front controller's sign
+            # conventions hold unchanged while reversing (mirror + reversed
+            # motion cancel). Without a usable rear result, reverse straight
+            # -- the leg is odometry-bounded either way.
+            angular_z = 0.0
+            if rear_centerline_result is not None and rear_centerline_result.valid:
+                _, angular_z = self._controller.compute(
+                    rear_centerline_result.offset_norm,
+                    rear_centerline_result.slope_term,
+                    True,
+                )
+            return -self.backout_speed, angular_z, self.state, False
+
+        if self.state == STATE_BACKOUT_CLEAR:
+            if self._distance_from_entry(odom_pose) >= self.headland_clearance:
+                if self._done_after_backout:
+                    self._enter(STATE_DONE, odom_pose)
+                    return 0.0, 0.0, self.state, True
+                self._enter(STATE_BACKOUT_TURN_1, odom_pose)
+                return 0.0, 0.0, self.state, False
+            return -self.backout_speed, 0.0, self.state, False
+
+        # 90-degree in-place turns: {state: (sign multiplier, next state)}.
+        # BACKOUT_TURN_2 counter-rotates (S-shaped lane change into the next
+        # row, entered from the same end the blocked row was).
+        turn_table = {
+            STATE_TURN_1: (1, STATE_TRAVERSE),
+            STATE_TURN_2: (1, STATE_REACQUIRE),
+            STATE_BACKOUT_TURN_1: (1, STATE_BACKOUT_TRAVERSE),
+            STATE_BACKOUT_TURN_2: (-1, STATE_REACQUIRE),
+        }
+        if self.state in turn_table:
+            sign_mult, next_state = turn_table[self.state]
             swept = self._integrate_yaw(odom_pose)
             if swept >= math.pi / 2.0 - self.yaw_tolerance:
-                next_state = (
-                    STATE_TRAVERSE if self.state == STATE_TURN_1 else STATE_REACQUIRE
-                )
                 self._enter(next_state, odom_pose)
                 return 0.0, 0.0, self.state, False
-            return 0.0, self._turn_sign * self.turn_rate, self.state, False
+            return (
+                0.0,
+                sign_mult * self._turn_sign * self.turn_rate,
+                self.state,
+                False,
+            )
 
-        if self.state == STATE_TRAVERSE:
+        if self.state in (STATE_TRAVERSE, STATE_BACKOUT_TRAVERSE):
+            next_turn = (
+                STATE_TURN_2 if self.state == STATE_TRAVERSE else STATE_BACKOUT_TURN_2
+            )
             if self._distance_from_entry(odom_pose) >= self.row_spacing:
-                self._enter(STATE_TURN_2, odom_pose)
+                self._enter(next_turn, odom_pose)
                 return 0.0, 0.0, self.state, False
             return self._controller.linear_x_cruise, 0.0, self.state, False
 
@@ -202,8 +307,14 @@ class MissionFSM:
             else:
                 self._reacquire_hits = 0
             if self._reacquire_hits >= self.reacquire_frames:
-                # New row acquired: flip turn direction for the next headland.
-                self._turn_sign = -self._turn_sign
+                # New row acquired: flip turn direction for the next headland
+                # -- unless this row was reached via a back-out, in which case
+                # it is traveled in the SAME world direction as the blocked
+                # attempt and the flip must be skipped exactly once.
+                if self._suppress_flip:
+                    self._suppress_flip = False
+                else:
+                    self._turn_sign = -self._turn_sign
                 self._enter(STATE_FOLLOW_ROW, odom_pose)
                 return 0.0, 0.0, self.state, False
             if self._distance_from_entry(odom_pose) >= self.reacquire_max_distance:
