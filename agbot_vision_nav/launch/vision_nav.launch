@@ -49,6 +49,13 @@
   <arg name="row_spacing"          default="0.75" /> <!-- m between row centerlines -->
   <arg name="min_in_row_distance"  default="2.0" />  <!-- m of in-row travel before exit detection arms -->
 
+  <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
+  <arg name="headland_clearance"      default="0.5" /> <!-- m forward after exit fires, before turning -->
+  <arg name="exit_width_threshold"    default="0.8" /> <!-- normalized corridor width = "open field" -->
+  <arg name="exit_open_rows_required" default="2" />   <!-- farthest scan rows that must be wide -->
+  <arg name="exit_detect_frames"      default="5" />   <!-- debounce frames for the OPEN signature -->
+  <arg name="blocked_detect_frames"   default="8" />   <!-- debounce frames for the BLOCKED signature -->
+
   <!-- Rear camera for the blocked-row back-out (mission mode only). Enable in
        Gazebo with: rear_camera_enabled:=true. For a future real USB camera,
        point rear_camera_topic at it and set the compressed flag. -->
@@ -81,6 +88,11 @@
     <param name="odom_topic"               value="$(arg odom_topic)" />
     <param name="row_spacing"              value="$(arg row_spacing)" />
     <param name="min_in_row_distance"      value="$(arg min_in_row_distance)" />
+    <param name="headland_clearance"       value="$(arg headland_clearance)" />
+    <param name="exit_width_threshold"     value="$(arg exit_width_threshold)" />
+    <param name="exit_open_rows_required"  value="$(arg exit_open_rows_required)" />
+    <param name="exit_detect_frames"       value="$(arg exit_detect_frames)" />
+    <param name="blocked_detect_frames"    value="$(arg blocked_detect_frames)" />
     <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)" />
     <param name="rear_camera_topic"        value="$(arg rear_camera_topic)" />
     <param name="rear_camera_topic_is_compressed" value="$(arg rear_camera_topic_is_compressed)" />

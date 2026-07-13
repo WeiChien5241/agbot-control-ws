@@ -99,6 +99,19 @@ class VisionNavNode(object):
         # Optional multi-row mission mode (headland turns). Default off:
         # plain row-following, identical to pre-mission behavior.
         self._mission_enabled = rospy.get_param("~mission_enabled", False)
+
+        # Optional rear camera: only consulted during the blocked-row
+        # back-out (STATE_BACKOUT); normal operation runs front-only.
+        # Without it the back-out is disabled entirely -- a blocked signal
+        # then stops the robot and ends the mission.
+        self._rear_camera_enabled = self._mission_enabled and rospy.get_param(
+            "~rear_camera_enabled", False
+        )
+        rear_camera_topic = rospy.get_param("~rear_camera_topic", "/camera_rear/image_raw")
+        rear_camera_topic_is_compressed = rospy.get_param(
+            "~rear_camera_topic_is_compressed", False
+        )
+
         self._fsm = None
         if self._mission_enabled:
             detector = RowExitDetector(
@@ -111,6 +124,10 @@ class VisionNavNode(object):
                 blocked_arming_distance=rospy.get_param(
                     "~blocked_arming_distance", 0.3
                 ),
+                exit_open_rows_required=rospy.get_param(
+                    "~exit_open_rows_required", 2
+                ),
+                blocked_detect_frames=rospy.get_param("~blocked_detect_frames", 8),
             )
             self._fsm = MissionFSM(
                 self._controller,
@@ -126,17 +143,8 @@ class VisionNavNode(object):
                 reacquire_frames=rospy.get_param("~reacquire_frames", 3),
                 reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 1.5),
                 backout_speed=rospy.get_param("~backout_speed", 0.10),
+                backout_enabled=self._rear_camera_enabled,
             )
-
-        # Optional rear camera: only consulted during the blocked-row
-        # back-out (STATE_BACKOUT); normal operation runs front-only.
-        self._rear_camera_enabled = self._mission_enabled and rospy.get_param(
-            "~rear_camera_enabled", False
-        )
-        rear_camera_topic = rospy.get_param("~rear_camera_topic", "/camera_rear/image_raw")
-        rear_camera_topic_is_compressed = rospy.get_param(
-            "~rear_camera_topic_is_compressed", False
-        )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
         self._model = SegmentationModel(model_path)

@@ -61,7 +61,11 @@ num_rows: 3                # corridors to drive; 0 = keep going until no rows le
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)
 row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
-headland_clearance: 1.0    # m to drive past the last plants before turning
+headland_clearance: 0.5    # m of EXIT_CLEAR forward travel after the open
+                           # exit fires, before turning. Keep small: with
+                           # exit_open_rows_required=2 the exit already fires
+                           # early, and the Jackal (half-diagonal ~0.33 m)
+                           # can spin in place just past the last plants.
 turn_rate: 0.4             # rad/s during in-place 90-degree turns
 yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
@@ -69,7 +73,13 @@ reacquire_max_width: 0.6   # corridor must look narrower than this (normalized)
 reacquire_frames: 3        # consecutive corridor frames to re-enter FOLLOW_ROW
 reacquire_max_distance: 1.5  # m of creep without a corridor => no rows left => DONE
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
-exit_detect_frames: 5      # consecutive frames of exit signature required
+exit_open_rows_required: 2 # how many of the FARTHEST scan rows must be wide
+                           # for the open exit (far rows widen first, so 2 of
+                           # 3 fires ~1 m earlier than requiring all 3)
+exit_detect_frames: 5      # consecutive frames of OPEN signature required
+blocked_detect_frames: 8   # consecutive frames of BLOCKED signature required
+                           # (longer: leaves brushing the image center for a
+                           # few frames must not trigger a back-out)
 min_in_row_distance: 2.0   # m of in-row travel before OPEN exit detection arms
 blocked_min_traversable_fraction: 0.15  # ground still visible when blocked ahead
 blocked_arming_distance: 0.3  # m of in-row travel before BLOCKED detection arms
@@ -80,8 +90,8 @@ blocked_arming_distance: 0.3  # m of in-row travel before BLOCKED detection arms
 # On a blocked-ahead signal the robot reverses out of the row steering from
 # the rear camera, then lane-changes into the next row. Rear inference only
 # runs during BACKOUT, so normal operation cost is unchanged. With
-# rear_camera_enabled: false the back-out still works, reversing straight
-# on odometry alone.
+# rear_camera_enabled: false the back-out is DISABLED: a blocked signal
+# stops the robot and ends the mission with the blocked row reported.
 rear_camera_enabled: false
 rear_camera_topic: /camera_rear/image_raw   # sim (Gazebo rear camera);
                                             # real robot later: e.g.

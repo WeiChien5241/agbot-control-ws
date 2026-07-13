@@ -26,6 +26,10 @@ robot reverses out the end it entered, steering from the REAR camera):
   FINAL row (num_rows reached) still backs fully out of the crop
   (BACKOUT -> BACKOUT_CLEAR) before stopping in DONE.
 
+  With backout_enabled=False (no rear camera), the BACKOUT states are
+  unreachable: a blocked signal stops the robot in place and ends the
+  mission in DONE, with the blocked row recorded in blocked_events.
+
 - All maneuver segments are closed-loop on wheel odometry: turns integrate
   measured yaw until 90 degrees is swept; EXIT_CLEAR / TRAVERSE integrate
   measured displacement. The TRAVERSE leg is exactly one row spacing, which
@@ -104,6 +108,7 @@ class MissionFSM:
         reacquire_frames=3,
         reacquire_max_distance=1.5,
         backout_speed=0.10,
+        backout_enabled=True,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -119,6 +124,7 @@ class MissionFSM:
         self.reacquire_frames = reacquire_frames
         self.reacquire_max_distance = reacquire_max_distance
         self.backout_speed = abs(backout_speed)
+        self.backout_enabled = backout_enabled
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
@@ -219,6 +225,12 @@ class MissionFSM:
                     # requires odometry.
                     d_block = self._distance_from_entry(odom_pose)
                     self.blocked_events.append((self.rows_driven, d_block))
+                    if not self.backout_enabled:
+                        # No rear camera: nothing safe left to do. Stop in
+                        # place and end the mission; the blocked row is in
+                        # blocked_events for the final report.
+                        self._enter(STATE_DONE, odom_pose)
+                        return 0.0, 0.0, self.state, True
                     self._backout_target = d_block
                     self._done_after_backout = mission_complete
                     self._suppress_flip = True

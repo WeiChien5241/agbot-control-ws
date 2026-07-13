@@ -80,7 +80,9 @@ def blocked_result():
 def make_fsm(num_rows=3, first_turn_direction="left", **kw):
     return MissionFSM(
         StubController(),
-        RowExitDetector(exit_detect_frames=3, min_in_row_distance=2.0),
+        RowExitDetector(
+            exit_detect_frames=3, blocked_detect_frames=3, min_in_row_distance=2.0
+        ),
         num_rows=num_rows,
         first_turn_direction=first_turn_direction,
         **kw
@@ -332,7 +334,9 @@ def test_blocked_exit_enters_backout_not_exit_clear():
 def test_backout_rear_steering_signs():
     fsm = MissionFSM(
         SteeringStubController(),
-        RowExitDetector(exit_detect_frames=3, min_in_row_distance=2.0),
+        RowExitDetector(
+            exit_detect_frames=3, blocked_detect_frames=3, min_in_row_distance=2.0
+        ),
         num_rows=3,
     )
     pose, _, _ = drive_row_to_block(fsm)
@@ -417,3 +421,16 @@ def test_controller_reset_on_backout_entry():
     resets_before = fsm._controller.reset_calls
     drive_row_to_block(fsm)
     assert fsm._controller.reset_calls == resets_before + 1
+
+
+def test_blocked_without_backout_stops_and_done():
+    fsm = make_fsm(num_rows=3, backout_enabled=False)
+    pose, state, done = drive_row_to_block(fsm)
+    assert state == STATE_DONE
+    assert done
+    assert fsm.blocked_events == [(1, pytest.approx(3.0, abs=0.2))]
+    # latched stopped; BACKOUT never entered
+    lin, ang, state, done = fsm.update(blocked_result(), pose, WIDTH)
+    assert (lin, ang) == (0.0, 0.0)
+    assert state == STATE_DONE
+    assert done

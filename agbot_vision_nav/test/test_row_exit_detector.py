@@ -79,8 +79,19 @@ def test_open_field_triggers_after_debounce():
     assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
 
 
+def make_far_open_mask(near_rows_from=85, half_corridor_width=30, sky_rows=20):
+    """Approaching the row end: far scan rows see open field, the nearest
+    scan row still sees the last plants' narrow corridor."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_TRAVERSABLE, dtype=np.uint8)
+    mask[:sky_rows, :] = CLASS_SKY
+    cx = WIDTH // 2
+    mask[near_rows_from:, : cx - half_corridor_width] = CLASS_OBSTACLE
+    mask[near_rows_from:, cx + half_corridor_width + 1 :] = CLASS_OBSTACLE
+    return mask
+
+
 def test_blocked_ahead_triggers_after_debounce():
-    det = RowExitDetector(exit_detect_frames=5)
+    det = RowExitDetector(blocked_detect_frames=5)
     mask = make_blocked_ahead_mask()
     result = estimate_centerline(mask)
     # sanity: signature preconditions
@@ -111,7 +122,7 @@ def test_debounce_does_not_straddle_arming_boundary():
 
 def test_blocked_arms_earlier_than_open():
     det = RowExitDetector(
-        min_in_row_distance=2.0, blocked_arming_distance=0.3, exit_detect_frames=5
+        min_in_row_distance=2.0, blocked_arming_distance=0.3, blocked_detect_frames=5
     )
     blocked = make_blocked_ahead_mask()
     # below the blocked arming distance: nothing
@@ -124,11 +135,40 @@ def test_blocked_arms_earlier_than_open():
 
 
 def test_blocked_debounce_does_not_straddle_arming_boundary():
-    det = RowExitDetector(blocked_arming_distance=0.3, exit_detect_frames=5)
+    det = RowExitDetector(blocked_arming_distance=0.3, blocked_detect_frames=5)
     blocked = make_blocked_ahead_mask()
     assert feed(det, blocked, distance=0.2, n=4) == EXIT_NONE
     assert feed(det, blocked, distance=0.4, n=4) == EXIT_NONE
     assert feed(det, blocked, distance=0.4, n=1) == EXIT_ROW_END_BLOCKED
+
+
+def test_far_rows_wide_fires_open_before_near_row_clears():
+    # The two farthest scan rows wide + nearest still a narrow corridor
+    # must read as an open exit (this is the approach to the row end).
+    det = RowExitDetector(exit_open_rows_required=2, exit_detect_frames=5)
+    mask = make_far_open_mask()
+    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
+    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    # ...but requiring all 3 rows keeps the old late behavior
+    det = RowExitDetector(exit_open_rows_required=3, exit_detect_frames=5)
+    assert feed(det, mask, distance=5.0, n=20) == EXIT_NONE
+
+
+def test_blocked_uses_its_own_longer_debounce():
+    det = RowExitDetector(exit_detect_frames=5, blocked_detect_frames=8)
+    mask = make_blocked_ahead_mask()
+    assert feed(det, mask, distance=5.0, n=7) == EXIT_NONE
+    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_BLOCKED
+
+
+def test_far_row_corridor_prevents_blocked():
+    # A frame whose far row still has a corridor is not a blocked frame,
+    # even if the near rows lose theirs (leaves brushing the camera).
+    det = RowExitDetector(blocked_detect_frames=1)
+    mask = make_corridor_mask()
+    cx = WIDTH // 2
+    mask[85:, cx - 40 : cx + 41] = CLASS_OBSTACLE  # near rows blocked
+    assert feed(det, mask, distance=5.0, n=10) == EXIT_NONE
 
 
 def test_interrupted_streak_resets():
