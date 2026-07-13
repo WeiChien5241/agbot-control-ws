@@ -7,13 +7,15 @@ already computes.
 Two exit signatures (both observed in the segmentation masks):
 
 1. ROW_END_OPEN: leaving the row, the traversable corridor widens from a
-   narrow band (~0.2-0.4 of image width in-row) toward the full image width,
-   far scan rows first. We require the `exit_open_rows_required` FARTHEST
-   scan rows to be wide -- the far rows go wide well before the nearest one,
-   so this fires while the robot is still approaching the last plants
-   instead of after its nose is past them (waiting for the nearest row was
-   measured to overshoot the row end by 1.5-2.5 m with a low-mounted
-   camera).
+   narrow band (~0.2-0.4 of image width in-row) toward the full image width.
+   We require at least `exit_open_rows_required` scan rows -- ANY of them --
+   to be wide. Counting any rows rather than specific ones keeps the
+   signature robust to unreliable segmentation of distant ground: beyond
+   the field the mask is often garbage, so the far rows can stay invalid
+   forever (requiring the far rows was field-tested and never fired -- the
+   robot drove off the world edge). Where the far rows do segment well they
+   go wide first and fire early on approach; where they don't, the near row
+   going wide still fires.
 
 2. ROW_END_BLOCKED: a wall of crop dead ahead (e.g. exiting toward another
    planted block): every scan row is invalid (image-center column is not
@@ -64,7 +66,7 @@ class RowExitDetector:
         min_in_row_distance=2.0,
         blocked_min_traversable_fraction=0.15,
         blocked_arming_distance=0.3,
-        exit_open_rows_required=2,
+        exit_open_rows_required=1,
         blocked_detect_frames=8,
     ):
         self.exit_width_threshold = exit_width_threshold
@@ -107,19 +109,13 @@ class RowExitDetector:
         widths = normalized_corridor_widths(centerline_result, image_width)
         valid_widths = [w for w in widths if w is not None]
 
-        # OPEN: the N farthest scan rows (smallest row_y = highest in the
-        # image = farthest ground) must each have a corridor spanning at
-        # least exit_width_threshold of the image. The far rows widen first
-        # on approach, so this fires before the robot reaches the last
-        # plants; EXIT_CLEAR then covers the remaining distance.
-        by_distance = sorted(
-            zip(centerline_result.scan_rows, widths), key=lambda p: p[0].row_y
-        )
-        n_required = max(1, min(self.exit_open_rows_required, len(by_distance)))
-        far_widths = [w for _, w in by_distance[:n_required]]
-        open_signature = len(far_widths) == n_required and all(
-            w is not None and w >= self.exit_width_threshold for w in far_widths
-        )
+        # OPEN: at least exit_open_rows_required scan rows (ANY of them) see
+        # a corridor spanning >= exit_width_threshold of the image. No
+        # specific row is required, so unreliable segmentation of distant
+        # ground (far rows invalid beyond the field) cannot mask the exit:
+        # whichever row sees open field first starts the debounce.
+        wide_rows = sum(1 for w in valid_widths if w >= self.exit_width_threshold)
+        open_signature = wide_rows >= max(1, self.exit_open_rows_required)
         blocked_signature = (
             len(valid_widths) == 0
             and centerline_result.traversable_fraction

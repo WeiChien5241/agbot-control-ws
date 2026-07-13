@@ -52,7 +52,9 @@
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
   <arg name="headland_clearance"      default="0.5" /> <!-- m forward after exit fires, before turning -->
   <arg name="exit_width_threshold"    default="0.8" /> <!-- normalized corridor width = "open field" -->
-  <arg name="exit_open_rows_required" default="2" />   <!-- farthest scan rows that must be wide -->
+  <arg name="exit_open_rows_required" default="1" />   <!-- scan rows (any) that must be wide -->
+  <arg name="exit_clear_speed"        default="0.10" /><!-- m/s during the post-exit leg -->
+
   <arg name="exit_detect_frames"      default="5" />   <!-- debounce frames for the OPEN signature -->
   <arg name="blocked_detect_frames"   default="8" />   <!-- debounce frames for the BLOCKED signature -->
 
@@ -91,6 +93,7 @@
     <param name="headland_clearance"       value="$(arg headland_clearance)" />
     <param name="exit_width_threshold"     value="$(arg exit_width_threshold)" />
     <param name="exit_open_rows_required"  value="$(arg exit_open_rows_required)" />
+    <param name="exit_clear_speed"         value="$(arg exit_clear_speed)" />
     <param name="exit_detect_frames"       value="$(arg exit_detect_frames)" />
     <param name="blocked_detect_frames"    value="$(arg blocked_detect_frames)" />
     <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)" />

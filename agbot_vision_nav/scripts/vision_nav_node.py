@@ -125,7 +125,7 @@ class VisionNavNode(object):
                     "~blocked_arming_distance", 0.3
                 ),
                 exit_open_rows_required=rospy.get_param(
-                    "~exit_open_rows_required", 2
+                    "~exit_open_rows_required", 1
                 ),
                 blocked_detect_frames=rospy.get_param("~blocked_detect_frames", 8),
             )
@@ -144,6 +144,7 @@ class VisionNavNode(object):
                 reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 1.5),
                 backout_speed=rospy.get_param("~backout_speed", 0.10),
                 backout_enabled=self._rear_camera_enabled,
+                exit_clear_speed=rospy.get_param("~exit_clear_speed", 0.10),
             )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)

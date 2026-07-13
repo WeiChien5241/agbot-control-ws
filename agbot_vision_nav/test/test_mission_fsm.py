@@ -184,6 +184,18 @@ def test_full_transition_cycle_and_direction_flip():
     run_headland(fsm, pose, turn_sign=-1)
 
 
+def test_exit_clear_uses_slow_speed():
+    fsm = make_fsm(exit_clear_speed=0.1)
+    pose, _, _ = drive_row_to_exit(fsm)
+    assert fsm.state == STATE_EXIT_CLEAR
+    x, y, yaw = pose
+    p = (x + 0.1 * math.cos(yaw), y + 0.1 * math.sin(yaw), yaw)
+    lin, ang, state, _ = fsm.update(open_result(), p, WIDTH)
+    assert state == STATE_EXIT_CLEAR
+    assert lin == pytest.approx(0.1)  # slower than the 0.15 cruise
+    assert ang == 0.0
+
+
 def test_num_rows_termination_skips_turn():
     fsm = make_fsm(num_rows=1)
     _, state, done = drive_row_to_exit(fsm)

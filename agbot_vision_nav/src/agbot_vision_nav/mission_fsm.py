@@ -109,6 +109,7 @@ class MissionFSM:
         reacquire_max_distance=1.5,
         backout_speed=0.10,
         backout_enabled=True,
+        exit_clear_speed=0.10,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -125,6 +126,9 @@ class MissionFSM:
         self.reacquire_max_distance = reacquire_max_distance
         self.backout_speed = abs(backout_speed)
         self.backout_enabled = backout_enabled
+        # EXIT_CLEAR runs slower than cruise: the post-exit leg is where
+        # overshoot (world edge, headland obstacles) hurts most.
+        self.exit_clear_speed = abs(exit_clear_speed)
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
@@ -254,7 +258,7 @@ class MissionFSM:
             if self._distance_from_entry(odom_pose) >= self.headland_clearance:
                 self._enter(STATE_TURN_1, odom_pose)
                 return 0.0, 0.0, self.state, False
-            return self._controller.linear_x_cruise, 0.0, self.state, False
+            return self.exit_clear_speed, 0.0, self.state, False
 
         if self.state == STATE_BACKOUT:
             if self._distance_from_entry(odom_pose) >= self._backout_target:

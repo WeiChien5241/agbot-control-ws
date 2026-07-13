@@ -61,6 +61,8 @@ num_rows: 3                # corridors to drive; 0 = keep going until no rows le
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)
 row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
+exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
+                           # post-exit leg is where overshoot hurts most)
 headland_clearance: 0.5    # m of EXIT_CLEAR forward travel after the open
                            # exit fires, before turning. Keep small: with
                            # exit_open_rows_required=2 the exit already fires
@@ -73,9 +75,11 @@ reacquire_max_width: 0.6   # corridor must look narrower than this (normalized)
 reacquire_frames: 3        # consecutive corridor frames to re-enter FOLLOW_ROW
 reacquire_max_distance: 1.5  # m of creep without a corridor => no rows left => DONE
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
-exit_open_rows_required: 2 # how many of the FARTHEST scan rows must be wide
-                           # for the open exit (far rows widen first, so 2 of
-                           # 3 fires ~1 m earlier than requiring all 3)
+exit_open_rows_required: 1 # how many scan rows (ANY of them) must be wide
+                           # for the open exit. 1 = fire off whichever row
+                           # sees open field first -- robust to garbage
+                           # segmentation of distant ground beyond the field.
+                           # Raise to 2 only if a sparse row ever false-fires.
 exit_detect_frames: 5      # consecutive frames of OPEN signature required
 blocked_detect_frames: 8   # consecutive frames of BLOCKED signature required
                            # (longer: leaves brushing the image center for a

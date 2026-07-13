@@ -154,6 +154,27 @@ def test_far_rows_wide_fires_open_before_near_row_clears():
     assert feed(det, mask, distance=5.0, n=20) == EXIT_NONE
 
 
+def test_open_fires_when_only_near_row_wide():
+    # Cliff/world-edge regression: beyond the field the mask is garbage, so
+    # the far scan rows have NO corridor; only the nearest row (real ground
+    # in front of the robot) reads wide. The exit must still fire.
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:20, :] = CLASS_SKY
+    mask[86:, :] = CLASS_TRAVERSABLE  # only the nearest scan row (91) is ground
+    result = estimate_centerline(mask)
+    widths = normalized_corridor_widths(result, WIDTH)
+    assert widths[0] is None and widths[1] is None  # far rows invalid
+    assert widths[2] == 1.0  # near row full width
+
+    det = RowExitDetector(exit_detect_frames=5)  # defaults: required=1
+    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
+    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    # and this frame must never count as blocked (near row is valid)
+    det = RowExitDetector(blocked_detect_frames=1)
+    det.reset()
+    assert det.update(result, WIDTH, 5.0) != EXIT_ROW_END_BLOCKED
+
+
 def test_blocked_uses_its_own_longer_debounce():
     det = RowExitDetector(exit_detect_frames=5, blocked_detect_frames=8)
     mask = make_blocked_ahead_mask()
