@@ -2,7 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    AgBot forward camera with physical mount stand.
+    AgBot cameras with physical mount stand.
     Included via JACKAL_URDF_EXTRAS into jackal.urdf.xacro.
     Parent link: mid_mount (top-centre of Jackal chassis).
 
@@ -12,11 +12,14 @@
                            front face flush with x=0, body extends to x=-0.20 m
                            centre at xyz="-0.10  0  0.10"
 
-      camera_link        — sensor origin at xyz="0  0  0.225"
+      camera_link        — forward sensor origin at xyz="0  0  0.225"
                            (camera bottom = 0.20 m = top of stand)
 
-      camera_optical_frame — CV convention (z forward, x right, y down)
-                             used as the image header frame_id
+      camera_rear_link   — rear sensor at xyz="-0.05 0 0.225", yawed 180°
+                           (back-to-back with the forward camera on the stand)
+
+      *_optical_frame    — CV convention (z forward, x right, y down)
+                           used as the image header frame_id
   -->
 
   <!-- Mount stand dimensions (m) -->
@@ -66,94 +69,115 @@
     <origin xyz="-0.1 0 0.10" rpy="0 0 0"/>
   </joint>
 
-  <!-- ─── Camera body ─────────────────────────────────────────── -->
-  <link name="camera_link">
-    <visual>
-      <geometry>
-        <box size="${cam_length} ${cam_width} ${cam_height}"/>
-      </geometry>
-      <material name="dark_grey"/>
-    </visual>
-    <collision>
-      <geometry>
-        <box size="${cam_length} ${cam_width} ${cam_height}"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <mass value="0.05"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <inertia
-        ixx="${0.05*(cam_width*cam_width   + cam_height*cam_height)/12}"
-        ixy="0" ixz="0"
-        iyy="${0.05*(cam_length*cam_length + cam_height*cam_height)/12}"
-        iyz="0"
-        izz="${0.05*(cam_length*cam_length + cam_width*cam_width)/12}"/>
-    </inertial>
-  </link>
-
-  <!-- camera centre: x=0, y=0 (robot centre), z=cam_z above mid_mount.
-       Camera bottom (cam_z - cam_height/2 = 0.20 m) sits on stand top. -->
-  <joint name="base_camera_joint" type="fixed">
-    <parent link="mid_mount"/>
-    <child  link="camera_link"/>
-    <origin xyz="0 0 ${cam_z}" rpy="0 0 0"/>
-  </joint>
-
-  <!-- ─── Optical frame (CV convention) ───────────────────────── -->
-  <!-- z forward, x right, y down.
-       Transform: -90° around X, then -90° around Z. -->
-  <link name="camera_optical_frame"/>
-
-  <joint name="camera_optical_joint" type="fixed">
-    <parent link="camera_link"/>
-    <child  link="camera_optical_frame"/>
-    <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
-  </joint>
-
-  <!-- ─── Gazebo sensor and material ──────────────────────────── -->
   <gazebo reference="camera_mount_link">
     <material>Gazebo/DarkGrey</material>
   </gazebo>
 
-  <gazebo reference="camera_link">
-    <material>Gazebo/DarkGrey</material>
+  <!-- ─── Camera macro: body + optical frame + Gazebo sensor ──── -->
+  <!-- name=camera keeps all historical names/topics of the forward
+       camera (camera_link, base_camera_joint, camera_optical_frame,
+       sensor agbot_camera, plugin camera_controller, /camera/*). -->
+  <xacro:macro name="agbot_cam" params="name xyz rpy">
+    <link name="${name}_link">
+      <visual>
+        <geometry>
+          <box size="${cam_length} ${cam_width} ${cam_height}"/>
+        </geometry>
+        <material name="dark_grey"/>
+      </visual>
+      <collision>
+        <geometry>
+          <box size="${cam_length} ${cam_width} ${cam_height}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.05"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <inertia
+          ixx="${0.05*(cam_width*cam_width   + cam_height*cam_height)/12}"
+          ixy="0" ixz="0"
+          iyy="${0.05*(cam_length*cam_length + cam_height*cam_height)/12}"
+          iyz="0"
+          izz="${0.05*(cam_length*cam_length + cam_width*cam_width)/12}"/>
+      </inertial>
+    </link>
 
-    <sensor type="camera" name="agbot_camera">
-      <update_rate>30.0</update_rate>
+    <joint name="base_${name}_joint" type="fixed">
+      <parent link="mid_mount"/>
+      <child  link="${name}_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
 
-      <camera name="head">
-        <!-- 80° horizontal FOV — wide enough to see row boundaries -->
-        <horizontal_fov>1.3962634</horizontal_fov>
-        <image>
-          <width>640</width>
-          <height>480</height>
-          <format>R8G8B8</format>
-        </image>
-        <clip>
-          <near>0.02</near>
-          <far>300</far>
-        </clip>
-        <noise>
-          <type>gaussian</type>
-          <mean>0.0</mean>
-          <stddev>0.007</stddev>
-        </noise>
-      </camera>
+    <!-- Optical frame, CV convention: z forward, x right, y down.
+         Transform: -90° around X, then -90° around Z (relative to the
+         camera link, so it is identical for front and rear cameras). -->
+    <link name="${name}_optical_frame"/>
 
-      <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
-        <alwaysOn>true</alwaysOn>
-        <updateRate>30.0</updateRate>
-        <cameraName>camera</cameraName>
-        <imageTopicName>image_raw</imageTopicName>
-        <cameraInfoTopicName>camera_info</cameraInfoTopicName>
-        <frameName>camera_optical_frame</frameName>
-        <distortionK1>0.0</distortionK1>
-        <distortionK2>0.0</distortionK2>
-        <distortionK3>0.0</distortionK3>
-        <distortionT1>0.0</distortionT1>
-        <distortionT2>0.0</distortionT2>
-      </plugin>
-    </sensor>
-  </gazebo>
+    <joint name="${name}_optical_joint" type="fixed">
+      <parent link="${name}_link"/>
+      <child  link="${name}_optical_frame"/>
+      <origin xyz="0 0 0" rpy="-1.5707963 0 -1.5707963"/>
+    </joint>
+
+    <gazebo reference="${name}_link">
+      <material>Gazebo/DarkGrey</material>
+
+      <sensor type="camera" name="agbot_${name}">
+        <update_rate>30.0</update_rate>
+
+        <camera name="head">
+          <!-- 80° horizontal FOV — wide enough to see row boundaries -->
+          <horizontal_fov>1.3962634</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>R8G8B8</format>
+          </image>
+          <clip>
+            <near>0.02</near>
+            <far>300</far>
+          </clip>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>0.007</stddev>
+          </noise>
+        </camera>
+
+        <plugin name="${name}_controller" filename="libgazebo_ros_camera.so">
+          <alwaysOn>true</alwaysOn>
+          <updateRate>30.0</updateRate>
+          <cameraName>${name}</cameraName>
+          <imageTopicName>image_raw</imageTopicName>
+          <cameraInfoTopicName>camera_info</cameraInfoTopicName>
+          <frameName>${name}_optical_frame</frameName>
+          <distortionK1>0.0</distortionK1>
+          <distortionK2>0.0</distortionK2>
+          <distortionK3>0.0</distortionK3>
+          <distortionT1>0.0</distortionT1>
+          <distortionT2>0.0</distortionT2>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- ─── Forward camera ──────────────────────────────────────── -->
+  <!-- camera centre: x=0, y=0 (robot centre), z=cam_z above mid_mount.
+       Camera bottom (cam_z - cam_height/2 = 0.20 m) sits on stand top. -->
+  <xacro:agbot_cam name="camera" xyz="0 0 ${cam_z}" rpy="0 0 0"/>
+
+  <!-- Alternative low/front mount (occlusion test): camera on the front
+       deck, lens just behind the +0.210 m front edge of the chassis
+       (parent stays mid_mount). z=0.025 puts the 0.05 m-tall camera
+       body's bottom on the deck plane. To test, comment the line above
+       and uncomment the line below; consider also commenting the stand
+       (camera_mount_link + camera_mount_joint) since it stays behind.
+  <xacro:agbot_cam name="camera" xyz="0.19 0 0.025" rpy="0 0 0"/>
+  -->
+
+  <!-- ─── Rear camera (blocked-row back-out) ──────────────────── -->
+  <!-- Back-to-back with the forward camera on the stand, yawed 180°.
+       Publishes /camera_rear/image_raw, frame camera_rear_optical_frame. -->
+  <xacro:agbot_cam name="camera_rear" xyz="-0.05 0 ${cam_z}" rpy="0 0 3.14159265"/>
 
 </robot>

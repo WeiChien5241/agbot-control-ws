@@ -1,0 +1,20 @@
+<launch>
+
+  <!-- Visualize the Jackal + camera URDF in RViz without Gazebo.
+       robot_description is built the same way as in agbot_gazebo.launch:
+       the camera xacro is injected into jackal.urdf.xacro via JACKAL_URDF_EXTRAS. -->
+  <param name="robot_description"
+         command="$(find agbot_bringup)/scripts/load_robot_description.sh
+                  $(find agbot_bringup)/urdf/agbot_camera.urdf.xacro
+                  $(find jackal_description)/urdf/jackal.urdf.xacro" />
+
+  <node name="joint_state_publisher_gui" pkg="joint_state_publisher_gui"
+        type="joint_state_publisher_gui" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher" />
+
+  <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find agbot_bringup)/rviz/urdf_config.rviz" required="true" />
+
+</launch>
