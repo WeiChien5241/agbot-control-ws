@@ -1,326 +1,287 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work: MPC row-following (demoed in Gazebo)
-plus the multi-row headland-turn mission (now SIM-VALIDATED: first Gazebo run
-succeeded with default thresholds). Written so a fresh Claude Code session can
-continue with zero context loss. Supersedes the previous HANDOFF3 content.
+Handoff for the P-AgBot vision-nav work. This session added: RViz-only URDF
+viewer, a front-deck camera relocation experiment (NOT yet working well), a
+rear camera + blocked-row back-out feature (NOT yet sim-verified), and a
+two-round rework of row-exit detection (one field-tested regression and its
+fix — read GOTCHA 1 before touching the exit detector). Written so a fresh
+session can continue with zero context. Supersedes the previous HANDOFF3.
 
 ---
 
 ## 1. GOAL
 
-Build a vision-based navigation stack for the Purdue P-AgBot (Clearpath Jackal
-UGV): a DINOv3 segmentation model turns camera frames into traversability
-masks; pure-geometry state estimation + image-space MPC keep the robot
-centered in a corn row. **Row-following works — there is a working demo in
-Gazebo (recorded, on YouTube).** **Multi-row coverage also works**: with
-`mission_enabled:=true num_rows:=3` the robot followed a corridor, executed
-the odometry-closed-loop headland turns, drove 3 rows boustrophedon, and
-stopped cleanly at the end of row 3 — on the FIRST sim run, with the default
-(guessed) thresholds, in the small maize world. Next milestones: mission
-robustness runs, field deployment (speed tuning happens there), go-home.
+Vision-based navigation for the Purdue P-AgBot (Clearpath Jackal): DINOv3
+segmentation → traversability mask → centerline estimation → image-space MPC
+keeps the robot centered in a corn row. Row-following is demoed working
+(Gazebo, YouTube video); multi-row boustrophedon missions are sim-validated.
+Current thrusts: (a) relocate the front camera low on the front deck to avoid
+leaf occlusions, (b) rear camera + reverse-out-of-row behavior for blocked
+rows, (c) make row-exit detection fast and robust enough that the robot never
+overruns the row end (the sim world has a cliff past the field edge; real
+fields have crops/holes).
 
 ---
 
 ## 2. CURRENT STATE
 
-### Done, committed, and pushed (`WeiChien5241/agbot-control-ws`, branch `main`)
+### Working & committed (branch `main`, all pushed)
 
-**Row-following (DEMOED WORKING in Gazebo):**
-- Full pipeline runs closed-loop in sim: `/camera/image_raw` → `SegmentationModel`
-  → `estimate_centerline` → `MPCRowController` → `/cmd_vel`.
-- `smoke_test_segmentation.py` (repo root of `agbot_vision_nav/`) validated the
-  model standalone and saves a visual overlay
-  (`~/agbot_control_ws/src/tmp/segmentation_overlay.jpg` — good frame: green
-  wash on dirt path, red midpoint dots centered, `valid=True`).
-- **MPC speed tuning is DEFERRED TO THE FIELD.** A 0.3 m/s attempt oscillated
-  badly in the laptop sim — but that sim ran at RTF < 0.1 with ~3.5 Hz jittery
-  `/cmd_vel`, so gain tuning there does not transfer to the real robot
-  (RTX 4080). Defaults are reverted to the demoed-working 0.15 m/s envelope
-  (`linear_x_cruise=0.15, angular_z_max=0.3, delta_angular_z_max=0.2,
-  mpc_alpha=0.10`). Field-tuning interface: all of these plus the MPC weights
-  are `vision_nav.launch` args. **Scaling rule**: when raising
-  `linear_x_cruise`, scale `angular_z_max`, `delta_angular_z_max`, and
-  `mpc_alpha` proportionally (preserves path curvature; alpha is per-step
-  lateral drift, which grows with speed). Field protocol: measure
-  `rostopic hz /cmd_vel` first, then step 0.2 → 0.25 → 0.3 watching
-  angular_z for oscillation. Note: `mpc_dt` is accepted but UNUSED by
-  `MPCRowController` — alpha/beta ARE the per-step dynamics.
+Recent commits (this session):
+- `1dc8754` display.launch.xml + camera xacro macro + rear camera + commented
+  front-deck origin
+- `5ce633c` blocked-row back-out (BACKOUT states, rear-camera steering)
+- `54e8ef8` far-rows exit criterion + back-out gating — **the exit part of
+  this commit was a REGRESSION, do not restore its detector logic**
+- `0ef6b55` regression fix: any-N-rows open criterion + `exit_clear_speed`
 
-**Multi-row mission (commits `45a4c78`, `9b77ff9`, `c39c390`, `0fe6dc3` —
-SIM-VALIDATED: first Gazebo run succeeded with default thresholds, 3 rows,
-clean DONE):**
-- `row_exit_detector.py` — end-of-row detection from the mask.
-- `mission_fsm.py` — headland state machine with odometry-closed-loop turns.
-- `vision_nav_node.py` — odom subscriber + FSM wiring behind `~mission_enabled`
-  (default false → behavior identical to before; safe for MPC tuning).
-- `debug_viz.py` — HUD now shows `state=` and per-scan-row corridor width `w=`.
-- `params.yaml` / `vision_nav.launch` — all mission params + `mission_enabled`,
-  `num_rows` launch args. `package.xml` gained `nav_msgs`.
-- **38/38 unit tests pass** (`cd agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -v`).
+**Sim/bringup:**
+- `roslaunch agbot_bringup display.launch.xml` — RViz-only URDF view (no
+  Gazebo) for camera-placement iteration. ROS1 syntax; needs
+  `ros-noetic-joint-state-publisher-gui`.
+- `agbot_bringup/urdf/agbot_camera.urdf.xacro` — cameras are now a xacro macro
+  `agbot_cam(name, xyz, rpy)`. Front instantiation `name="camera"` preserves
+  all historical names/topics (`camera_link`, `/camera/image_raw`,
+  `camera_optical_frame`). Rear camera `name="camera_rear"` at
+  `xyz="-0.05 0 0.225" rpy="0 0 pi"` → `/camera_rear/image_raw`,
+  `camera_rear_optical_frame`.
 
-**Small maize world workflow (commits `e427cc6`, `738c9cd`):** the user's
-laptop ran the full virtual_maize_field world at RTF < 0.1 / ~2 fps; the small
-world runs at **RTF 1.0 / ~44 fps** with identical visuals (same maize models
-+ ground texture, so segmentation quality is preserved — the user confirmed
-segmentation is much better in maize worlds than in `agbot_corn_rows.world`).
-- `agbot_bringup/config/agbot_maize_small.yaml` — 4 straight rows × 6 m
-  (3 corridors), `ground_resolution 0.15` (vs 0.02 full — the main RTF win),
-  nearly flat, no row holes, `seed: 42` (reproducible layout + spawn pose).
-- `agbot_bringup/scripts/generate_small_maize_world.sh` — snapshots the current
-  world to `~/.ros/virtual_maize_field_snapshots/full/` first, generates the
-  small world, snapshots it as `small/`, prints the spawn pose.
-- `agbot_bringup/scripts/switch_maize_world.sh full|small` — swaps a snapshot
-  into the canonical cache folder (the world SDF hard-references its heightmap
-  there) and clears Gazebo's terrain paging cache.
-- Spawn poses: small world = launch defaults (x=0.777, y=-4.331, z=0.35,
-  yaw=1.536); full world = x=3.16, y=-9.31, z=0.36, yaw=1.791 (pass as args
-  after switching). Each generated world's pose lives in
-  `~/.ros/virtual_maize_field/robot_spawner.launch`.
+**Vision-nav (53/53 unit tests pass —
+`cd agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -v`):**
+- **Row-exit detection (row_exit_detector.py), current semantics:**
+  - OPEN: at least `exit_open_rows_required` (**1**) scan rows — ANY of them —
+    have corridor width ≥ `exit_width_threshold` (0.8), for
+    `exit_detect_frames` (5) consecutive frames, armed after
+    `min_in_row_distance` (2.0 m).
+  - BLOCKED: zero corridors at ALL scan rows + `traversable_fraction` ≥ 0.15,
+    for `blocked_detect_frames` (**8**, deliberately longer — foliage brushing
+    the lens must not trigger a back-out), armed already after
+    `blocked_arming_distance` (**0.3 m**) so mid-row obstacles near the row
+    entrance are caught.
+- **Blocked-row back-out (mission_fsm.py):** FOLLOW_ROW --blocked-->
+  BACKOUT (reverse the odometry-recorded in-row distance, steering from the
+  REAR camera) → BACKOUT_CLEAR (reverse `headland_clearance` more, straight)
+  → BACKOUT_TURN_1 (`+turn_sign` 90°) → BACKOUT_TRAVERSE (`row_spacing`,
+  forward) → BACKOUT_TURN_2 (`-turn_sign` 90°, S-shaped lane change) →
+  REACQUIRE. Next row is entered from the SAME end / traveled the SAME world
+  direction, so the boustrophedon `_turn_sign` flip at the following
+  REACQUIRE is suppressed exactly once (`_suppress_flip`). Row still counts
+  toward `num_rows`; `blocked_events` (row, distance) reported in the
+  mission-DONE log. Blocked FINAL row backs fully out before DONE.
+  - **Gated**: `backout_enabled` = `rear_camera_enabled`. Rear camera off ⇒
+    BACKOUT states unreachable; a blocked signal stops the robot and ends the
+    mission with the blocked row reported (user's explicit choice).
+  - **Rear steering sign rule (derived + unit-tested): NO negation.** The
+    180° image mirror and the reversed motion cancel exactly — rear
+    `offset_norm`/`slope_term` go into `MPCRowController.compute()` unchanged;
+    only linear velocity is negative (`backout_speed` 0.10).
+- **vision_nav_node.py:** optional rear subscriber (only when
+  `mission_enabled` AND `rear_camera_enabled`), second single-slot frame
+  buffer sharing one Condition; the single inference thread reads the REAR
+  frame only while `fsm.state == STATE_BACKOUT` (front otherwise → zero extra
+  cost in normal operation). Debug overlay shows `state=... (REAR)` during
+  back-out. One-shot mission-DONE log lists blocked rows.
+- **Exit-leg speed:** EXIT_CLEAR now drives `exit_clear_speed` (0.10) instead
+  of cruise (0.15); `headland_clearance` reduced 1.0 → **0.5 m**.
+- **Launch args added to vision_nav.launch:** `headland_clearance`,
+  `exit_width_threshold`, `exit_open_rows_required`, `exit_detect_frames`,
+  `blocked_detect_frames`, `exit_clear_speed`, `rear_camera_enabled`,
+  `rear_camera_topic`, `rear_camera_topic_is_compressed`, `backout_speed`.
 
-**Presentation:** `AgBot_MPC.pptx` at repo root (12 slides, plain black/white,
-explains the whole pipeline for the professor). Not committed (binary
-deliverable). Slide 4 is a placeholder for the YouTube demo video.
+### NOT working / unverified (start here next session)
 
-### Not yet done
-- Mission robustness beyond the one successful run: different start corridors,
-  `first_turn_direction:=right`, `num_rows:=0` (no-rows-left termination),
-  full-world run.
-- Field deployment + speed tuning on the real robot (see scaling rule above).
-- Go-home functionality — deliberately deferred (see NEXT STEPS / plan file
-  `~/.claude/plans/as-for-now-we-wild-moth.md`).
+1. **Front-deck camera position** — UNCOMMITTED experiment in
+   `agbot_camera.urdf.xacro`: front camera currently ACTIVE at
+   `xyz="0.19 0 0.025"` (low, front deck), tall-stand line
+   `xyz="0 0 ${cam_z}"` commented out, stand moved to `x=-0.025`. User
+   reports it "still not working": in-row nav is fine at the low position,
+   but exits misbehaved across two test rounds (see GOTCHA 1 timeline). The
+   `0ef6b55` fix has NOT yet been re-tested in sim at either camera position.
+   The user may revert to the tall mount — treat the toggle as theirs.
+2. **Backward movement (BACKOUT)** — implemented + unit-tested but NEVER
+   exercised in Gazebo. Needs: rear camera image sanity check
+   (`rostopic hz /camera_rear/image_raw`), then a blocker run with
+   `rear_camera_enabled:=true` (drop a ~0.5 m box mid-corridor via Gazebo
+   Insert). Watch for steering sign errors during reverse (unit tests say no
+   negation is correct; verify by nudging the robot off-center in BACKOUT).
+3. **Exit re-validation** — after `0ef6b55`, run the plain 3-row mission at
+   BOTH camera positions and confirm the robot turns before the world edge.
 
 ---
 
-## 3. KEY DECISIONS
+## 3. KEY DECISIONS (do not re-litigate without new information)
 
-**Do not re-litigate these without new information:**
+### Exit detection: open = "ANY N rows wide", never "specific rows" (GOTCHA 1)
+Two field-tested iterations landed here:
+- v1 (original): all VALID rows ≥ 0.8 → fired only when the NEAREST row saw
+  open field → 1.5–2.5 m overshoot with the low camera (robot off the world).
+- v2 (`54e8ef8`, REGRESSION): required the 2 FARTHEST rows valid+wide →
+  NEVER fired, because beyond the field edge the segmentation of distant
+  ground is garbage (far rows permanently invalid) → robot off the cliff at
+  every exit, both camera heights.
+- v3 (current, `0ef6b55`): ≥ `exit_open_rows_required` (1) rows wide, ANY
+  position. Provably never later than v1, earlier where far rows segment
+  well, immune to far-row garbage. Regression test:
+  `test_open_fires_when_only_near_row_wide`.
 
-### MPC in image space, no EKF, slope_term as free heading proxy
-State `x = [offset_norm, slope_term]`, both pure geometry from the mask
-(`centerline_estimator.py`). Linear model `x[k+1] = [[1,alpha],[0,1]]x + [[0],[beta]]u`,
-SLSQP solver (scipy), smoothing via `r_delta` cost instead of an EKF/IMU.
-Camera-resolution-agnostic, no intrinsics needed. Distinct from CropFollow
-(ResNet regression + EKF), P-AgNav (LiDAR), Agronav (Deep Hough). Full
-differentiation table in `controller.py`'s module docstring.
+### Back-out gating and no-rear fallback
+Without a rear camera there is no safe maneuver on blocked: stop + DONE +
+report (user chose this over "wait with timeout" and "ignore blocked").
 
-### Sign convention (locked in by tests)
-`offset_norm < 0` → centerline LEFT of image center → robot too far RIGHT →
-turn LEFT → `angular_z > 0` (REP-103). `slope_term > 0` → heading LEFT →
-corrective `angular_z < 0`.
+### Rear-steering signs: unchanged (mirror × reverse = identity)
+Documented in mission_fsm docstring; guarded by
+`test_backout_rear_steering_signs`. Don't "fix" the signs without failing
+that test first.
 
-### Headland maneuvers are odometry-closed-loop (decided with user this session)
-Turns integrate measured yaw from `/odometry/filtered` (Jackal EKF, wheel+IMU)
-until 90° swept; straights integrate measured displacement. The between-rows
-traverse is exactly `row_spacing` (0.75 m) — **measured, not guessed** — which
-is also what guarantees the robot enters a NEW row rather than the one it
-exited. Rejected alternatives: timed open-loop (slip-fragile), vision-only
-(can't distinguish exited row from next row mid-turn).
+### Back-out geometry: S-turn, same-direction next row, suppress ONE flip
+After backing out the entry end, the next row is boustrophedon-shifted, not
+alternated. User explicitly accepted this.
 
-### Exit detection: two mask signatures, debounced, distance-armed (user's insight)
-1. **Open-field**: leaving the row, corridor width blows up toward full image
-   width — require ALL valid scan rows ≥ `exit_width_threshold` (0.8).
-2. **Blocked-ahead**: no corridor at any scan row but lower half still largely
-   traversable → wall of crop dead ahead.
-Both need `exit_detect_frames` (5) consecutive frames, and detection only arms
-after `min_in_row_distance` (2.0 m) of odom travel in-row — otherwise the
-open-field view at row entry false-triggers.
+### Rear inference only during BACKOUT
+Normal-operation cost unchanged; the other BACKOUT_* states are
+odometry-only. Don't run both cameras' inference concurrently on the 2 Hz
+CPU robot.
 
-### Boustrophedon turn alternation (user's insight)
-Two lefts into this row ⇒ two rights into the next. FSM flips `_turn_sign`
-after each completed REACQUIRE. First direction is the `first_turn_direction`
-param.
-
-### Termination and failure semantics
-`num_rows: N` → after the Nth row's exit fires, go straight to DONE (no final
-turn). `num_rows: 0` → unlimited; ends when REACQUIRE creeps
-`reacquire_max_distance` (1.5 m) without finding a corridor = no rows left.
-REACQUIRE failure is terminal DONE in either mode (stop, don't wander).
-
-### mission_enabled defaults to FALSE
-Plain row-following is untouched with the flag off. MPC tuning continues
-undisturbed. Do not change the default until mission mode is sim-validated.
-
-### Go-home: deferred, approach already chosen
-When built: U-turn and re-run the mission in reverse with mirrored turn
-directions (reuses `MissionFSM` as-is). Vision re-centers every row so odom
-drift doesn't accumulate. Do NOT do pure odom path-replay.
-
-### Sim world: SMALL generated maize world (supersedes the old corn-rows decision)
-The user found segmentation quality much better in virtual_maize_field worlds
-than in the lightweight `agbot_corn_rows.world`, but the full maize world ran
-at RTF < 0.1 on the laptop. Resolution: generate a small maize world
-(`agbot_maize_small.yaml` — same maize models/ground texture, 4×6 m straight
-rows, coarse heightmap → RTF 1.0) and keep full/small snapshots switchable via
-`switch_maize_world.sh`. Do NOT go back to `agbot_corn_rows.world` for
-vision work.
-
-### Speed tuning belongs in the field, not the laptop sim
-The 0.3 m/s attempt oscillated in a sim running at RTF < 0.1 with ~3.5 Hz
-jittery /cmd_vel — that timing has nothing in common with the RTX 4080 robot.
-Sim validates LOGIC (FSM, sign conventions, thresholds); gains and speed are
-tuned on hardware. Defaults stay at the demoed 0.15 m/s envelope; launch args
-override in the field, scaling clamps and mpc_alpha with speed.
-
-### Environment/infra decisions (from earlier sessions, still binding)
-- Camera URDF injection via `scripts/load_robot_description.sh` exporting
-  `JACKAL_URDF_EXTRAS` — `<env>` tags do NOT reach `<param command>` in ROS1.
-- scipy SLSQP is fine (<1 ms for the 8-var QP) — don't switch to osqp/casadi
-  without a concrete reason.
+### Earlier decisions still binding
+- Image-space MPC, no EKF; scipy SLSQP; sign conventions locked by tests.
+- Headland maneuvers odometry-closed-loop; `row_spacing` 0.75 m measured.
+- `mission_enabled` defaults false; speed tuning belongs on the real robot
+  (0.15 m/s envelope in sim; scale `angular_z_max`, `delta_angular_z_max`,
+  `mpc_alpha` with speed).
+- Small maize world for sim (RTF 1.0); `switch_maize_world.sh full|small`.
+- Camera URDF injection via `load_robot_description.sh` (JACKAL_URDF_EXTRAS).
+- Go-home deferred (mirrored-mission approach chosen, not started).
 
 ---
 
 ## 4. FILES
 
-### `agbot_vision_nav/` — vision controller + mission
+### `agbot_vision_nav/`
 | File | Purpose |
 |---|---|
-| `src/agbot_vision_nav/segmentation_model.py` | Wraps `lightly_train.load_model().predict()`; nearest-neighbor-resizes mask to frame size. Classes: 0=sky, 1=traversable, 2=obstacle. |
-| `src/agbot_vision_nav/centerline_estimator.py` | Pure numpy. Scans 3 rows outward from image-center column; returns `CenterlineResult(offset_norm, slope_term, valid, traversable_fraction, scan_rows)`. `scan_rows` carry `x_left/x_right` per row (the exit detector reuses these). |
-| `src/agbot_vision_nav/controller.py` | `MPCRowController`: SLSQP MPC, N=8, magnitude+rate constraints, invalid-frame hold-then-stop. `compute(offset_norm, slope_term, valid) -> (linear_x, angular_z)`. |
-| `src/agbot_vision_nav/row_exit_detector.py` | `RowExitDetector.update(result, image_width, distance_in_row)` → `EXIT_NONE / EXIT_ROW_END_OPEN / EXIT_ROW_END_BLOCKED`. Also exports `normalized_corridor_widths()`. |
-| `src/agbot_vision_nav/mission_fsm.py` | `MissionFSM.update(result, odom_pose, image_width) -> (linear_x, angular_z, state, done)`. States: FOLLOW_ROW, EXIT_CLEAR, TURN_1, TRAVERSE, TURN_2, REACQUIRE, DONE. Owns detector + controller; calls `controller.reset()` + `detector.reset()` on each new row. |
-| `src/agbot_vision_nav/debug_viz.py` | Debug overlay: green mask wash, scan rows, midpoints, `w=` width labels, `state=` HUD line. |
-| `scripts/vision_nav_node.py` | Only rospy file. Frame buffer + inference thread + 5 Hz watchdog. `_odom_cb` stores `(x, y, yaw)` (manual quaternion→yaw, no tf dep). `_process_frame` routes through FSM iff `mission_enabled`. |
-| `config/params.yaml` | All defaults incl. the mission block (thresholds documented inline). |
-| `launch/vision_nav.launch` | Args: `model_path` (required), camera args, MPC knobs, `mission_enabled`, `num_rows`. |
-| `smoke_test_segmentation.py` | Standalone model check + visual overlay writer. Edit `MODEL_PATH`/`IMAGE_PATH` at top; run in `~/agbot_venv`. |
-| `test/` | 38 tests: controller (15), centerline (9), debug_viz (2), row_exit_detector (7), mission_fsm (5). |
+| `src/agbot_vision_nav/segmentation_model.py` | lightly_train model wrapper; mask classes 0=sky,1=traversable,2=obstacle. |
+| `src/agbot_vision_nav/centerline_estimator.py` | 3 scan rows outward from center column → `CenterlineResult(offset_norm, slope_term, valid, traversable_fraction, scan_rows)`. |
+| `src/agbot_vision_nav/controller.py` | `MPCRowController` (SLSQP, N=8). Reused unchanged for rear-camera reverse steering. |
+| `src/agbot_vision_nav/row_exit_detector.py` | OPEN/BLOCKED signatures, per-signature debounce AND arming (see §2). |
+| `src/agbot_vision_nav/mission_fsm.py` | Mission FSM incl. BACKOUT branch, `backout_enabled` gate, `blocked_events`, `exit_clear_speed`, `BACKOUT_STATES` export. |
+| `src/agbot_vision_nav/debug_viz.py` | HUD overlay (`state=`, per-row `w=`); rear frames get `state=... (REAR)`. |
+| `scripts/vision_nav_node.py` | Only rospy file. Dual frame slots, FSM-state-driven camera source selection, watchdog, mission-DONE report. |
+| `config/params.yaml` + `launch/vision_nav.launch` | All knobs; exit/back-out params now launch args (list in §2). |
+| `test/` | 53 tests (controller 15, centerline 9, viz 2, detector 13, fsm 14). |
 
-### `agbot_bringup/` — simulation
+### `agbot_bringup/`
 | File | Purpose |
 |---|---|
-| `launch/agbot_gazebo.launch` | Gazebo (virtual_maize_field generated world) + Jackal spawn (defaults = small-world pose) + camera URDF override + RViz. |
-| `config/agbot_maize_small.yaml` | Small maize world config (4×6 m straight rows, coarse flat heightmap, seed 42). |
-| `scripts/generate_small_maize_world.sh` | Snapshots current world, generates the small one, prints spawn pose. |
-| `scripts/switch_maize_world.sh` | Swap active world between `full`/`small` snapshots; clears Gazebo terrain cache. |
-| `worlds/agbot_corn_rows.world` | Lightweight non-maize fallback (4 rows × 36 corn, straight, flat). Segmentation is noticeably worse here than in maize worlds — kept for reference only. |
-| `scripts/load_robot_description.sh` | The `JACKAL_URDF_EXTRAS` export fix. |
+| `launch/agbot_gazebo.launch` | Gazebo + Jackal + camera URDF override + RViz. |
+| `launch/display.launch.xml` | RViz-only URDF viewer (robot_state_publisher + joint_state_publisher_gui + rviz). |
+| `urdf/agbot_camera.urdf.xacro` | `agbot_cam` macro; front + rear instantiations; **currently carries the user's UNCOMMITTED front-deck toggle**. |
+| `config/agbot_maize_small.yaml`, `scripts/*maize*` | Small-world workflow (unchanged). |
+| `scripts/load_robot_description.sh` | JACKAL_URDF_EXTRAS injection. |
 
 ### Not in git
-- `config/exported_best.pt` (~89 MB weights; gitignored) — also at `DINOv3-Segmentation-Training/out/corn_field_navigation/exported_models/`.
-- `jackal/`, `virtual_maize_field/` — clone separately (see CLAUDE.md).
-- `tmp/` — test frames + `segmentation_overlay.jpg`.
-- `AgBot_MPC.pptx` — presentation deck (upload to Google Drive → open with Google Slides).
-- Plan file: `~/.claude/plans/as-for-now-we-wild-moth.md` (mission design rationale).
+Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
+`tmp/`, `AgBot_MPC.pptx`. Memory dir has `project_camera_relocation.md`
+(experiment state + the far-rows lesson).
 
 ---
 
 ## 5. NEXT STEPS (priority order)
 
-### 1. Mission robustness runs (small maize world, RTF 1.0)
-The first mission run passed with default thresholds. Now vary:
-```bash
-roslaunch agbot_vision_nav vision_nav.launch \
-  model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
-  mission_enabled:=true num_rows:=3          # + variations below
-```
-- Start from a different corridor / opposite end (pass spawn x/y/yaw to
-  agbot_gazebo.launch), with `first_turn_direction:=right` where the field
-  lies to the robot's right.
-- `num_rows:=0` — verify the no-rows-left termination (REACQUIRE creeps
-  `reacquire_max_distance` without a corridor → DONE).
-- One run in the FULL world (`switch_maize_world.sh full`, spawn
-  x:=3.16 y:=-9.31 z:=0.36 yaw:=1.791) to confirm behavior in curved rows —
-  accept slow RTF, it's a logic check.
-If any run misbehaves, tune from the HUD: exit early/late →
-`exit_width_threshold` (0.8) / `exit_detect_frames` (5); never arms →
-`min_in_row_distance` (2.0 — rows are only 6 m in the small world); clips last
-plants → `headland_clearance` (1.0); turn overshoot → `turn_rate` (0.4) /
-`yaw_tolerance_deg` (5); REACQUIRE never accepts → `reacquire_max_width` (0.6).
-
-### 2. Field deployment (real robot, RTX 4080) — speed tuning happens HERE
-1. `rostopic hz /cmd_vel` to measure the real control rate.
-2. Start at the 0.15 defaults; raise via launch args stepwise
-   (0.2 → 0.25 → 0.3), scaling `angular_z_max`, `delta_angular_z_max`,
-   `mpc_alpha` proportionally. Watch angular_z: square-wave at the clamp =
-   too fast for the loop; growing smooth oscillation = raise `mpc_r_delta`
-   or lower `mpc_q_offset`; drifts wide on bends = raise `mpc_q_heading`.
-
-### 3. Then: go-home (design already decided — see KEY DECISIONS)
-
-### 4. Commit and push after each step (CLAUDE.md mandate)
+1. **Re-validate exits after `0ef6b55`** (ROS1 machine, small maize world):
+   plain 3-row mission, rear camera off, at the CURRENT (front-deck) camera
+   position, then at the tall position (swap the two `xacro:agbot_cam
+   name="camera"` lines). Success = state flips to EXIT_CLEAR when any `w=`
+   hits ≥0.8 for 5 frames; robot turns well before the world edge. Knobs if
+   late: `exit_detect_frames:=3`; if a sparse row false-fires:
+   `exit_open_rows_required:=2`.
+2. **Decide the front camera position.** If the low position still can't see
+   exits acceptably (its scan rows only look ~0.5–1.4 m ahead vs ~0.9–2.5 m
+   from the tall mount), consider: revert to tall mount; or an intermediate
+   height; or re-annotating/fine-tuning the model with low-viewpoint frames.
+   Commit the URDF once decided (the toggle is currently uncommitted).
+3. **First Gazebo test of the back-out**: box blocker mid-corridor,
+   `mission_enabled:=true rear_camera_enabled:=true num_rows:=3`. Verify:
+   BACKOUT (REAR) overlay, negative linear.x, reverse steering direction,
+   S-turn, next-row reacquire, `Mission DONE ... row N blocked at X m`.
+   Also the no-rear case: same blocker, rear off → robot stops + reports.
+4. Then: mission robustness matrix (other corridors,
+   `first_turn_direction:=right`, `num_rows:=0`, full world), field
+   deployment speed tuning, go-home.
 
 ---
 
 ## 6. GOTCHAS
 
-### GOTCHA 1: This dev sandbox is ROS2 Humble — NOT ROS1
-All `catkin`/`roslaunch`/`rostopic` commands run on the user's WSL2 Ubuntu
-20.04 ROS1 Noetic machine. Unit tests DO run in the sandbox
-(`pytest`+`scipy` installed via pip --user).
+### GOTCHA 1 (NEW, hard-won): never key the exit on far scan rows
+Beyond the field edge the model does not segment ground reliably: the far
+scan rows can be invalid FOREVER. Any exit criterion that requires specific
+(especially farthest) rows will simply never fire and the robot will drive
+off the cliff/into whatever is past the row. Field-tested twice. Current
+any-N-rows criterion is the fix; `test_open_fires_when_only_near_row_wide`
+is the tripwire.
 
-### GOTCHA 2: The model runs in `~/agbot_venv`, not system Python
-`lightly_train`/`torch` are installed in the `~/agbot_venv` virtualenv on the
-user's machine (this is how the smoke test and the working demo ran). Any
-command importing `segmentation_model` needs that venv activated.
+### GOTCHA 2 (NEW): low camera ⇒ short lookahead + leaf-level false BLOCKED
+At the front-deck position (~0.27 m up) the scan rows map to ~0.5–1.4 m of
+ground and row-end foliage crosses the lens height — this produced a real
+false-BLOCKED-triggered reverse in testing. Mitigations in place: 8-frame
+blocked debounce, back-out gated on rear camera. If false blocks persist,
+raise `blocked_detect_frames` or `blocked_min_traversable_fraction`.
 
-### GOTCHA 3: Mission thresholds validated in ONE configuration only
-The first mission run (small maize world, 3 rows, default thresholds) passed,
-but the thresholds have not been exercised across start corridors, turn
-directions, `num_rows:=0`, or the curved full world. Use the `state=`/`w=`
-debug HUD when a new configuration misbehaves.
+### GOTCHA 3 (NEW): the front-deck URDF toggle is UNCOMMITTED user state
+`agbot_camera.urdf.xacro` working-tree change = the user's live experiment
+(front-deck active, tall commented, stand at x=-0.025). Don't revert, don't
+commit without asking, don't assume the committed state matches disk.
 
-### GOTCHA 4: Exit detector arms on odometry distance
-If `/odometry/filtered` is missing/renamed, `distance_in_row` stays None and
-the robot will NEVER leave FOLLOW_ROW (detector unarmed) — it will just stop
-at the row end via the MPC's invalid-frame logic. Check the odom topic first.
+### GOTCHA 4 (NEW): back-out is unit-tested only — no Gazebo run yet
+Especially the reverse steering sign (tests prove the FSM applies no
+negation; they cannot prove the physical convention). First sim test should
+nudge the robot off-center during BACKOUT and check it re-centers.
 
-### GOTCHA 5: `min_in_row_distance` interacts with slow row entry
-FOLLOW_ROW's entry pose is recorded at the first odom fix (lazily at mission
-start). The spawn point is 2 m before the corn, so by row end the distance is
-well past 2.0 m — but if you respawn the robot mid-row for testing, the
-detector may not arm before the row ends.
+### GOTCHA 5: this dev sandbox is ROS2 Humble — NOT ROS1
+All catkin/roslaunch/rostopic commands run on the user's WSL2 ROS1 Noetic
+machine. Unit tests DO run in the sandbox.
 
-### GOTCHA 6: `<env>` tag does not reach `<param command>` (ROS1)
-Camera URDF injection must stay via `load_robot_description.sh`. Do not revert.
+### GOTCHA 6: model runs in `~/agbot_venv` on the user's machine.
 
-### GOTCHA 7: scipy required at import time
-`controller.py` imports scipy at module load; tests and node both fail without
-it. `pip install scipy` (1.7.x is the last py3.8-compatible line).
+### GOTCHA 7: exit detector arms on odometry distance
+No `/odometry/filtered` ⇒ detector never arms ⇒ robot never leaves
+FOLLOW_ROW. Blocked arms at 0.3 m, open at 2.0 m — respawning mid-row for
+testing can leave open detection unarmed at the row end (6 m rows).
 
-### GOTCHA 8: GAZEBO_MODEL_PATH needs virtual_maize_field/models
-Corn models `maize_01`/`maize_02` come from there even though we use our own
-world. `source ~/agbot_control_ws/devel/setup.bash` first if corn is invisible.
-
-### GOTCHA 9: `gh` CLI lives at `~/.local/bin/gh`
-`export PATH="$HOME/.local/bin:$PATH"` may be needed before push (sandbox).
-
-### GOTCHA 10: Don't `git add .` — ever
-Stage files by name (CLAUDE.md rule). `*.pt`, `tmp/`, build artifacts and the
-`.pptx` deck must stay out of commits.
-
-### GOTCHA 11: Uploading .pptx to Google Drive via API from the sandbox fails
-The Drive MCP tool requires inline base64 (~2× file size in characters) which
-exceeds what fits through a tool call for a 140 KB deck. Just drag the file
-into drive.google.com → Open with Google Slides.
+### GOTCHA 8: `<env>` doesn't reach `<param command>` (ROS1) — keep
+`load_robot_description.sh`. GOTCHA 9: scipy needed at import. GOTCHA 10:
+GAZEBO_MODEL_PATH needs virtual_maize_field/models. GOTCHA 11: `gh` at
+`~/.local/bin/gh`. GOTCHA 12: never `git add .` (weights/tmp/pptx stay out).
 
 ---
 
 ## Quick-start (ROS1 Noetic machine)
 
 ```bash
-# 1. Build
 cd ~/agbot_control_ws && catkin build && source devel/setup.bash
 
-# 2. Simulation
+# URDF-only view (camera placement iteration)
+roslaunch agbot_bringup display.launch.xml
+
+# Simulation
 roslaunch agbot_bringup agbot_gazebo.launch
 
-# 3. Row-following only (current tuning workflow)
-roslaunch agbot_vision_nav vision_nav.launch \
+# Mission, no rear camera (blocked => stop + report)
+roslaunch agbot_vision_nav vision_nav.launch sim:=true \
   model_path:=/home/chien21/agbot_control_ws/src/agbot_vision_nav/config/exported_best.pt \
-  camera_topic:=/camera/image_raw camera_topic_is_compressed:=false
-
-# 3b. Multi-row mission (sim-validated)
-roslaunch agbot_vision_nav vision_nav.launch \
-  model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
   mission_enabled:=true num_rows:=3
 
-# 4. Monitor
-rostopic echo /cmd_vel
-rqt_image_view /vision_nav_node/debug/image
+# Mission with back-out enabled
+#   + rear_camera_enabled:=true
+# Exit tuning knobs:
+#   headland_clearance:=0.5 exit_clear_speed:=0.10 exit_detect_frames:=5
+#   exit_open_rows_required:=1 blocked_detect_frames:=8
 
-# 5. Unit tests (sandbox or ROS1 machine, no ROS needed)
+# Monitor
+rqt_image_view /vision_nav_node/debug/image   # state= HUD + per-row w=
+rostopic echo /cmd_vel
+
+# Unit tests (sandbox or ROS1 machine, no ROS needed)
 cd ~/agbot_control_ws/src/agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v     # expected: 38 passed
+PYTHONPATH=src python3 -m pytest test/ -v     # expected: 53 passed
 ```
