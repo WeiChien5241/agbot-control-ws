@@ -1,47 +1,41 @@
 <launch>
-  <!-- Real-robot camera bringup: existing front usb_cam + two new Logitech
-       Brios. Each camera is a separate usb_cam node; the NODE NAME sets the
-       topic prefix, so the three cameras publish:
+  <!-- Real-robot camera bringup: two Logitech Brios, front + rear. Node
+       names are chosen so the topics match what vision_nav.launch already
+       expects on the real robot:
 
-         /usb_cam/image_raw            (+ /compressed)   existing camera
-         /brio_left/image_raw          (+ /compressed)   new Brio #1
-         /brio_right/image_raw         (+ /compressed)   new Brio #2
+         /usb_cam/image_raw       (+ /compressed)   front Brio
+         /usb_cam_rear/image_raw  (+ /compressed)   rear Brio (off by default)
 
-       The .../image_raw/compressed topics are created automatically by
-       image_transport, so the existing training workflow
-       (rosbag record <topic>/image_raw/compressed) works for all three.
+       The .../compressed topics are created automatically by
+       image_transport, so the training workflow keeps working:
+         rosbag record -O my_camera_bag.bag /usb_cam/image_raw/compressed
 
        IMPORTANT — device paths: /dev/video0, /dev/video2, ... are assigned
-       in plug-in order and can swap between boots. Pin each camera with its
-       stable symlink instead. On the robot, run:
+       in plug-in order and can swap between boots. Pin each camera with a
+       stable symlink. On the robot:
 
          ls -l /dev/v4l/by-id/
 
-       If both Brios show identical by-id names (Logitech doesn't always
-       expose distinct serials), use /dev/v4l/by-path/ instead — those names
-       encode the physical USB port, so they stay stable as long as each
-       camera keeps its port. Then pass the real paths as launch args or
-       edit the defaults below.
+       If both Brios show identical by-id names (no serial in the name),
+       use /dev/v4l/by-path/ instead — those encode the physical USB port,
+       so they stay stable as long as each camera keeps its port. Always
+       pick the ...-video-index0 link (each Brio exposes several /dev/video*
+       nodes; only index0 is the actual video stream). Edit the defaults
+       below or pass the paths as args.
 
-       Example:
-         roslaunch agbot_vision_nav cameras.launch \
-           brio_left_device:=/dev/v4l/by-path/pci-0000:00:14.0-usb-0:1:1.0-video-index0 \
-           brio_right_device:=/dev/v4l/by-path/pci-0000:00:14.0-usb-0:2:1.0-video-index0
-
-       To launch only the current camera (today's behavior):
-         roslaunch agbot_vision_nav cameras.launch brio_left:=false brio_right:=false
+       Usage:
+         roslaunch agbot_vision_nav cameras.launch                 # front only
+         roslaunch agbot_vision_nav cameras.launch rear:=true      # both
   -->
 
-  <!-- Per-camera enable switches -->
-  <arg name="front"       default="true" />
-  <arg name="brio_left"   default="true" />
-  <arg name="brio_right"  default="true" />
+  <!-- Per-camera enable switches: front only for now. -->
+  <arg name="front" default="true" />
+  <arg name="rear"  default="false" />
 
-  <!-- Device paths — REPLACE the Brio defaults with the by-id/by-path links
-       found on the robot (see header comment). -->
-  <arg name="front_device"      default="/dev/video0" />
-  <arg name="brio_left_device"  default="/dev/v4l/by-path/CHANGE_ME_left-video-index0" />
-  <arg name="brio_right_device" default="/dev/v4l/by-path/CHANGE_ME_right-video-index0" />
+  <!-- Device paths — REPLACE with the by-id/by-path links found on the
+       robot (see header comment). -->
+  <arg name="front_device" default="/dev/v4l/by-path/CHANGE_ME_front-video-index0" />
+  <arg name="rear_device"  default="/dev/v4l/by-path/CHANGE_ME_rear-video-index0" />
 
   <!-- Shared image settings: keep 640x480@30 so new footage matches the
        existing training data and the vision-nav input resolution. -->
@@ -49,36 +43,26 @@
   <arg name="height" default="480" />
   <arg name="fps"    default="30" />
 
-  <!-- Existing front camera, unchanged topic (/usb_cam/image_raw). -->
+  <!-- pixel_format mjpeg: the Brio compresses on-camera, which is what lets
+       two cameras share USB bandwidth — raw YUYV from two devices on one
+       bus can fail with "No space left on device" / select timeouts.
+       usb_cam decodes the MJPEG internally, so the published image_raw is
+       still a normal uncompressed sensor_msgs/Image. -->
   <node if="$(arg front)" name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
-    <param name="video_device"  value="$(arg front_device)" />
-    <param name="image_width"   value="$(arg width)" />
-    <param name="image_height"  value="$(arg height)" />
-    <param name="framerate"     value="$(arg fps)" />
-    <param name="pixel_format"  value="yuyv" />
+    <param name="video_device"    value="$(arg front_device)" />
+    <param name="image_width"     value="$(arg width)" />
+    <param name="image_height"    value="$(arg height)" />
+    <param name="framerate"       value="$(arg fps)" />
+    <param name="pixel_format"    value="mjpeg" />
     <param name="camera_frame_id" value="usb_cam" />
   </node>
 
-  <!-- New Brio cameras. pixel_format mjpeg: the Brio compresses on-camera,
-       which is what makes three cameras fit on USB bandwidth — raw YUYV
-       from three devices on one bus will fail with "No space left on
-       device" / select timeouts. usb_cam decodes MJPEG internally, so the
-       published image_raw is still a normal uncompressed sensor_msgs/Image. -->
-  <node if="$(arg brio_left)" name="brio_left" pkg="usb_cam" type="usb_cam_node" output="screen">
-    <param name="video_device"  value="$(arg brio_left_device)" />
-    <param name="image_width"   value="$(arg width)" />
-    <param name="image_height"  value="$(arg height)" />
-    <param name="framerate"     value="$(arg fps)" />
-    <param name="pixel_format"  value="mjpeg" />
-    <param name="camera_frame_id" value="brio_left" />
-  </node>
-
-  <node if="$(arg brio_right)" name="brio_right" pkg="usb_cam" type="usb_cam_node" output="screen">
-    <param name="video_device"  value="$(arg brio_right_device)" />
-    <param name="image_width"   value="$(arg width)" />
-    <param name="image_height"  value="$(arg height)" />
-    <param name="framerate"     value="$(arg fps)" />
-    <param name="pixel_format"  value="mjpeg" />
-    <param name="camera_frame_id" value="brio_right" />
+  <node if="$(arg rear)" name="usb_cam_rear" pkg="usb_cam" type="usb_cam_node" output="screen">
+    <param name="video_device"    value="$(arg rear_device)" />
+    <param name="image_width"     value="$(arg width)" />
+    <param name="image_height"    value="$(arg height)" />
+    <param name="framerate"       value="$(arg fps)" />
+    <param name="pixel_format"    value="mjpeg" />
+    <param name="camera_frame_id" value="usb_cam_rear" />
   </node>
 </launch>
