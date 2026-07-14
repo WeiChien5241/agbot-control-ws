@@ -37,11 +37,13 @@
   <arg name="brio_front" default="true" />
   <arg name="rear"       default="false" />
 
-  <!-- Device paths — REPLACE the CHANGE_ME defaults with the by-id/by-path
-       links found on the robot (see header comment). -->
-  <arg name="front_device"      default="/dev/video0" />
-  <arg name="brio_front_device" default="/dev/v4l/by-path/CHANGE_ME_front_brio-video-index0" />
-  <arg name="rear_device"       default="/dev/v4l/by-path/CHANGE_ME_rear_brio-video-index0" />
+  <!-- Device paths: by-id links from the robot (2026-07-14). Both cameras
+       carry their serial in the by-id name, so these are stable across
+       reboots and USB ports. The rear Brio's serial is unknown until it is
+       plugged in — read it with `ls -l /dev/v4l/by-id/` and fill it in. -->
+  <arg name="front_device"      default="/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0" />
+  <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" />
+  <arg name="rear_device"       default="/dev/v4l/by-id/CHANGE_ME_rear_brio_serial-video-index0" />
 
   <!-- Shared image settings: keep 640x480@30 so new footage matches the
        existing training data and the vision-nav input resolution. -->
