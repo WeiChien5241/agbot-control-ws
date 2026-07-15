@@ -18,9 +18,9 @@
        all other MPC params come from config/params.yaml).
        Tune in this order: q_offset -> r_delta -> alpha -> beta -> q_heading
 
-       If steering is TOO AGGRESSIVE (robot swerves into plants), try in
-       Gazebo first, in this order (each on its own before combining):
-         1. angular_z_max:=0.15        halve the hard steering clamp
+       If steering is STILL too aggressive (robot swerves into plants), try
+       in Gazebo first, in this order (each on its own before combining):
+         1. angular_z_max:=0.15        lower the hard steering clamp further
          2. delta_angular_z_max:=0.1   halve slew per control step
          3. mpc_r_delta:=1.5  and/or  mpc_r_control:=0.3   cost-side smoothing
          4. mpc_q_offset:=5.0          re-center less aggressively
@@ -48,7 +48,8 @@
        When raising linear_x_cruise, scale angular_z_max, delta_angular_z_max,
        and mpc_alpha proportionally to preserve path curvature. -->
   <arg name="linear_x_cruise"     default="0.15" />  <!-- forward speed (m/s) -->
-  <arg name="angular_z_max"       default="0.3"  />  <!-- steering clamp (rad/s) -->
+  <arg name="angular_z_max"       default="0.175" /> <!-- steering clamp (rad/s); 0.3 wobbled/hit
+                                                          corn in the field, 0.15 was stable -->
   <arg name="delta_angular_z_max" default="0.2"  />  <!-- max command change per step -->
 
 

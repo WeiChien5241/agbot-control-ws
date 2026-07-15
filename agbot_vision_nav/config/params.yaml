@@ -52,11 +52,12 @@ mpc_r_delta: 0.5         # control rate cost weight (smoothness / jerk suppressi
 # Speed envelope: sim-validated defaults (Gazebo demo). Raise on the real
 # robot via launch args, scaling angular_z_max, delta_angular_z_max, and
 # mpc_alpha proportionally with linear_x_cruise to preserve path curvature.
-# If steering is too aggressive in the field, try (in order, Gazebo first):
+# If steering is still too aggressive, try (in order, Gazebo first):
 # angular_z_max 0.15, delta_angular_z_max 0.1, mpc_r_delta 1.5 /
 # mpc_r_control 0.3, mpc_q_offset 5.0; on the CPU robot also mpc_dt 0.5.
 linear_x_cruise: 0.15        # forward speed (m/s)
-angular_z_max: 0.3           # hard clamp on |angular_z| (rad/s)
+angular_z_max: 0.175         # hard clamp on |angular_z| (rad/s); was 0.3,
+                             # which wobbled/hit corn in field testing
 delta_angular_z_max: 0.2     # max angular_z change per 0.1 s reference step
                              # (rad/s); rate limiter, scaled by mpc_dt/0.1
 invalid_frame_stop_count: 5  # consecutive invalid frames before publishing zero Twist
