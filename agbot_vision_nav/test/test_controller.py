@@ -120,6 +120,35 @@ def test_high_r_delta_produces_smoother_first_step_than_low_r_delta():
     )
 
 
+def test_dt_scales_model_and_rate_limit():
+    # alpha/beta/delta_angular_z_max are per-0.1s reference values; at dt=0.5
+    # the internal per-step quantities must be 5x. Identical scenario, same
+    # per-0.1s spec: the dt=0.5 controller's rate limit allows a 5x larger
+    # first step, and its command still respects that scaled limit.
+    du_max = 0.02
+    kwargs = dict(angular_z_max=1.0, delta_angular_z_max=du_max, q_offset=1000.0)
+    ctrl_ref  = _make(dt=0.1, **kwargs)
+    ctrl_slow = _make(dt=0.5, **kwargs)
+    assert ctrl_slow.delta_angular_z_max == pytest.approx(5 * ctrl_ref.delta_angular_z_max)
+
+    _, az_ref  = ctrl_ref.compute(offset_norm=-1.0, slope_term=0.0, valid=True)
+    _, az_slow = ctrl_slow.compute(offset_norm=-1.0, slope_term=0.0, valid=True)
+    assert abs(az_ref) <= du_max + 1e-5
+    assert abs(az_slow) <= 5 * du_max + 1e-5
+    assert abs(az_slow) > abs(az_ref) + 1e-5, (
+        "With the error saturating both rate limits, dt=0.5 should command more per step"
+    )
+
+
+def test_dt_default_matches_explicit_reference_dt():
+    # dt=0.1 is the reference period: omitting dt must be bit-identical.
+    ctrl_a = _make()
+    ctrl_b = _make(dt=0.1)
+    _, az_a = ctrl_a.compute(offset_norm=-0.4, slope_term=0.1, valid=True)
+    _, az_b = ctrl_b.compute(offset_norm=-0.4, slope_term=0.1, valid=True)
+    assert az_a == pytest.approx(az_b, abs=1e-9)
+
+
 # ---------------------------------------------------------------------------
 # Predictive / horizon behavior
 # ---------------------------------------------------------------------------

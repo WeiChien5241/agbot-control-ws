@@ -22,6 +22,13 @@ Dynamics (linear, time-invariant, in normalized image-coordinate space):
     Positive: turning left (angular_z > 0) increases slope_term (heading becomes
     more leftward). Both alpha and beta are tuned empirically.
 
+  alpha, beta, and delta_angular_z_max are specified at the REFERENCE control
+  period of 0.1 s and scaled internally by dt/0.1: at dt=0.1 the dynamics are
+  exactly the tuned values; on a slower control loop (e.g. dt=0.5 on a CPU-only
+  robot at ~2 Hz inference) the per-step drift, control effectiveness, and rate
+  limit all grow proportionally so the model matches the real elapsed time per
+  step and the slew limit stays constant in rad/s per second.
+
 Cost over horizon N:
   J = sum_{k=1}^{N} [q_offset * e_d^2 + q_heading * slope^2]
     + sum_{k=0}^{N-1} [r_control * u^2 + r_delta * (u_k - u_{k-1})^2]
@@ -70,11 +77,15 @@ class MPCRowController:
         self.N = N
         self.linear_x_cruise = linear_x_cruise
         self.angular_z_max = angular_z_max
-        self.delta_angular_z_max = delta_angular_z_max
         self.invalid_frame_stop_count = invalid_frame_stop_count
 
-        self._A = np.array([[1.0, alpha], [0.0, 1.0]])
-        self._B = np.array([0.0, beta])
+        # alpha/beta/delta_angular_z_max are specified at the 0.1 s reference
+        # period; scale to the actual control period so the model and the
+        # slew limit stay correct in real time on slower loops.
+        scale = dt / 0.1
+        self.delta_angular_z_max = delta_angular_z_max * scale
+        self._A = np.array([[1.0, alpha * scale], [0.0, 1.0]])
+        self._B = np.array([0.0, beta * scale])
         self._Q = np.diag([q_offset, q_heading])
         self._r = r_control
         self._r_delta = r_delta
