@@ -73,11 +73,10 @@ first_turn_direction: left # headland turn direction for the FIRST transition;
 row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
 exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
                            # post-exit leg is where overshoot hurts most)
-headland_clearance: 0.5    # m of EXIT_CLEAR forward travel after the open
-                           # exit fires, before turning. Keep small: with
-                           # exit_open_rows_required=2 the exit already fires
-                           # early, and the Jackal (half-diagonal ~0.33 m)
-                           # can spin in place just past the last plants.
+headland_clearance: 0.75   # m of EXIT_CLEAR forward travel after the open
+                           # exit fires, before turning. 0.5 clipped the last
+                           # plants in field testing (real corn, 2026-07-15);
+                           # raise toward 1.0 if the turn still hits corn.
 turn_rate: 0.4             # rad/s during in-place 90-degree turns
 yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor

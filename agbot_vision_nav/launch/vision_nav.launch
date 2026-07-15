@@ -63,7 +63,9 @@
   <arg name="min_in_row_distance"  default="2.0" />  <!-- m of in-row travel before exit detection arms -->
 
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
-  <arg name="headland_clearance"      default="0.5" /> <!-- m forward after exit fires, before turning -->
+  <arg name="headland_clearance"      default="0.75" /> <!-- m forward after exit fires, before
+                                                             turning; 0.5 clipped corn in the field,
+                                                             raise toward 1.0 if turns still hit -->
   <arg name="exit_width_threshold"    default="0.8" /> <!-- normalized corridor width = "open field" -->
   <arg name="exit_open_rows_required" default="1" />   <!-- scan rows (any) that must be wide -->
   <arg name="exit_clear_speed"        default="0.10" /><!-- m/s during the post-exit leg -->
