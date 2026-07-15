@@ -88,6 +88,34 @@ Recent commits (this session):
   `blocked_detect_frames`, `exit_clear_speed`, `rear_camera_enabled`,
   `rear_camera_topic`, `rear_camera_topic_is_compressed`, `backout_speed`.
 
+### Field test on real corn (2026-07-14) + follow-up fixes (2026-07-15)
+
+Two field findings and what was done about them:
+- **In-row steering far too aggressive** — robot swerved toward plants and had
+  to be manually stopped. Root cause: `mpc_dt` was a NO-OP — the
+  `MPCRowController` constructor accepted `dt` but never used it, so on the
+  2 Hz CPU robot the model assumed 0.1 s steps while real steps were ~0.5 s
+  (per-step drift understated 5x, rate limit 5x weaker in real time).
+  **Fixed**: `dt` now scales `alpha`, `beta`, and `delta_angular_z_max`
+  internally (they are specified at the 0.1 s reference period; dt=0.1 is
+  bit-identical to the old behavior). Tests: `test_dt_scales_model_and_rate_limit`,
+  `test_dt_default_matches_explicit_reference_dt` (55 total now).
+  `mpc_r_control` is now also a launch arg. Gentle-tuning recipe (in
+  vision_nav.launch comments): angular_z_max 0.15 → delta_angular_z_max 0.1 →
+  r_delta 1.5 / r_control 0.3 → q_offset 5.0; CPU robot adds mpc_dt:=0.5.
+  NOT yet re-tested in Gazebo or the field.
+- **Exit detection still ran the old all-rows criterion in the field** — the
+  robot was simply on pre-`0ef6b55` code. No code change; pull + `catkin build`
+  on the robot before the next field run.
+
+**New robot with a Logitech Brio (no WDR camera):** the nav code selects its
+camera via the `camera_topic` launch arg; Brio-only bringup recipe (find the
+by-id device link, `cameras.launch front:=false brio_front_device:=...`, then
+`vision_nav.launch camera_topic:=/brio_front/image_raw/compressed
+camera_topic_is_compressed:=true`) is documented at the top of
+`cameras.launch`. Check `nvidia-smi` on that robot: GPU ⇒ default
+mpc_dt/max_data_age_sec; CPU-only ⇒ 0.5 / 1.5.
+
 ### NOT working / unverified (start here next session)
 
 1. **Front-deck camera position** — UNCOMMITTED experiment in
@@ -187,6 +215,12 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 
 ## 5. NEXT STEPS (priority order)
 
+0. **Re-test steering aggressiveness after the mpc_dt fix**: in Gazebo run the
+   3-row mission with the gentle recipe (`angular_z_max:=0.15
+   delta_angular_z_max:=0.1 mpc_r_delta:=1.5`), watch `/cmd_vel` angular
+   spikes; then on the CPU robot pull latest + `mpc_dt:=0.5
+   max_data_age_sec:=1.5` + the recipe. The robot must also be updated past
+   `0ef6b55` so exits use the any-1-row criterion.
 1. **Re-validate exits after `0ef6b55`** (ROS1 machine, small maize world):
    plain 3-row mission, rear camera off, at the CURRENT (front-deck) camera
    position, then at the tall position (swap the two `xacro:agbot_cam
