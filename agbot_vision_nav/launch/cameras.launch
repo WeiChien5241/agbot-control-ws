@@ -30,12 +30,26 @@
          roslaunch agbot_vision_nav cameras.launch                    # original + front Brio
          roslaunch agbot_vision_nav cameras.launch brio_front:=false  # original only (today's old behavior)
          roslaunch agbot_vision_nav cameras.launch rear:=true         # all three
+
+       NEW ROBOT / Brio-only (no WDR camera on that machine):
+         1. Find that robot's Brio device link (serial differs per unit):
+              ls -l /dev/v4l/by-id/          # pick the ...-video-index0 link
+         2. Bring up only the Brio:
+              roslaunch agbot_vision_nav cameras.launch front:=false \
+                brio_front_device:=/dev/v4l/by-id/<that-brio>-video-index0
+         3. Point vision-nav at it (camera source is just a launch arg):
+              roslaunch agbot_vision_nav vision_nav.launch \
+                camera_topic:=/brio_front/image_raw/compressed \
+                camera_topic_is_compressed:=true model_path:=...
+         Check for a GPU first with nvidia-smi: with a GPU keep the default
+         mpc_dt:=0.1 max_data_age_sec:=0.5; CPU-only (~2 Hz inference) use
+         mpc_dt:=0.5 max_data_age_sec:=1.5.
   -->
 
   <!-- Per-camera enable switches -->
   <arg name="front"      default="true" />
   <arg name="brio_front" default="true" />
-  <arg name="rear"       default="false" />
+  <!-- <arg name="rear"       default="false" /> -->
 
   <!-- Device paths: by-id links from the robot (2026-07-14). Both cameras
        carry their serial in the by-id name, so these are stable across
@@ -43,7 +57,7 @@
        plugged in — read it with `ls -l /dev/v4l/by-id/` and fill it in. -->
   <arg name="front_device"      default="/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0" />
   <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" />
-  <arg name="rear_device"       default="/dev/v4l/by-id/CHANGE_ME_rear_brio_serial-video-index0" />
+  <!-- <arg name="rear_device"       default="/dev/v4l/by-id/CHANGE_ME_rear_brio_serial-video-index0" /> -->
 
   <!-- Shared image settings: keep 640x480@30 so new footage matches the
        existing training data and the vision-nav input resolution. -->
@@ -75,12 +89,12 @@
     <param name="camera_frame_id" value="brio_front" />
   </node>
 
-  <node if="$(arg rear)" name="usb_cam_rear" pkg="usb_cam" type="usb_cam_node" output="screen">
+  <!-- <node if="$(arg rear)" name="usb_cam_rear" pkg="usb_cam" type="usb_cam_node" output="screen">
     <param name="video_device"    value="$(arg rear_device)" />
     <param name="image_width"     value="$(arg width)" />
     <param name="image_height"    value="$(arg height)" />
     <param name="framerate"       value="$(arg fps)" />
     <param name="pixel_format"    value="mjpeg" />
     <param name="camera_frame_id" value="usb_cam_rear" />
-  </node>
+  </node> -->
 </launch>
