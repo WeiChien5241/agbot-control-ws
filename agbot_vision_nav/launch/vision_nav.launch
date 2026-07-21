@@ -4,6 +4,11 @@
        model_path:=/absolute/path/to/exported_best.pt if the weights live elsewhere. -->
   <arg name="model_path" default="$(find agbot_vision_nav)/config/exported_best.pt"/>
 
+  <!-- Inference device: auto = CUDA when available, else CPU. The node logs
+       the device the model actually landed on at startup; check that log
+       line on the GPU robot before trusting any speed numbers. -->
+  <arg name="model_device" default="auto"/>
+
   <!-- Environment switch. Defaults target the REAL ROBOT (compressed usb_cam
        topic); pass sim:=true for Gazebo (raw /camera/image_raw). Explicit
        camera_topic / camera_topic_is_compressed overrides still win. -->
@@ -61,6 +66,11 @@
   <arg name="first_turn_direction" default="left" />  <!-- left|right; alternates after (boustrophedon) -->
   <arg name="odom_topic"           default="/odometry/filtered" />
   <arg name="row_spacing"          default="0.75" /> <!-- m between row centerlines -->
+  <arg name="traverse_distance"    default="0.6" />  <!-- m of the sideways leg after TURN_1;
+                                                          intentionally SHORTER than row_spacing so
+                                                          the robot turns before reaching the next
+                                                          row's corn (field near-miss at 0.75);
+                                                          REACQUIRE closes the remaining alignment -->
   <arg name="min_in_row_distance"  default="2.0" />  <!-- m of in-row travel before exit detection arms -->
 
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
@@ -87,6 +97,7 @@
   <node name="vision_nav_node" pkg="agbot_vision_nav" type="vision_nav_node.py" output="screen">
     <rosparam file="$(find agbot_vision_nav)/config/params.yaml" command="load" />
     <param name="model_path"               value="$(arg model_path)" />
+    <param name="model_device"             value="$(arg model_device)" />
     <param name="camera_topic"             value="$(arg camera_topic)" />
     <param name="camera_topic_is_compressed" value="$(arg camera_topic_is_compressed)" />
     <param name="cmd_vel_topic"            value="$(arg cmd_vel_topic)" />
@@ -106,6 +117,7 @@
     <param name="first_turn_direction"     value="$(arg first_turn_direction)" />
     <param name="odom_topic"               value="$(arg odom_topic)" />
     <param name="row_spacing"              value="$(arg row_spacing)" />
+    <param name="traverse_distance"        value="$(arg traverse_distance)" />
     <param name="min_in_row_distance"      value="$(arg min_in_row_distance)" />
     <param name="headland_clearance"       value="$(arg headland_clearance)" />
     <param name="exit_width_threshold"     value="$(arg exit_width_threshold)" />

@@ -25,6 +25,17 @@ def test_render_debug_image_valid_frame_has_correct_shape_and_dtype():
     assert debug_img.dtype == frame_bgr.dtype
 
 
+def test_render_debug_image_with_timing_line_does_not_crash():
+    frame_bgr, mask = _make_frame_and_mask()
+    result = estimate_centerline(mask)
+
+    debug_img = render_debug_image(
+        frame_bgr, mask, result, linear_x=0.15, angular_z=0.1,
+        state_name="FOLLOW_ROW", timing_line="inf=450ms e2e=500ms proc=2.0Hz",
+    )
+    assert debug_img.shape == frame_bgr.shape
+
+
 def test_render_debug_image_invalid_frame_does_not_crash():
     frame_bgr = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
     mask = np.zeros((HEIGHT, WIDTH), dtype=np.uint8)  # all sky -> invalid

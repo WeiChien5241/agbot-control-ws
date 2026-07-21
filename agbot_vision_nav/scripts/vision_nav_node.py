@@ -19,6 +19,7 @@ instead once no successful inference has completed within max_data_age_sec.
 
 import math
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -34,6 +35,7 @@ from agbot_vision_nav.debug_viz import render_debug_image
 from agbot_vision_nav.mission_fsm import STATE_BACKOUT, MissionFSM
 from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
+from agbot_vision_nav.timing_stats import PipelineTimingStats
 
 # Placeholder front result passed to the FSM on rear-camera ticks (the FSM
 # ignores front perception in STATE_BACKOUT; this only keeps the signature).
@@ -135,6 +137,7 @@ class VisionNavNode(object):
                 num_rows=rospy.get_param("~num_rows", 3),
                 first_turn_direction=rospy.get_param("~first_turn_direction", "left"),
                 row_spacing=rospy.get_param("~row_spacing", 0.75),
+                traverse_distance=rospy.get_param("~traverse_distance", 0.6),
                 headland_clearance=rospy.get_param("~headland_clearance", 1.0),
                 turn_rate=rospy.get_param("~turn_rate", 0.4),
                 yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 5.0),
@@ -148,17 +151,26 @@ class VisionNavNode(object):
             )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
-        self._model = SegmentationModel(model_path)
-        rospy.loginfo("Model loaded.")
+        self._model = SegmentationModel(
+            model_path, device=rospy.get_param("~model_device", "auto")
+        )
+        rospy.loginfo(
+            "Model loaded on device: %s (a GPU robot showing 'cpu' here is "
+            "the reason inference is slow)",
+            self._model.device_str,
+        )
 
         self._bridge = CvBridge()
 
         self._frame_condition = threading.Condition()
+        # Slots hold (frame, header_stamp_sec or None, recv_time_sec);
+        # timestamps feed the pipeline timing stats.
         self._latest_frame = None
         self._latest_frame_seq = 0
         self._latest_rear_frame = None
         self._latest_rear_frame_seq = 0
         self._mission_done_logged = False
+        self._timing = PipelineTimingStats()
 
         self._last_success_lock = threading.Lock()
         self._last_success_time = None
@@ -215,12 +227,18 @@ class VisionNavNode(object):
 
         rospy.loginfo("vision_nav_node ready, listening on %s", camera_topic)
 
+    @staticmethod
+    def _stamp_sec(msg):
+        """Header stamp in seconds, or None when the publisher left it unset."""
+        stamp = msg.header.stamp.to_sec()
+        return stamp if stamp > 0.0 else None
+
     def _compressed_image_cb(self, msg):
         frame = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             rospy.logwarn_throttle(5.0, "Failed to decode CompressedImage frame")
             return
-        self._store_frame(frame)
+        self._store_frame(frame, self._stamp_sec(msg))
 
     def _image_cb(self, msg):
         try:
@@ -228,14 +246,14 @@ class VisionNavNode(object):
         except Exception as exc:
             rospy.logwarn_throttle(5.0, "cv_bridge conversion failed: %s", exc)
             return
-        self._store_frame(frame)
+        self._store_frame(frame, self._stamp_sec(msg))
 
     def _rear_compressed_image_cb(self, msg):
         frame = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             rospy.logwarn_throttle(5.0, "Failed to decode rear CompressedImage frame")
             return
-        self._store_rear_frame(frame)
+        self._store_rear_frame(frame, self._stamp_sec(msg))
 
     def _rear_image_cb(self, msg):
         try:
@@ -243,7 +261,7 @@ class VisionNavNode(object):
         except Exception as exc:
             rospy.logwarn_throttle(5.0, "rear cv_bridge conversion failed: %s", exc)
             return
-        self._store_rear_frame(frame)
+        self._store_rear_frame(frame, self._stamp_sec(msg))
 
     def _odom_cb(self, msg):
         pose = msg.pose.pose
@@ -251,16 +269,20 @@ class VisionNavNode(object):
         with self._odom_lock:
             self._odom_pose = (pose.position.x, pose.position.y, yaw)
 
-    def _store_frame(self, frame):
+    def _store_frame(self, frame, stamp):
+        recv_time = rospy.Time.now().to_sec()
         with self._frame_condition:
-            self._latest_frame = frame
+            self._latest_frame = (frame, stamp, recv_time)
             self._latest_frame_seq += 1
+            self._timing.record_camera_frame(recv_time)
             self._frame_condition.notify()
 
-    def _store_rear_frame(self, frame):
+    def _store_rear_frame(self, frame, stamp):
+        recv_time = rospy.Time.now().to_sec()
         with self._frame_condition:
-            self._latest_rear_frame = frame
+            self._latest_rear_frame = (frame, stamp, recv_time)
             self._latest_rear_frame_seq += 1
+            self._timing.record_camera_frame(recv_time)
             self._frame_condition.notify()
 
     def _use_rear_camera(self):
@@ -293,7 +315,7 @@ class VisionNavNode(object):
         last_rear_seq = -1
         while not rospy.is_shutdown():
             with self._frame_condition:
-                frame = None
+                slot = None
                 is_rear = False
                 while not rospy.is_shutdown():
                     # Pick the source per wakeup so a state change mid-wait
@@ -305,28 +327,32 @@ class VisionNavNode(object):
                             self._latest_rear_frame is not None
                             and self._latest_rear_frame_seq != last_rear_seq
                         ):
-                            frame = self._latest_rear_frame
+                            slot = self._latest_rear_frame
                             last_rear_seq = self._latest_rear_frame_seq
                             break
                     elif (
                         self._latest_frame is not None
                         and self._latest_frame_seq != last_front_seq
                     ):
-                        frame = self._latest_frame
+                        slot = self._latest_frame
                         last_front_seq = self._latest_frame_seq
                         break
                     self._frame_condition.wait(timeout=0.2)
                 if rospy.is_shutdown():
                     return
 
-            self._process_frame(frame, is_rear)
+            frame, stamp, recv_time = slot
+            self._process_frame(frame, stamp, recv_time, is_rear)
 
-    def _process_frame(self, frame, is_rear=False):
+    def _process_frame(self, frame, stamp, recv_time, is_rear=False):
+        pickup_time = rospy.Time.now().to_sec()
+        t_inf_start = time.monotonic()
         try:
             mask = self._model.predict(frame)
         except Exception as exc:
             rospy.logerr_throttle(5.0, "Model inference failed: %s", exc)
             return
+        inference_s = time.monotonic() - t_inf_start
 
         result = estimate_centerline(
             mask,
@@ -347,6 +373,20 @@ class VisionNavNode(object):
                     rear_centerline_result=result,
                 )
                 state_name = state_name + " (REAR)"
+                if self._fsm.state == STATE_BACKOUT:
+                    # Telemetry for the reverse-steering nudge test: off-center
+                    # rear offset must produce an angular_z that re-centers it.
+                    reversed_m, target_m = self._fsm.backout_progress(odom_pose)
+                    rospy.loginfo_throttle(
+                        1.0,
+                        "BACKOUT: rear offset=%+.3f slope=%+.3f -> angular_z=%+.3f, "
+                        "reversed %s of %.2f m",
+                        result.offset_norm,
+                        result.slope_term,
+                        angular_z,
+                        "?" if reversed_m is None else "%.2f" % reversed_m,
+                        target_m,
+                    )
             else:
                 linear_x, angular_z, state_name, done = self._fsm.update(
                     result, odom_pose, mask.shape[1]
@@ -373,12 +413,27 @@ class VisionNavNode(object):
             )
         self._publish_twist(linear_x, angular_z)
 
+        now = rospy.Time.now()
         with self._last_success_lock:
-            self._last_success_time = rospy.Time.now()
+            self._last_success_time = now
             self._last_cmd = (linear_x, angular_z)
 
+        publish_time = now.to_sec()
+        self._timing.record_inference(
+            inference_s,
+            wait_age_s=max(0.0, pickup_time - recv_time),
+            # End-to-end: camera exposure (header stamp) -> command publish.
+            # This is the true control staleness the colleagues ask about.
+            e2e_latency_s=(publish_time - stamp) if stamp is not None else None,
+            publish_time=publish_time,
+        )
+        rospy.loginfo_throttle(5.0, "timing: %s", self._timing.format_summary())
+
         if self._debug_pub is not None:
-            self._publish_debug(frame, mask, result, linear_x, angular_z, state_name)
+            self._publish_debug(
+                frame, mask, result, linear_x, angular_z, state_name,
+                self._timing.hud_line(),
+            )
 
     def _publish_twist(self, linear_x, angular_z):
         twist = Twist()
@@ -386,10 +441,12 @@ class VisionNavNode(object):
         twist.angular.z = angular_z
         self._cmd_vel_pub.publish(twist)
 
-    def _publish_debug(self, frame, mask, result, linear_x, angular_z, state_name=None):
+    def _publish_debug(self, frame, mask, result, linear_x, angular_z,
+                       state_name=None, timing_line=None):
         try:
             debug_img = render_debug_image(
-                frame, mask, result, linear_x, angular_z, state_name=state_name
+                frame, mask, result, linear_x, angular_z, state_name=state_name,
+                timing_line=timing_line,
             )
             msg = self._bridge.cv2_to_imgmsg(debug_img, encoding="bgr8")
             self._debug_pub.publish(msg)

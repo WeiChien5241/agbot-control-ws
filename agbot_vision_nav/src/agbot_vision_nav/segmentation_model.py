@@ -30,9 +30,26 @@ from PIL import Image
 
 
 class SegmentationModel:
-    def __init__(self, model_path):
+    def __init__(self, model_path, device="auto"):
+        """device: 'auto' moves the model to CUDA when available (falls back
+        to wherever load_model put it on any failure); 'cpu'/'cuda' force a
+        target. self.device_str reports where inference actually runs -- the
+        ROS node logs it so a GPU robot silently running on CPU is visible."""
         self.model = lightly_train.load_model(model_path)
         self.model.eval()
+
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else None
+        if device:
+            try:
+                self.model = self.model.to(device)
+            except Exception:
+                pass  # keep load_model's placement; device_str tells the truth
+
+        try:
+            self.device_str = str(next(self.model.parameters()).device)
+        except Exception:
+            self.device_str = "unknown (cuda_available=%s)" % torch.cuda.is_available()
 
     def predict(self, frame_bgr):
         """Run inference on a BGR frame, return a (H, W) uint8 class-index mask.

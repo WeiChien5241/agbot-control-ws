@@ -16,7 +16,7 @@ VALID_TEXT_COLOR_BGR = (0, 255, 0)
 INVALID_TEXT_COLOR_BGR = (0, 0, 255)
 
 
-def render_debug_image(frame_bgr, mask, centerline_result, linear_x=None, angular_z=None, alpha=0.5, state_name=None):
+def render_debug_image(frame_bgr, mask, centerline_result, linear_x=None, angular_z=None, alpha=0.5, state_name=None, timing_line=None):
     """Returns an annotated copy of frame_bgr for rqt_image_view inspection."""
     height, width = frame_bgr.shape[:2]
     cx = width // 2
@@ -58,6 +58,8 @@ def render_debug_image(frame_bgr, mask, centerline_result, linear_x=None, angula
     ]
     if linear_x is not None and angular_z is not None:
         lines.append("cmd v={:+.2f} w={:+.2f}".format(linear_x, angular_z))
+    if timing_line is not None:
+        lines.append(timing_line)
 
     for i, line in enumerate(lines):
         y = 20 + i * 18

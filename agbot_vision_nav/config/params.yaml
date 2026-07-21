@@ -6,6 +6,9 @@
 # Real-robot defaults shown below. For Gazebo, override camera_topic and set
 # camera_topic_is_compressed: false via launch args, since Gazebo's camera
 # plugin typically publishes raw sensor_msgs/Image rather than CompressedImage.
+model_device: auto      # auto = CUDA when available, else CPU; or force
+                        # cpu/cuda. The node logs the actual device at
+                        # startup -- verify it says 'cuda' on the GPU robot.
 camera_topic: /usb_cam/image_raw/compressed
 camera_topic_is_compressed: true
 cmd_vel_topic: /cmd_vel
@@ -72,6 +75,11 @@ num_rows: 3                # corridors to drive; 0 = keep going until no rows le
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)
 row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
+traverse_distance: 0.6     # m of sideways travel after TURN_1. Deliberately
+                           # SHORTER than row_spacing: at 0.75 the nose got
+                           # too close to the next row's corn just before
+                           # TURN_2 (field near-miss, 2026-07); REACQUIRE +
+                           # the MPC close the remaining lateral offset.
 exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
                            # post-exit leg is where overshoot hurts most)
 headland_clearance: 0.75   # m of EXIT_CLEAR forward travel after the open
