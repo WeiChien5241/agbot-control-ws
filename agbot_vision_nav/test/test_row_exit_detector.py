@@ -192,10 +192,11 @@ def test_far_row_corridor_prevents_blocked():
     assert feed(det, mask, distance=5.0, n=10) == EXIT_NONE
 
 
-def make_close_blocker_mask(sky_rows=20, ground_cols=20):
+def make_close_blocker_mask(sky_rows=20, ground_cols=8):
     """Stopped nose-up to an obstacle: it fills nearly the whole view, no
     corridor at any scan row, only a sliver of ground at the left edge
-    (lower-half traversable fraction ~0.10)."""
+    (lower-half traversable fraction ~0.04 -- matches the sim HUD reading
+    in front of a large box blocker)."""
     mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
     mask[:sky_rows, :] = CLASS_SKY
     mask[HEIGHT // 2 :, :ground_cols] = CLASS_TRAVERSABLE
@@ -203,16 +204,16 @@ def make_close_blocker_mask(sky_rows=20, ground_cols=20):
 
 
 def test_blocked_fires_at_close_range_low_ground_fraction():
-    # Regression (sim, 2026-07-21): with the gate at 0.15 the robot stopped
-    # in front of a mid-row blocker and the back-out never fired, because
-    # up close the obstacle dominates the frame and the visible-ground
-    # fraction stays low forever. The default gate must accept this view.
+    # Regression (sim, 2026-07-21, twice): the robot stopped in front of a
+    # mid-row blocker and the back-out never fired. Up close the obstacle
+    # dominates the frame -- the sim HUD showed frac=0.04, under both the
+    # 0.15 and 0.08 gates. The default gate must accept this view.
     mask = make_close_blocker_mask()
     result = estimate_centerline(mask)
     assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
-    assert 0.08 <= result.traversable_fraction < 0.15
+    assert 0.02 <= result.traversable_fraction < 0.08
 
-    det = RowExitDetector(blocked_detect_frames=5)  # default gate 0.08
+    det = RowExitDetector(blocked_detect_frames=5)  # default gate 0.02
     assert feed(det, mask, distance=5.0, n=5) == EXIT_ROW_END_BLOCKED
 
 

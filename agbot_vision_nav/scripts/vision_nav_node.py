@@ -122,7 +122,7 @@ class VisionNavNode(object):
                 exit_detect_frames=rospy.get_param("~exit_detect_frames", 5),
                 min_in_row_distance=rospy.get_param("~min_in_row_distance", 2.0),
                 blocked_min_traversable_fraction=rospy.get_param(
-                    "~blocked_min_traversable_fraction", 0.08
+                    "~blocked_min_traversable_fraction", 0.02
                 ),
                 blocked_arming_distance=rospy.get_param(
                     "~blocked_arming_distance", 0.3

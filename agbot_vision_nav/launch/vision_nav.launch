@@ -84,12 +84,13 @@
   <arg name="exit_detect_frames"      default="5" />   <!-- debounce frames for the OPEN signature -->
   <arg name="blocked_detect_frames"   default="8" />   <!-- debounce frames for the BLOCKED signature
                                                             (leaky counter: noise delays, not resets) -->
-  <arg name="blocked_min_traversable_fraction" default="0.08" />
-       <!-- BLOCKED also requires this much of the lower half traversable
-            (rejects lens occlusion). 0.15 deadlocked in sim: stopped nose-up
-            to a blocker, the visible ground fraction stays below it and the
-            back-out never triggers. Lower further (0.05) if the HUD frac=
-            value sits below this while blocked. -->
+  <arg name="blocked_min_traversable_fraction" default="0.02" />
+       <!-- BLOCKED also requires this much of the lower half traversable;
+            only rejects a truly black/zero view (lens fully pressed into
+            foliage). Sim-measured: a large blocker filling the camera leaves
+            only frac=0.04, so 0.15 and even 0.08 deadlocked the back-out.
+            The 8-frame debounce is the real guard against transient
+            occlusion. Set 0.0 to disable the gate entirely. -->
 
   <!-- Rear camera for the blocked-row back-out (mission mode only). Enable in
        Gazebo with: rear_camera_enabled:=true. For a future real USB camera,

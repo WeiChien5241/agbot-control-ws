@@ -84,7 +84,7 @@ class RowExitDetector:
         exit_width_threshold=0.8,
         exit_detect_frames=5,
         min_in_row_distance=2.0,
-        blocked_min_traversable_fraction=0.08,
+        blocked_min_traversable_fraction=0.02,
         blocked_arming_distance=0.3,
         exit_open_rows_required=1,
         blocked_detect_frames=8,
