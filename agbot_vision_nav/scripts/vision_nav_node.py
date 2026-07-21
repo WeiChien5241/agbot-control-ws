@@ -146,7 +146,7 @@ class VisionNavNode(object):
                 reacquire_speed=rospy.get_param("~reacquire_speed", 0.08),
                 reacquire_max_width=rospy.get_param("~reacquire_max_width", 0.6),
                 reacquire_frames=rospy.get_param("~reacquire_frames", 3),
-                reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 1.5),
+                reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 2.0),
                 backout_speed=rospy.get_param("~backout_speed", 0.10),
                 backout_enabled=self._rear_camera_enabled,
                 exit_clear_speed=rospy.get_param("~exit_clear_speed", 0.10),
@@ -431,9 +431,12 @@ class VisionNavNode(object):
         )
         rospy.loginfo_throttle(5.0, "timing: %s", self._timing.format_summary())
 
-        detector_line = None if is_rear else self._detector_line()
-        if detector_line is not None and self._detector.last_status.blocked_count > 0:
-            # Countdown to a back-out is worth seeing in the console too.
+        detector_line = self._detector_line()
+        if detector_line is not None and (
+            is_rear or self._detector.last_status.blocked_count > 0
+        ):
+            # Countdowns (to a back-out, or to the rear seeing the row
+            # exit) are worth seeing in the console too.
             rospy.loginfo_throttle(2.0, "%s", detector_line)
 
         if self._debug_pub is not None:
@@ -445,14 +448,21 @@ class VisionNavNode(object):
     def _detector_line(self):
         """HUD/log line showing why the exit detector is (not) firing.
 
-        Only meaningful in FOLLOW_ROW (the sole state that feeds the
-        detector); None otherwise.
+        FOLLOW_ROW shows the front detector; BACKOUT shows the rear-view
+        open-exit watcher that ends the reverse leg; None elsewhere.
         """
-        if (
-            self._detector is None
-            or self._detector.last_status is None
-            or self._fsm.state != STATE_FOLLOW_ROW
-        ):
+        if self._detector is None:
+            return None
+        if self._fsm.state == STATE_BACKOUT:
+            rear = self._fsm.rear_exit_detector
+            if rear.last_status is None:
+                return None
+            return "rear exit: open %d/%d wide=%d" % (
+                rear.last_status.open_count,
+                rear.exit_detect_frames,
+                rear.last_status.wide_rows,
+            )
+        if self._detector.last_status is None or self._fsm.state != STATE_FOLLOW_ROW:
             return None
         s = self._detector.last_status
         return "exit: blk %d/%d open %d/%d rows=%d frac=%.2f armed o:%s b:%s" % (

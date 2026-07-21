@@ -13,7 +13,11 @@ State graph (boustrophedon coverage):
 Blocked-row back-out branch (rows are too tight to turn around in; the
 robot reverses out the end it entered, steering from the REAR camera):
 
-  FOLLOW_ROW --blocked exit--> BACKOUT (reverse d_block, rear-steered)
+  FOLLOW_ROW --blocked exit--> BACKOUT (reverse, rear-steered; ends when
+          the REAR camera sees the row open up behind the robot, bounded
+          above by the odometry distance d_block recorded since row entry
+          -- d_block alone overshoots badly on row 1, where FOLLOW_ROW
+          started at the spawn point well before the row entrance)
       --> BACKOUT_CLEAR (reverse headland_clearance more, straight)
       --> BACKOUT_TURN_1 (90 deg, turn_sign)
       --> BACKOUT_TRAVERSE (traverse_distance m, forward)
@@ -53,6 +57,8 @@ import math
 from agbot_vision_nav.row_exit_detector import (
     EXIT_NONE,
     EXIT_ROW_END_BLOCKED,
+    EXIT_ROW_END_OPEN,
+    RowExitDetector,
     normalized_corridor_widths,
 )
 
@@ -117,6 +123,18 @@ class MissionFSM:
             raise ValueError("first_turn_direction must be 'left' or 'right'")
         self._controller = controller
         self._detector = detector
+        # Rear-view open-exit watcher for BACKOUT: reversing ends as soon as
+        # the rear camera sees the corridor widen to open field (the robot
+        # has actually left the row), instead of always unwinding the full
+        # odometry distance. Same open thresholds as the front detector, but
+        # armed immediately -- the exit behind may be arbitrarily close.
+        # Public: the ROS node renders its status on the debug HUD.
+        self.rear_exit_detector = RowExitDetector(
+            exit_width_threshold=detector.exit_width_threshold,
+            exit_detect_frames=detector.exit_detect_frames,
+            min_in_row_distance=0.0,
+            exit_open_rows_required=detector.exit_open_rows_required,
+        )
         self.num_rows = num_rows
         self.row_spacing = row_spacing
         # Length of the TRAVERSE/BACKOUT_TRAVERSE leg. Intentionally SHORTER
@@ -166,6 +184,7 @@ class MissionFSM:
             # Clear the MPC rate-limiter history from forward driving before
             # the controller starts steering the reverse leg.
             self._controller.reset()
+            self.rear_exit_detector.reset()
 
     def _distance_from_entry(self, odom_pose):
         if odom_pose is None or self._entry_xy is None:
@@ -280,6 +299,19 @@ class MissionFSM:
             if self._distance_from_entry(odom_pose) >= self._backout_target:
                 self._enter(STATE_BACKOUT_CLEAR, odom_pose)
                 return 0.0, 0.0, self.state, False
+            # Rear-view exit check: the row opening up behind the robot
+            # means it is out -- stop unwinding odometry (which overshoots
+            # whenever d_block includes pre-row approach, e.g. row 1 from
+            # the spawn point) and move on to BACKOUT_CLEAR.
+            if rear_centerline_result is not None:
+                rear_signal = self.rear_exit_detector.update(
+                    rear_centerline_result,
+                    image_width,
+                    self._distance_from_entry(odom_pose),
+                )
+                if rear_signal == EXIT_ROW_END_OPEN:
+                    self._enter(STATE_BACKOUT_CLEAR, odom_pose)
+                    return 0.0, 0.0, self.state, False
             # Steer from the rear camera; the front controller's sign
             # conventions hold unchanged while reversing (mirror + reversed
             # motion cancel). Without a usable rear result, reverse straight

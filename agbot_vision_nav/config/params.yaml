@@ -91,7 +91,10 @@ yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
 reacquire_max_width: 0.6   # corridor must look narrower than this (normalized)
 reacquire_frames: 3        # consecutive corridor frames to re-enter FOLLOW_ROW
-reacquire_max_distance: 1.5  # m of creep without a corridor => no rows left => DONE
+reacquire_max_distance: 2.0  # m of creep without a corridor => no rows left =>
+                             # DONE. 2.0 (was 1.5) leaves margin for back-out
+                             # overshoot: the robot may re-approach the rows
+                             # from farther out than a normal headland turn.
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
 exit_open_rows_required: 1 # how many scan rows (ANY of them) must be wide
                            # for the open exit. 1 = fire off whichever row

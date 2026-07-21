@@ -36,6 +36,16 @@ of the TRAVERSE leg the nose got too close to the NEXT row's corn.
   CPU robot / GPU robot for the comparison table (mean/p50/p95 ms, FPS).
 - **BACKOUT telemetry**: 1 Hz log of rear offset/slope → angular_z and
   reverse progress, for the steering-sign nudge test.
+- **Back-out sim-validated (same day, 3 iterations):** (1) blocked never
+  fired at a big box — `blocked_min_traversable_fraction` lowered
+  0.15→0.08→**0.02** (up close the obstacle fills the frame; HUD showed
+  frac=0.04) and the blocked debounce made leaky; (2) reversing then
+  overshot meters past the row entrance (d_block includes the pre-row
+  approach — row 1 starts at the SPAWN point) and REACQUIRE gave up →
+  BACKOUT now ends early when the REAR camera sees the row open up behind
+  (rear open-exit watcher, odometry bound kept as upper limit;
+  `reacquire_max_distance` 1.5→2.0). Detector/rear-exit status lines are
+  on the debug HUD (`exit: blk n/8 ...` / `rear exit: open n/5`).
 
 **Back-out retest protocol (Gazebo, next session)** — the failed run
 ("ran over the fake corn, S-turn didn't work") predates the mpc_dt fix

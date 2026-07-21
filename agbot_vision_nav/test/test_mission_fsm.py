@@ -454,6 +454,46 @@ def test_blocked_final_row_backs_out_then_done():
     assert fsm.blocked_events == [(1, pytest.approx(3.0, abs=0.2))]
 
 
+def test_backout_ends_early_when_rear_sees_open_field():
+    # Regression (sim, 2026-07-21): d_block includes the pre-row approach
+    # (row 1 starts at the spawn point), so odometry-only reversing
+    # overshot the row entrance by meters and REACQUIRE never found the
+    # next row. The rear camera seeing open field must end the reverse leg.
+    fsm = make_fsm(num_rows=3)
+    pose, _, _ = drive_row_to_block(fsm)  # backout target ~3 m
+    front = blocked_result()
+    open_rear = open_result()
+    x, y, yaw = pose
+    p = (x - 0.5 * math.cos(yaw), y - 0.5 * math.sin(yaw), yaw)
+    # rear still shows a corridor: keep reversing
+    lin, _, state, _ = fsm.update(
+        front, p, WIDTH, rear_centerline_result=corridor_result()
+    )
+    assert state == STATE_BACKOUT and lin < 0.0
+    # rear opens up: after the debounce (exit_detect_frames=3 in make_fsm)
+    # the reverse leg ends far short of the 3 m odometry target
+    for _ in range(3):
+        _, _, state, _ = fsm.update(
+            front, p, WIDTH, rear_centerline_result=open_rear
+        )
+    assert fsm.state == STATE_BACKOUT_CLEAR
+
+
+def test_backout_rear_corridor_keeps_reversing_to_odometry_bound():
+    fsm = make_fsm(num_rows=3)
+    pose, _, _ = drive_row_to_block(fsm)
+    front = blocked_result()
+    corridor = corridor_result()
+    x, y, yaw = pose
+    for i in range(1, 26):  # 2.5 m reversed, still under the ~3 m target
+        p = (x - i * 0.1 * math.cos(yaw), y - i * 0.1 * math.sin(yaw), yaw)
+        lin, _, state, _ = fsm.update(
+            front, p, WIDTH, rear_centerline_result=corridor
+        )
+        assert state == STATE_BACKOUT
+        assert lin < 0.0
+
+
 def test_backout_progress_reports_distance():
     fsm = make_fsm(num_rows=3)
     pose, _, _ = drive_row_to_block(fsm)
