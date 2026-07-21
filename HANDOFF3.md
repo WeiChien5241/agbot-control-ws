@@ -1,72 +1,51 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work. This session added: RViz-only URDF
-viewer, a front-deck camera relocation experiment (NOT yet working well), a
-rear camera + blocked-row back-out feature (NOT yet sim-verified), and a
-two-round rework of row-exit detection (one field-tested regression and its
-fix — read GOTCHA 1 before touching the exit detector). Written so a fresh
-session can continue with zero context. Supersedes the previous HANDOFF3.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-21.
+Field status: in-row nav + headland turns WORK on the real robot (tall
+camera). This session sim-validated the blocked-row back-out through four
+fix iterations; ONE open bug remains (§0). Also added: pipeline timing
+instrumentation, model_device/CUDA handling, offline benchmark script,
+traverse_distance param. Written so a fresh session picks up with zero
+context. Supersedes all previous HANDOFF3 content.
 
 ---
 
-## 0. SESSION UPDATE 2026-07-21 (read this first; supersedes stale bits below)
+## 0. START HERE — open bug: after back-out, no turn, mission ends DONE
 
-**Field status (real robot, TALL camera):** in-row navigation and the headland
-turns both WORK. The front-deck camera experiment is concluded — the user is
-back on the tall mount (URDF working-tree toggle is still uncommitted user
-state; don't commit/revert it unprompted). Remaining field issue: at the end
-of the TRAVERSE leg the nose got too close to the NEXT row's corn.
+Last sim run of the session (small maize world, box blocker,
+`sim:=true mission_enabled:=true rear_camera_enabled:=true num_rows:=3`):
+the back-out itself WORKED — blocked fired, robot reversed steering from
+the rear camera (direction correct), and the new rear-exit watcher ended
+the reverse near the row entrance instead of overshooting. But then the
+robot "did not turn and just returned the state as finished": no visible
+S-turn, state went to DONE, mission over. NOT diagnosed yet.
 
-**Changes this session (all committed + pushed; 65/65 unit tests):**
-- `traverse_distance` (new param, default **0.6 m**) — TRAVERSE and
-  BACKOUT_TRAVERSE now drive this instead of `row_spacing` (0.75, unchanged,
-  still the physical spacing). Turning ~0.15 m before the next row's
-  centerline keeps the nose off the corn; REACQUIRE + MPC close the offset.
-  `headland_clearance` stays 0.75 — deliberate, do not conflate the two legs.
-- **Pipeline timing instrumentation** (`timing_stats.py`, wired into the
-  node): 5 s-throttled `timing:` log line and a debug-HUD line with camera
-  Hz, processed Hz (= control rate), inference ms, end-to-end
-  camera-stamp→cmd_vel latency, and dropped-frame % (high dropped % is BY
-  DESIGN of latest-frame-wins, not a bug).
-- **`model_device` param (default `auto`)** — model is moved to CUDA when
-  available; the node logs `Model loaded on device: ...` at startup.
-  **On the RTX 4060 robot check this line first**: if it says `cpu`, torch
-  has no usable CUDA there and that is why it feels as slow as the CPU robot.
-- **`scripts/benchmark_inference.py`** (no ROS): run identically on laptop /
-  CPU robot / GPU robot for the comparison table (mean/p50/p95 ms, FPS).
-- **BACKOUT telemetry**: 1 Hz log of rear offset/slope → angular_z and
-  reverse progress, for the steering-sign nudge test.
-- **Back-out sim-validated (same day, 3 iterations):** (1) blocked never
-  fired at a big box — `blocked_min_traversable_fraction` lowered
-  0.15→0.08→**0.02** (up close the obstacle fills the frame; HUD showed
-  frac=0.04) and the blocked debounce made leaky; (2) reversing then
-  overshot meters past the row entrance (d_block includes the pre-row
-  approach — row 1 starts at the SPAWN point) and REACQUIRE gave up →
-  BACKOUT now ends early when the REAR camera sees the row open up behind
-  (rear open-exit watcher, odometry bound kept as upper limit;
-  `reacquire_max_distance` 1.5→2.0). Detector/rear-exit status lines are
-  on the debug HUD (`exit: blk n/8 ...` / `rear exit: open n/5`).
+Ranked hypotheses (mission_fsm.py):
+1. **REACQUIRE gave up** (`REACQUIRE` → DONE when no corridor within
+   `reacquire_max_distance` 2.0 m). The S-turn (BACKOUT_TURN_1 →
+   BACKOUT_TRAVERSE → BACKOUT_TURN_2) is quick and easy to miss in rqt;
+   if it DID happen, the failure is REACQUIRE not recognizing the next
+   row (`_corridor_looks_like_row`: needs valid centerline + mean
+   corridor width < `reacquire_max_width` 0.6 for `reacquire_frames` 3
+   consecutive frames). From the headland the corridor may read wider
+   than 0.6 until the robot is fairly close.
+2. **`_done_after_backout` path** (BACKOUT_CLEAR → DONE directly, no
+   turn): taken only when the blocked row was the FINAL counted row
+   (`rows_driven >= num_rows` at block time — that behavior is BY
+   DESIGN). If the blocker was in row 1 of 3 and this path fired,
+   `rows_driven` was somehow inflated — that would be a real bug (each
+   exit/blocked event increments it).
+3. Odometry hiccup is unlikely (maneuver states just hold, not DONE).
 
-**Back-out retest protocol (Gazebo, next session)** — the failed run
-("ran over the fake corn, S-turn didn't work") predates the mpc_dt fix
-(`0f93215`) and the 0.175 angular clamp; that same bug made field steering
-5× too aggressive, so retest before changing any back-out logic:
-1. Pull latest, `catkin build`, small maize world.
-2. Rear segmentation preview (robot idle, zero-code): launch the node
-   pointed at the rear camera with cmd_vel diverted —
-   `roslaunch agbot_vision_nav vision_nav.launch sim:=true
-   camera_topic:=/camera_rear/image_raw camera_topic_is_compressed:=false
-   cmd_vel_topic:=/cmd_vel_rear_preview`, then
-   `rqt_image_view /vision_nav_node/debug/image`.
-3. Blocker run: box mid-corridor, `mission_enabled:=true
-   rear_camera_enabled:=true num_rows:=3 delta_angular_z_max:=0.1
-   mpc_r_delta:=1.5`. During BACKOUT the SAME debug topic shows the rear
-   camera (`state=BACKOUT (REAR)` HUD) — there is no separate rear topic.
-   Record a bag of `/odometry/filtered /cmd_vel /vision_nav_node/debug/image`.
-4. Nudge test: drag the robot off-center in Gazebo during BACKOUT; the
-   BACKOUT telemetry log must show angular_z re-centering it. Only if it
-   steers AWAY, flip the rear steering sign (update
-   `test_backout_rear_steering_signs` first).
+**How to disambiguate in one run:** watch the console for the one-shot
+`Mission DONE: rows_driven=N, blocked rows: row K blocked at X m` line —
+N tells you instantly whether hypothesis 2 applies (N should be 1 if the
+box was in row 1). Watch the HUD `state=` sequence right before DONE:
+`BACKOUT_CLEAR → DONE` = hypothesis 2; `...TURN_2 → REACQUIRE → DONE` =
+hypothesis 1. Record a bag of `/odometry/filtered /cmd_vel
+/vision_nav_node/debug/image`. If it's hypothesis 1, candidate knobs:
+`reacquire_max_width` (0.6 → 0.7) or `reacquire_max_distance` (2.0 →
+2.5); also check BACKOUT_TURN_2's end pose actually faces the next row.
 
 ---
 
@@ -74,172 +53,142 @@ of the TRAVERSE leg the nose got too close to the NEXT row's corn.
 
 Vision-based navigation for the Purdue P-AgBot (Clearpath Jackal): DINOv3
 segmentation → traversability mask → centerline estimation → image-space MPC
-keeps the robot centered in a corn row. Row-following is demoed working
-(Gazebo, YouTube video); multi-row boustrophedon missions are sim-validated.
-Current thrusts: (a) relocate the front camera low on the front deck to avoid
-leaf occlusions, (b) rear camera + reverse-out-of-row behavior for blocked
-rows, (c) make row-exit detection fast and robust enough that the robot never
-overruns the row end (the sim world has a cliff past the field edge; real
-fields have crops/holes).
+keeps the robot centered in a corn row. Multi-row boustrophedon missions
+with odometry headland turns; blocked-row back-out via a rear camera.
+Row-following and headland turns are FIELD-PROVEN (real corn, tall camera,
+2026-07); back-out is sim-validated except the §0 bug.
 
 ---
 
 ## 2. CURRENT STATE
 
-### Working & committed (branch `main`, all pushed)
+### Field (real robot, 2026-07, tall camera)
+- In-row navigation: works. Headland turns: work.
+- One field issue fixed in code afterwards: at the end of TRAVERSE the nose
+  got too close to the NEXT row's corn → new `traverse_distance` param
+  (see below). NOT yet field-re-tested.
+- The front-deck (low) camera experiment is CONCLUDED — user is back on the
+  tall mount. `agbot_camera.urdf.xacro` still carries an UNCOMMITTED
+  working-tree diff (tall line active, front-deck line commented, stand at
+  x=-0.025). It is the user's state: don't commit or revert unprompted.
 
-Recent commits (this session):
-- `1dc8754` display.launch.xml + camera xacro macro + rear camera + commented
-  front-deck origin
-- `5ce633c` blocked-row back-out (BACKOUT states, rear-camera steering)
-- `54e8ef8` far-rows exit criterion + back-out gating — **the exit part of
-  this commit was a REGRESSION, do not restore its detector logic**
-- `0ef6b55` regression fix: any-N-rows open criterion + `exit_clear_speed`
+### Sim back-out validation (2026-07-21, four iterations — all committed)
+1. Blocked never fired at a big box (robot stopped, stayed FOLLOW_ROW):
+   ground-fraction gate too strict up close. `blocked_min_traversable_fraction`
+   0.15 → 0.08 → **0.02** (HUD showed frac=0.04 in front of the box; the
+   gate now only rejects a truly black view; 0.0 disables it). Blocked
+   debounce made LEAKY (noise frames decrement, not reset, the counter).
+2. Reverse leg overshot meters past the row entrance: BACKOUT unwound the
+   full odometry distance d_block, which includes the PRE-ROW approach
+   (row 1's FOLLOW_ROW starts at the SPAWN point ~2 m before the row) →
+   REACQUIRE (then 1.5 m) never reached the next row → mission ended.
+   Fix: **rear-exit watcher** — during BACKOUT the rear centerline runs
+   the open-exit signature (same thresholds, armed immediately,
+   `MissionFSM.rear_exit_detector`); reversing ends as soon as the row
+   opens up behind the robot; d_block stays as the upper bound.
+   `reacquire_max_distance` 1.5 → 2.0.
+3. Confirmed working in sim: blocked fires, reverse steering direction
+   correct (no negation — as the unit tests predicted), early rear-exit
+   stop works.
+4. Remaining: §0 (no turn after back-out, straight to DONE).
 
-**Sim/bringup:**
-- `roslaunch agbot_bringup display.launch.xml` — RViz-only URDF view (no
-  Gazebo) for camera-placement iteration. ROS1 syntax; needs
-  `ros-noetic-joint-state-publisher-gui`.
-- `agbot_bringup/urdf/agbot_camera.urdf.xacro` — cameras are now a xacro macro
-  `agbot_cam(name, xyz, rpy)`. Front instantiation `name="camera"` preserves
-  all historical names/topics (`camera_link`, `/camera/image_raw`,
-  `camera_optical_frame`). Rear camera `name="camera_rear"` at
-  `xyz="-0.05 0 0.225" rpy="0 0 pi"` → `/camera_rear/image_raw`,
-  `camera_rear_optical_frame`.
+### This session's other additions (all committed + pushed)
+- **Timing instrumentation** (`src/agbot_vision_nav/timing_stats.py`,
+  rospy-free): node logs a 5 s-throttled `timing:` line and a debug-HUD
+  line — camera Hz, processed Hz (= control rate), inference ms
+  (mean/p95), end-to-end camera-stamp→cmd_vel latency, dropped-frame %
+  (high dropped % is BY DESIGN of latest-frame-wins). Sim laptop measured
+  ~5.7 Hz / 165 ms inference / 288 ms e2e.
+- **`model_device` param (default `auto`)**: SegmentationModel moves the
+  model to CUDA when available; node logs `Model loaded on device: ...`.
+  **On the RTX 4060 robot check that line first** — `cpu` there means
+  torch has no usable CUDA and explains any slowness. `nvidia-smi` while
+  the node runs must show the python process.
+- **`scripts/benchmark_inference.py`** (no ROS): identical run on laptop /
+  CPU robot / GPU robot → comparison table (device, mean/p50/p95 ms, FPS).
+  Run inside `~/agbot_venv`.
+- **`traverse_distance`** (default 0.6 m): TRAVERSE and BACKOUT_TRAVERSE
+  drive this instead of `row_spacing` (0.75, unchanged — still the
+  physical spacing). Stops ~0.15 m short of the next row's centerline;
+  REACQUIRE + MPC close the offset. ⚠ **Precedence gotcha:** the user set
+  `traverse_distance: 0.65` in params.yaml, but the launch file's
+  `<param>` (from the launch ARG default 0.6) OVERRIDES params.yaml —
+  `<param>` tags come after the `<rosparam file>` load. To actually get
+  0.65 pass `traverse_distance:=0.65` at launch, or change the launch
+  arg default. This applies to EVERY knob that is both a launch arg and a
+  params.yaml entry: the launch arg default wins.
+- **Diagnostics on the HUD** (debug_viz/vision_nav_node): FOLLOW_ROW shows
+  `exit: blk n/8 open n/5 rows= frac= armed o: b:` (why the exit detector
+  is/isn't firing); BACKOUT shows `rear exit: open n/5 wide=` plus 1 Hz
+  BACKOUT telemetry log (rear offset/slope → angular_z, reverse progress).
 
-**Vision-nav (53/53 unit tests pass —
-`cd agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -v`):**
-- **Row-exit detection (row_exit_detector.py), current semantics:**
-  - OPEN: at least `exit_open_rows_required` (**1**) scan rows — ANY of them —
-    have corridor width ≥ `exit_width_threshold` (0.8), for
-    `exit_detect_frames` (5) consecutive frames, armed after
-    `min_in_row_distance` (2.0 m).
-  - BLOCKED: zero corridors at ALL scan rows + `traversable_fraction` ≥ 0.15,
-    for `blocked_detect_frames` (**8**, deliberately longer — foliage brushing
-    the lens must not trigger a back-out), armed already after
-    `blocked_arming_distance` (**0.3 m**) so mid-row obstacles near the row
-    entrance are caught.
-- **Blocked-row back-out (mission_fsm.py):** FOLLOW_ROW --blocked-->
-  BACKOUT (reverse the odometry-recorded in-row distance, steering from the
-  REAR camera) → BACKOUT_CLEAR (reverse `headland_clearance` more, straight)
-  → BACKOUT_TURN_1 (`+turn_sign` 90°) → BACKOUT_TRAVERSE (`row_spacing`,
-  forward) → BACKOUT_TURN_2 (`-turn_sign` 90°, S-shaped lane change) →
-  REACQUIRE. Next row is entered from the SAME end / traveled the SAME world
-  direction, so the boustrophedon `_turn_sign` flip at the following
-  REACQUIRE is suppressed exactly once (`_suppress_flip`). Row still counts
-  toward `num_rows`; `blocked_events` (row, distance) reported in the
-  mission-DONE log. Blocked FINAL row backs fully out before DONE.
-  - **Gated**: `backout_enabled` = `rear_camera_enabled`. Rear camera off ⇒
-    BACKOUT states unreachable; a blocked signal stops the robot and ends the
-    mission with the blocked row reported (user's explicit choice).
-  - **Rear steering sign rule (derived + unit-tested): NO negation.** The
-    180° image mirror and the reversed motion cancel exactly — rear
-    `offset_norm`/`slope_term` go into `MPCRowController.compute()` unchanged;
-    only linear velocity is negative (`backout_speed` 0.10).
-- **vision_nav_node.py:** optional rear subscriber (only when
-  `mission_enabled` AND `rear_camera_enabled`), second single-slot frame
-  buffer sharing one Condition; the single inference thread reads the REAR
-  frame only while `fsm.state == STATE_BACKOUT` (front otherwise → zero extra
-  cost in normal operation). Debug overlay shows `state=... (REAR)` during
-  back-out. One-shot mission-DONE log lists blocked rows.
-- **Exit-leg speed:** EXIT_CLEAR now drives `exit_clear_speed` (0.10) instead
-  of cruise (0.15); `headland_clearance` reduced 1.0 → **0.5 m**.
-- **Launch args added to vision_nav.launch:** `headland_clearance`,
-  `exit_width_threshold`, `exit_open_rows_required`, `exit_detect_frames`,
-  `blocked_detect_frames`, `exit_clear_speed`, `rear_camera_enabled`,
-  `rear_camera_topic`, `rear_camera_topic_is_compressed`, `backout_speed`.
+Session commits (oldest first): `b6fcc3f` timing stats module, `cd880ff`
+traverse_distance + backout_progress, `05dd56c` node wiring (timing,
+device, telemetry), benchmark script, `778c202` blocked deadlock fix +
+detector HUD, `6bc8c52` gate → 0.02, `e8b8746` rear-exit early stop.
 
-### Field test on real corn (2026-07-14) + follow-up fixes (2026-07-15)
+### Detector semantics (row_exit_detector.py, current)
+- OPEN: ≥ `exit_open_rows_required` (1) scan rows — ANY of them — with
+  corridor width ≥ `exit_width_threshold` (0.8), `exit_detect_frames` (5)
+  CONSECUTIVE frames, armed after `min_in_row_distance` (2.0 m).
+- BLOCKED: zero corridors at ALL scan rows + `traversable_fraction` ≥
+  `blocked_min_traversable_fraction` (**0.02**), accumulated over
+  `blocked_detect_frames` (8) with a LEAKY counter (non-signature frames
+  decrement by 1, floor 0), armed after `blocked_arming_distance` (0.3 m).
+- `last_status` (ExitDetectorStatus namedtuple) exposes all internals per
+  frame — that's what the HUD renders.
 
-Two field findings and what was done about them:
-- **In-row steering far too aggressive** — robot swerved toward plants and had
-  to be manually stopped. Root cause: `mpc_dt` was a NO-OP — the
-  `MPCRowController` constructor accepted `dt` but never used it, so on the
-  2 Hz CPU robot the model assumed 0.1 s steps while real steps were ~0.5 s
-  (per-step drift understated 5x, rate limit 5x weaker in real time).
-  **Fixed**: `dt` now scales `alpha`, `beta`, and `delta_angular_z_max`
-  internally (they are specified at the 0.1 s reference period; dt=0.1 is
-  bit-identical to the old behavior). Tests: `test_dt_scales_model_and_rate_limit`,
-  `test_dt_default_matches_explicit_reference_dt` (55 total now).
-  `mpc_r_control` is now also a launch arg. Gentle-tuning recipe (in
-  vision_nav.launch comments): angular_z_max 0.15 → delta_angular_z_max 0.1 →
-  r_delta 1.5 / r_control 0.3 → q_offset 5.0; CPU robot adds mpc_dt:=0.5.
-  NOT yet re-tested in Gazebo or the field.
-- **Exit detection still ran the old all-rows criterion in the field** — the
-  robot was simply on pre-`0ef6b55` code. No code change; pull + `catkin build`
-  on the robot before the next field run.
+### Mission FSM (mission_fsm.py, current)
+FOLLOW_ROW → EXIT_CLEAR (0.10 m/s, `headland_clearance` 0.75) → TURN_1 →
+TRAVERSE (`traverse_distance`) → TURN_2 → REACQUIRE → FOLLOW_ROW;
+boustrophedon sign flip per transition. Blocked branch: BACKOUT (reverse,
+rear-steered, ends on rear open-exit OR d_block bound) → BACKOUT_CLEAR
+(reverse `headland_clearance` more) → BACKOUT_TURN_1 → BACKOUT_TRAVERSE →
+BACKOUT_TURN_2 (counter-rotate, S-shape) → REACQUIRE with ONE suppressed
+sign flip; next row same world direction. Blocked FINAL row: backs fully
+out then DONE (no turn — remember this when judging §0). Gated:
+`backout_enabled` = mission_enabled AND rear_camera_enabled; without rear
+camera a blocked signal stops + DONE + report. Rear steering signs
+UNCHANGED (mirror × reverse = identity; `test_backout_rear_steering_signs`).
 
-**New robot with a Logitech Brio (no WDR camera):** the nav code selects its
-camera via the `camera_topic` launch arg; Brio-only bringup recipe (find the
-by-id device link, `cameras.launch front:=false brio_front_device:=...`, then
-`vision_nav.launch camera_topic:=/brio_front/image_raw/compressed
-camera_topic_is_compressed:=true`) is documented at the top of
-`cameras.launch`. Check `nvidia-smi` on that robot: GPU ⇒ default
-mpc_dt/max_data_age_sec; CPU-only ⇒ 0.5 / 1.5.
-
-### NOT working / unverified (start here next session)
-
-1. **Front-deck camera position** — UNCOMMITTED experiment in
-   `agbot_camera.urdf.xacro`: front camera currently ACTIVE at
-   `xyz="0.19 0 0.025"` (low, front deck), tall-stand line
-   `xyz="0 0 ${cam_z}"` commented out, stand moved to `x=-0.025`. User
-   reports it "still not working": in-row nav is fine at the low position,
-   but exits misbehaved across two test rounds (see GOTCHA 1 timeline). The
-   `0ef6b55` fix has NOT yet been re-tested in sim at either camera position.
-   The user may revert to the tall mount — treat the toggle as theirs.
-2. **Backward movement (BACKOUT)** — implemented + unit-tested but NEVER
-   exercised in Gazebo. Needs: rear camera image sanity check
-   (`rostopic hz /camera_rear/image_raw`), then a blocker run with
-   `rear_camera_enabled:=true` (drop a ~0.5 m box mid-corridor via Gazebo
-   Insert). Watch for steering sign errors during reverse (unit tests say no
-   negation is correct; verify by nudging the robot off-center in BACKOUT).
-3. **Exit re-validation** — after `0ef6b55`, run the plain 3-row mission at
-   BOTH camera positions and confirm the robot turns before the world edge.
+### Node (vision_nav_node.py)
+Single-slot latest-frame buffers (front + rear share one Condition), one
+inference thread, rear frames consumed ONLY in STATE_BACKOUT, 10 Hz
+watchdog (hold last cmd until `max_data_age_sec`, then zero). Frame slots
+carry (frame, header stamp, recv time) for the timing stats. Debug topic:
+`/vision_nav_node/debug/image` — during BACKOUT it automatically shows the
+REAR camera (`state=BACKOUT (REAR)`); there is NO separate rear debug
+topic. Zero-code rear preview: launch the node with
+`camera_topic:=/camera_rear/image_raw camera_topic_is_compressed:=false
+cmd_vel_topic:=/cmd_vel_rear_preview`.
 
 ---
 
 ## 3. KEY DECISIONS (do not re-litigate without new information)
 
-### Exit detection: open = "ANY N rows wide", never "specific rows" (GOTCHA 1)
-Two field-tested iterations landed here:
-- v1 (original): all VALID rows ≥ 0.8 → fired only when the NEAREST row saw
-  open field → 1.5–2.5 m overshoot with the low camera (robot off the world).
-- v2 (`54e8ef8`, REGRESSION): required the 2 FARTHEST rows valid+wide →
-  NEVER fired, because beyond the field edge the segmentation of distant
-  ground is garbage (far rows permanently invalid) → robot off the cliff at
-  every exit, both camera heights.
-- v3 (current, `0ef6b55`): ≥ `exit_open_rows_required` (1) rows wide, ANY
-  position. Provably never later than v1, earlier where far rows segment
-  well, immune to far-row garbage. Regression test:
-  `test_open_fires_when_only_near_row_wide`.
-
-### Back-out gating and no-rear fallback
-Without a rear camera there is no safe maneuver on blocked: stop + DONE +
-report (user chose this over "wait with timeout" and "ignore blocked").
-
-### Rear-steering signs: unchanged (mirror × reverse = identity)
-Documented in mission_fsm docstring; guarded by
-`test_backout_rear_steering_signs`. Don't "fix" the signs without failing
-that test first.
-
-### Back-out geometry: S-turn, same-direction next row, suppress ONE flip
-After backing out the entry end, the next row is boustrophedon-shifted, not
-alternated. User explicitly accepted this.
-
-### Rear inference only during BACKOUT
-Normal-operation cost unchanged; the other BACKOUT_* states are
-odometry-only. Don't run both cameras' inference concurrently on the 2 Hz
-CPU robot.
-
-### Earlier decisions still binding
-- Image-space MPC, no EKF; scipy SLSQP; sign conventions locked by tests.
-- Headland maneuvers odometry-closed-loop; `row_spacing` 0.75 m measured.
-- `mission_enabled` defaults false; speed tuning belongs on the real robot
-  (0.15 m/s envelope in sim; scale `angular_z_max`, `delta_angular_z_max`,
-  `mpc_alpha` with speed).
-- Small maize world for sim (RTF 1.0); `switch_maize_world.sh full|small`.
-- Camera URDF injection via `load_robot_description.sh` (JACKAL_URDF_EXTRAS).
-- Go-home deferred (mirrored-mission approach chosen, not started).
+- **Exit detection: open = "ANY N rows wide", never specific/farthest rows.**
+  Field-tested twice: beyond the field edge, far scan rows can stay invalid
+  FOREVER (garbage segmentation of distant ground); a farthest-rows
+  criterion never fired and the robot drove off the world edge. Tripwire
+  test: `test_open_fires_when_only_near_row_wide`.
+- **Blocked ground-fraction gate ≈ 0** (0.02): up close a blocker fills the
+  frame (sim-measured frac=0.04), so any meaningful gate deadlocks the
+  back-out. The 8-frame debounce is the real occlusion guard.
+- **BACKOUT ends on rear-camera open-exit, odometry as upper bound only** —
+  odometry-only reversing overshoots whenever d_block includes pre-row
+  travel (always true for row 1 from spawn).
+- **Rear-steering signs: NO negation** (mirror × reverse cancel) — sim-
+  confirmed this session. Don't "fix" without failing the unit test first.
+- **Back-out geometry: S-turn, same-direction next row, suppress ONE flip.**
+- **Rear inference only during STATE_BACKOUT** (other BACKOUT_* states are
+  odometry-only) — don't run two cameras' inference on the 2 Hz CPU robot.
+- **No rear camera ⇒ blocked = stop + DONE + report** (user's choice).
+- Image-space MPC (scipy SLSQP, N=8), no EKF; `mpc_dt` scales alpha/beta/
+  rate-limit (specified at 0.1 s reference; CPU robot uses mpc_dt:=0.5).
+- `mission_enabled` defaults false. Small maize world for sim
+  (`switch_maize_world.sh full|small`). Camera URDF injection via
+  `load_robot_description.sh` (JACKAL_URDF_EXTRAS — `<env>` doesn't reach
+  `<param command>` in ROS1). Go-home deferred (mirrored-mission chosen).
 
 ---
 
@@ -248,105 +197,78 @@ CPU robot.
 ### `agbot_vision_nav/`
 | File | Purpose |
 |---|---|
-| `src/agbot_vision_nav/segmentation_model.py` | lightly_train model wrapper; mask classes 0=sky,1=traversable,2=obstacle. |
-| `src/agbot_vision_nav/centerline_estimator.py` | 3 scan rows outward from center column → `CenterlineResult(offset_norm, slope_term, valid, traversable_fraction, scan_rows)`. |
-| `src/agbot_vision_nav/controller.py` | `MPCRowController` (SLSQP, N=8). Reused unchanged for rear-camera reverse steering. |
-| `src/agbot_vision_nav/row_exit_detector.py` | OPEN/BLOCKED signatures, per-signature debounce AND arming (see §2). |
-| `src/agbot_vision_nav/mission_fsm.py` | Mission FSM incl. BACKOUT branch, `backout_enabled` gate, `blocked_events`, `exit_clear_speed`, `BACKOUT_STATES` export. |
-| `src/agbot_vision_nav/debug_viz.py` | HUD overlay (`state=`, per-row `w=`); rear frames get `state=... (REAR)`. |
-| `scripts/vision_nav_node.py` | Only rospy file. Dual frame slots, FSM-state-driven camera source selection, watchdog, mission-DONE report. |
-| `config/params.yaml` + `launch/vision_nav.launch` | All knobs; exit/back-out params now launch args (list in §2). |
-| `test/` | 53 tests (controller 15, centerline 9, viz 2, detector 13, fsm 14). |
+| `src/agbot_vision_nav/segmentation_model.py` | lightly_train wrapper; classes 0=sky,1=traversable,2=obstacle; `device=` param + `device_str`. |
+| `src/agbot_vision_nav/centerline_estimator.py` | 3 scan rows outward from center column → `CenterlineResult`. |
+| `src/agbot_vision_nav/controller.py` | `MPCRowController` (SLSQP, N=8, dt-scaled). Reused unchanged for rear reverse steering. |
+| `src/agbot_vision_nav/row_exit_detector.py` | OPEN/BLOCKED signatures, leaky blocked debounce, per-signature arming, `last_status`. |
+| `src/agbot_vision_nav/mission_fsm.py` | Mission FSM incl. BACKOUT branch, `rear_exit_detector`, `backout_progress()`, `traverse_distance`, `blocked_events`. |
+| `src/agbot_vision_nav/timing_stats.py` | Rolling pipeline metrics (`format_summary()`, `hud_line()`). |
+| `src/agbot_vision_nav/debug_viz.py` | HUD overlay: state, per-row `w=`, `timing_line`, `detector_line`. |
+| `scripts/vision_nav_node.py` | Only rospy file. Dual frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging. |
+| `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
+| `config/params.yaml` + `launch/vision_nav.launch` | All knobs. ⚠ launch-arg defaults override params.yaml (see §2). |
+| `test/` | **71 tests**: controller 17, centerline 9, viz 3, detector 17, fsm 18, timing 7. |
 
 ### `agbot_bringup/`
 | File | Purpose |
 |---|---|
 | `launch/agbot_gazebo.launch` | Gazebo + Jackal + camera URDF override + RViz. |
-| `launch/display.launch.xml` | RViz-only URDF viewer (robot_state_publisher + joint_state_publisher_gui + rviz). |
-| `urdf/agbot_camera.urdf.xacro` | `agbot_cam` macro; front + rear instantiations; **currently carries the user's UNCOMMITTED front-deck toggle**. |
-| `config/agbot_maize_small.yaml`, `scripts/*maize*` | Small-world workflow (unchanged). |
+| `launch/display.launch.xml` | RViz-only URDF viewer (needs ros-noetic-joint-state-publisher-gui). |
+| `urdf/agbot_camera.urdf.xacro` | `agbot_cam` macro; front (tall, `xyz="0 0 0.225"`) + rear (`xyz="-0.05 0 0.225"` yaw π → `/camera_rear/image_raw`). **UNCOMMITTED user working-tree diff** (stand x=-0.025, front-deck line commented). |
 | `scripts/load_robot_description.sh` | JACKAL_URDF_EXTRAS injection. |
+| `config/agbot_maize_small.yaml`, `scripts/*maize*` | Small-world workflow. |
 
 ### Not in git
 Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
-`tmp/`, `AgBot_MPC.pptx`. Memory dir has `project_camera_relocation.md`
-(experiment state + the far-rows lesson).
+`tmp/`, `AgBot_MPC.pptx`. Claude memory dir: `project_camera_relocation.md`
+(experiment concluded), `project_robot_deployment.md`.
 
 ---
 
 ## 5. NEXT STEPS (priority order)
 
-0. **Re-test steering aggressiveness after the mpc_dt fix**: in Gazebo run the
-   3-row mission with the gentle recipe (`angular_z_max:=0.15
-   delta_angular_z_max:=0.1 mpc_r_delta:=1.5`), watch `/cmd_vel` angular
-   spikes; then on the CPU robot pull latest + `mpc_dt:=0.5
-   max_data_age_sec:=1.5` + the recipe. The robot must also be updated past
-   `0ef6b55` so exits use the any-1-row criterion.
-1. **Re-validate exits after `0ef6b55`** (ROS1 machine, small maize world):
-   plain 3-row mission, rear camera off, at the CURRENT (front-deck) camera
-   position, then at the tall position (swap the two `xacro:agbot_cam
-   name="camera"` lines). Success = state flips to EXIT_CLEAR when any `w=`
-   hits ≥0.8 for 5 frames; robot turns well before the world edge. Knobs if
-   late: `exit_detect_frames:=3`; if a sparse row false-fires:
-   `exit_open_rows_required:=2`.
-2. **Decide the front camera position.** If the low position still can't see
-   exits acceptably (its scan rows only look ~0.5–1.4 m ahead vs ~0.9–2.5 m
-   from the tall mount), consider: revert to tall mount; or an intermediate
-   height; or re-annotating/fine-tuning the model with low-viewpoint frames.
-   Commit the URDF once decided (the toggle is currently uncommitted).
-3. **First Gazebo test of the back-out**: box blocker mid-corridor,
-   `mission_enabled:=true rear_camera_enabled:=true num_rows:=3`. Verify:
-   BACKOUT (REAR) overlay, negative linear.x, reverse steering direction,
-   S-turn, next-row reacquire, `Mission DONE ... row N blocked at X m`.
-   Also the no-rear case: same blocker, rear off → robot stops + reports.
-4. Then: mission robustness matrix (other corridors,
-   `first_turn_direction:=right`, `num_rows:=0`, full world), field
-   deployment speed tuning, go-home.
+1. **Diagnose + fix §0** (no turn after back-out → DONE). One instrumented
+   rerun disambiguates; see §0 for the exact readout and knobs.
+2. **Full back-out mission end-to-end in sim**: blocked row 1 → back out →
+   S-turn → reacquire row 2 → finish 3 rows → check
+   `Mission DONE: rows_driven=3, blocked rows: row 1 blocked at X m`.
+   Also the no-rear case (same blocker, `rear_camera_enabled` off →
+   stop + report) and a nudge test during BACKOUT (drag robot off-center;
+   telemetry must show angular_z re-centering).
+3. **Field re-test** of the traverse fix (`traverse_distance` — decide
+   0.6 vs the user's intended 0.65, see the precedence gotcha in §2) and
+   of exits on the CPU robot (pull latest first; gentle recipe + mpc_dt
+   0.5 as documented in vision_nav.launch comments).
+4. **GPU robot bring-up**: check the `Model loaded on device:` line; run
+   `benchmark_inference.py` on laptop / CPU robot / GPU robot and build
+   the FPS comparison table the user's colleagues asked for.
+5. Then: mission robustness matrix (`first_turn_direction:=right`,
+   `num_rows:=0`, full world), speed tuning on the GPU robot, go-home.
 
 ---
 
 ## 6. GOTCHAS
 
-### GOTCHA 1 (NEW, hard-won): never key the exit on far scan rows
-Beyond the field edge the model does not segment ground reliably: the far
-scan rows can be invalid FOREVER. Any exit criterion that requires specific
-(especially farthest) rows will simply never fire and the robot will drive
-off the cliff/into whatever is past the row. Field-tested twice. Current
-any-N-rows criterion is the fix; `test_open_fires_when_only_near_row_wide`
-is the tripwire.
-
-### GOTCHA 2 (NEW): low camera ⇒ short lookahead + leaf-level false BLOCKED
-At the front-deck position (~0.27 m up) the scan rows map to ~0.5–1.4 m of
-ground and row-end foliage crosses the lens height — this produced a real
-false-BLOCKED-triggered reverse in testing. Mitigations in place: 8-frame
-blocked debounce, back-out gated on rear camera. If false blocks persist,
-raise `blocked_detect_frames` or `blocked_min_traversable_fraction`.
-
-### GOTCHA 3 (NEW): the front-deck URDF toggle is UNCOMMITTED user state
-`agbot_camera.urdf.xacro` working-tree change = the user's live experiment
-(front-deck active, tall commented, stand at x=-0.025). Don't revert, don't
-commit without asking, don't assume the committed state matches disk.
-
-### GOTCHA 4 (NEW): back-out is unit-tested only — no Gazebo run yet
-Especially the reverse steering sign (tests prove the FSM applies no
-negation; they cannot prove the physical convention). First sim test should
-nudge the robot off-center during BACKOUT and check it re-centers.
-
-### GOTCHA 5: this dev sandbox is ROS2 Humble — NOT ROS1
-All catkin/roslaunch/rostopic commands run on the user's WSL2 ROS1 Noetic
-machine. Unit tests DO run in the sandbox.
-
-### GOTCHA 6: model runs in `~/agbot_venv` on the user's machine.
-
-### GOTCHA 7: exit detector arms on odometry distance
-No `/odometry/filtered` ⇒ detector never arms ⇒ robot never leaves
-FOLLOW_ROW. Blocked arms at 0.3 m, open at 2.0 m — respawning mid-row for
-testing can leave open detection unarmed at the row end (6 m rows).
-
-### GOTCHA 8: `<env>` doesn't reach `<param command>` (ROS1) — keep
-`load_robot_description.sh`. GOTCHA 9: scipy needed at import. GOTCHA 10:
-GAZEBO_MODEL_PATH needs virtual_maize_field/models. GOTCHA 11: `gh` at
-`~/.local/bin/gh`. GOTCHA 12: never `git add .` (weights/tmp/pptx stay out).
+1. **Never key the exit on far scan rows** (see §3 first bullet) — the
+   hard-won one. Don't restore commit `54e8ef8`'s detector logic.
+2. **Launch-arg defaults override params.yaml** for every duplicated knob
+   (`<param>` after `<rosparam file>` wins). The user's params.yaml edit
+   `traverse_distance: 0.65` is currently INEFFECTIVE (launch default 0.6
+   applies) — resolve per §5.3.
+3. **`agbot_camera.urdf.xacro` working-tree diff is the user's** (tall
+   camera active — the experiment is over, but the diff is uncommitted).
+   Ask before committing/reverting.
+4. **Exit detector arms on odometry distance**: no `/odometry/filtered` ⇒
+   never arms ⇒ never leaves FOLLOW_ROW. Blocked arms at 0.3 m, open at
+   2.0 m — respawning mid-row can leave open detection unarmed (6 m rows).
+5. **Blocked FINAL row goes DONE without turning by design** — don't
+   misread that as the §0 bug; check `rows_driven` in the DONE log.
+6. **This dev sandbox is ROS2 Humble, not ROS1** — catkin/roslaunch/
+   rostopic run on the user's WSL2 ROS1 Noetic machine (same filesystem).
+   Unit tests DO run in the sandbox. Model runs in `~/agbot_venv`.
+7. scipy needed at import. GAZEBO_MODEL_PATH needs virtual_maize_field/
+   models. `gh` at `~/.local/bin/gh`. **Never `git add .`** (weights/tmp/
+   pptx stay out). High dropped-frame % in the timing log is BY DESIGN.
 
 ---
 
@@ -355,28 +277,31 @@ GAZEBO_MODEL_PATH needs virtual_maize_field/models. GOTCHA 11: `gh` at
 ```bash
 cd ~/agbot_control_ws && catkin build && source devel/setup.bash
 
-# URDF-only view (camera placement iteration)
-roslaunch agbot_bringup display.launch.xml
-
-# Simulation
+# Simulation world
 roslaunch agbot_bringup agbot_gazebo.launch
 
-# Mission, no rear camera (blocked => stop + report)
+# Mission with back-out (the §0 repro command)
 roslaunch agbot_vision_nav vision_nav.launch sim:=true \
-  model_path:=/home/chien21/agbot_control_ws/src/agbot_vision_nav/config/exported_best.pt \
-  mission_enabled:=true num_rows:=3
+  mission_enabled:=true rear_camera_enabled:=true num_rows:=3
 
-# Mission with back-out enabled
-#   + rear_camera_enabled:=true
-# Exit tuning knobs:
-#   headland_clearance:=0.5 exit_clear_speed:=0.10 exit_detect_frames:=5
-#   exit_open_rows_required:=1 blocked_detect_frames:=8
+# Rear-camera segmentation preview (robot idle, cmd_vel diverted)
+roslaunch agbot_vision_nav vision_nav.launch sim:=true \
+  camera_topic:=/camera_rear/image_raw camera_topic_is_compressed:=false \
+  cmd_vel_topic:=/cmd_vel_rear_preview
 
 # Monitor
-rqt_image_view /vision_nav_node/debug/image   # state= HUD + per-row w=
+rqt_image_view /vision_nav_node/debug/image  # state HUD, w=, timing, exit/blk counters
 rostopic echo /cmd_vel
+# Console: 'timing:' every 5 s, 'exit: blk n/8' countdown, BACKOUT telemetry,
+#          one-shot 'Mission DONE: rows_driven=N, blocked rows: ...'
 
-# Unit tests (sandbox or ROS1 machine, no ROS needed)
+# Offline inference benchmark (per machine, in the venv)
+source ~/agbot_venv/bin/activate
 cd ~/agbot_control_ws/src/agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v     # expected: 53 passed
+PYTHONPATH=src python3 scripts/benchmark_inference.py \
+  --model config/exported_best.pt --image /path/to/frame.jpg
+
+# Unit tests (no ROS needed)
+cd ~/agbot_control_ws/src/agbot_vision_nav
+PYTHONPATH=src python3 -m pytest test/ -v     # expected: 71 passed
 ```
