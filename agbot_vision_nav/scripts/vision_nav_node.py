@@ -32,7 +32,7 @@ from sensor_msgs.msg import CompressedImage, Image
 from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
-from agbot_vision_nav.mission_fsm import STATE_BACKOUT, MissionFSM
+from agbot_vision_nav.mission_fsm import STATE_BACKOUT, STATE_FOLLOW_ROW, MissionFSM
 from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
 from agbot_vision_nav.timing_stats import PipelineTimingStats
@@ -115,13 +115,14 @@ class VisionNavNode(object):
         )
 
         self._fsm = None
+        self._detector = None
         if self._mission_enabled:
             detector = RowExitDetector(
                 exit_width_threshold=rospy.get_param("~exit_width_threshold", 0.8),
                 exit_detect_frames=rospy.get_param("~exit_detect_frames", 5),
                 min_in_row_distance=rospy.get_param("~min_in_row_distance", 2.0),
                 blocked_min_traversable_fraction=rospy.get_param(
-                    "~blocked_min_traversable_fraction", 0.15
+                    "~blocked_min_traversable_fraction", 0.08
                 ),
                 blocked_arming_distance=rospy.get_param(
                     "~blocked_arming_distance", 0.3
@@ -131,6 +132,7 @@ class VisionNavNode(object):
                 ),
                 blocked_detect_frames=rospy.get_param("~blocked_detect_frames", 8),
             )
+            self._detector = detector
             self._fsm = MissionFSM(
                 self._controller,
                 detector,
@@ -429,11 +431,40 @@ class VisionNavNode(object):
         )
         rospy.loginfo_throttle(5.0, "timing: %s", self._timing.format_summary())
 
+        detector_line = None if is_rear else self._detector_line()
+        if detector_line is not None and self._detector.last_status.blocked_count > 0:
+            # Countdown to a back-out is worth seeing in the console too.
+            rospy.loginfo_throttle(2.0, "%s", detector_line)
+
         if self._debug_pub is not None:
             self._publish_debug(
                 frame, mask, result, linear_x, angular_z, state_name,
-                self._timing.hud_line(),
+                self._timing.hud_line(), detector_line,
             )
+
+    def _detector_line(self):
+        """HUD/log line showing why the exit detector is (not) firing.
+
+        Only meaningful in FOLLOW_ROW (the sole state that feeds the
+        detector); None otherwise.
+        """
+        if (
+            self._detector is None
+            or self._detector.last_status is None
+            or self._fsm.state != STATE_FOLLOW_ROW
+        ):
+            return None
+        s = self._detector.last_status
+        return "exit: blk %d/%d open %d/%d rows=%d frac=%.2f armed o:%s b:%s" % (
+            s.blocked_count,
+            self._detector.blocked_detect_frames,
+            s.open_count,
+            self._detector.exit_detect_frames,
+            s.corridor_rows,
+            s.traversable_fraction,
+            "Y" if s.open_armed else "N",
+            "Y" if s.blocked_armed else "N",
+        )
 
     def _publish_twist(self, linear_x, angular_z):
         twist = Twist()
@@ -442,11 +473,11 @@ class VisionNavNode(object):
         self._cmd_vel_pub.publish(twist)
 
     def _publish_debug(self, frame, mask, result, linear_x, angular_z,
-                       state_name=None, timing_line=None):
+                       state_name=None, timing_line=None, detector_line=None):
         try:
             debug_img = render_debug_image(
                 frame, mask, result, linear_x, angular_z, state_name=state_name,
-                timing_line=timing_line,
+                timing_line=timing_line, detector_line=detector_line,
             )
             msg = self._bridge.cv2_to_imgmsg(debug_img, encoding="bgr8")
             self._debug_pub.publish(msg)

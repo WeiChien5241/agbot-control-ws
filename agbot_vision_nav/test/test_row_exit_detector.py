@@ -192,6 +192,75 @@ def test_far_row_corridor_prevents_blocked():
     assert feed(det, mask, distance=5.0, n=10) == EXIT_NONE
 
 
+def make_close_blocker_mask(sky_rows=20, ground_cols=20):
+    """Stopped nose-up to an obstacle: it fills nearly the whole view, no
+    corridor at any scan row, only a sliver of ground at the left edge
+    (lower-half traversable fraction ~0.10)."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:sky_rows, :] = CLASS_SKY
+    mask[HEIGHT // 2 :, :ground_cols] = CLASS_TRAVERSABLE
+    return mask
+
+
+def test_blocked_fires_at_close_range_low_ground_fraction():
+    # Regression (sim, 2026-07-21): with the gate at 0.15 the robot stopped
+    # in front of a mid-row blocker and the back-out never fired, because
+    # up close the obstacle dominates the frame and the visible-ground
+    # fraction stays low forever. The default gate must accept this view.
+    mask = make_close_blocker_mask()
+    result = estimate_centerline(mask)
+    assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
+    assert 0.08 <= result.traversable_fraction < 0.15
+
+    det = RowExitDetector(blocked_detect_frames=5)  # default gate 0.08
+    assert feed(det, mask, distance=5.0, n=5) == EXIT_ROW_END_BLOCKED
+
+
+def test_blocked_debounce_is_leaky_not_reset():
+    det = RowExitDetector(blocked_detect_frames=8)
+    blocked = make_blocked_ahead_mask()
+    corridor = make_corridor_mask()
+    # 5 blocked frames, one noisy corridor frame (counter 5 -> 4, NOT 0),
+    # then 4 more blocked frames reach 8 and fire.
+    assert feed(det, blocked, distance=5.0, n=5) == EXIT_NONE
+    assert feed(det, corridor, distance=5.0, n=1) == EXIT_NONE
+    assert feed(det, blocked, distance=5.0, n=3) == EXIT_NONE
+    assert feed(det, blocked, distance=5.0, n=1) == EXIT_ROW_END_BLOCKED
+
+
+def test_blocked_leak_drains_on_sustained_noise():
+    # Alternating blocked/corridor frames must never accumulate to a fire.
+    det = RowExitDetector(blocked_detect_frames=8)
+    blocked = make_blocked_ahead_mask()
+    corridor = make_corridor_mask()
+    for _ in range(30):
+        assert feed(det, blocked, distance=5.0, n=1) == EXIT_NONE
+        assert feed(det, corridor, distance=5.0, n=1) == EXIT_NONE
+
+
+def test_last_status_reports_detector_internals():
+    det = RowExitDetector()
+    assert det.last_status is None
+
+    corridor_result = estimate_centerline(make_corridor_mask())
+    det.update(corridor_result, WIDTH, None)
+    assert det.last_status.distance_in_row is None
+
+    det.update(corridor_result, WIDTH, 1.0)  # blocked armed, open not
+    s = det.last_status
+    assert (s.open_armed, s.blocked_armed) == (False, True)
+    assert s.corridor_rows == 3 and s.wide_rows == 0
+    assert s.open_count == 0 and s.blocked_count == 0
+
+    blocked_result = estimate_centerline(make_blocked_ahead_mask())
+    for _ in range(3):
+        det.update(blocked_result, WIDTH, 5.0)
+    s = det.last_status
+    assert s.blocked_count == 3
+    assert s.corridor_rows == 0
+    assert s.open_armed and s.blocked_armed
+
+
 def test_interrupted_streak_resets():
     det = RowExitDetector(exit_detect_frames=5)
     open_mask = make_open_field_mask()

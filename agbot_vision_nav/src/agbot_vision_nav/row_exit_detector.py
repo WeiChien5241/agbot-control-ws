@@ -24,9 +24,11 @@ Two exit signatures (both observed in the segmentation masks):
 
 Guards against false positives:
 - Debounce, per signature: open must persist `exit_detect_frames`
-  consecutive frames; blocked must persist `blocked_detect_frames` (longer
-  by default -- a low-mounted camera sees foliage brush the image center
-  for a few frames at row ends, which must not trigger a back-out).
+  consecutive frames; blocked must accumulate `blocked_detect_frames`
+  (longer by default -- a low-mounted camera sees foliage brush the image
+  center for a few frames at row ends, which must not trigger a back-out).
+  The blocked counter is LEAKY (non-signature frames decrement rather than
+  reset it) so isolated noisy frames cannot postpone detection forever.
 - Arming distance, per signature: the OPEN signature is disabled until the
   robot has travelled `min_in_row_distance` meters (odometry) inside the
   current row, so the open-field view at row entry cannot trigger an exit.
@@ -35,9 +37,27 @@ Guards against false positives:
   at entry because it requires zero visible corridor at every scan row.
 """
 
+from collections import namedtuple
+
 EXIT_NONE = "none"
 EXIT_ROW_END_OPEN = "row_end_open"
 EXIT_ROW_END_BLOCKED = "row_end_blocked"
+
+# Per-update diagnostic snapshot (see RowExitDetector.last_status): shows on
+# the debug HUD so "why didn't the exit fire" is answerable from rqt alone.
+ExitDetectorStatus = namedtuple(
+    "ExitDetectorStatus",
+    [
+        "distance_in_row",       # meters, or None (unarmed: no odometry)
+        "open_armed",
+        "blocked_armed",
+        "corridor_rows",         # scan rows that found a corridor
+        "wide_rows",             # scan rows at/above exit_width_threshold
+        "traversable_fraction",
+        "open_count",            # debounce counters AFTER this frame
+        "blocked_count",
+    ],
+)
 
 
 def normalized_corridor_widths(centerline_result, image_width):
@@ -64,7 +84,7 @@ class RowExitDetector:
         exit_width_threshold=0.8,
         exit_detect_frames=5,
         min_in_row_distance=2.0,
-        blocked_min_traversable_fraction=0.15,
+        blocked_min_traversable_fraction=0.08,
         blocked_arming_distance=0.3,
         exit_open_rows_required=1,
         blocked_detect_frames=8,
@@ -78,6 +98,7 @@ class RowExitDetector:
         self.blocked_detect_frames = blocked_detect_frames
         self._consecutive_open = 0
         self._consecutive_blocked = 0
+        self.last_status = None
 
     def reset(self):
         """Clear debounce counters (call when entering a new row)."""
@@ -96,6 +117,10 @@ class RowExitDetector:
         """
         if distance_in_row is None:
             self.reset()
+            self.last_status = ExitDetectorStatus(
+                None, False, False, 0, 0,
+                centerline_result.traversable_fraction, 0, 0,
+            )
             return EXIT_NONE
 
         # Per-signature arming; while a signature is unarmed its debounce
@@ -104,6 +129,10 @@ class RowExitDetector:
         blocked_armed = distance_in_row >= self.blocked_arming_distance
         if not open_armed and not blocked_armed:
             self.reset()
+            self.last_status = ExitDetectorStatus(
+                distance_in_row, False, False, 0, 0,
+                centerline_result.traversable_fraction, 0, 0,
+            )
             return EXIT_NONE
 
         widths = normalized_corridor_widths(centerline_result, image_width)
@@ -125,10 +154,27 @@ class RowExitDetector:
         self._consecutive_open = (
             self._consecutive_open + 1 if (open_signature and open_armed) else 0
         )
-        self._consecutive_blocked = (
-            self._consecutive_blocked + 1
-            if (blocked_signature and blocked_armed)
-            else 0
+        # Leaky debounce for BLOCKED: a non-signature frame decrements
+        # instead of resetting, so one flickery frame (segmentation noise on
+        # a static close-up view) delays detection by a frame rather than
+        # restarting the whole streak -- a strict N-in-a-row requirement was
+        # observed to never complete in front of a sim blocker. Sustained
+        # noise still drains the counter to zero. OPEN stays strictly
+        # consecutive (field-proven).
+        if blocked_signature and blocked_armed:
+            self._consecutive_blocked += 1
+        else:
+            self._consecutive_blocked = max(0, self._consecutive_blocked - 1)
+
+        self.last_status = ExitDetectorStatus(
+            distance_in_row,
+            open_armed,
+            blocked_armed,
+            len(valid_widths),
+            wide_rows,
+            centerline_result.traversable_fraction,
+            self._consecutive_open,
+            self._consecutive_blocked,
         )
 
         if self._consecutive_open >= self.exit_detect_frames:

@@ -32,6 +32,7 @@ def test_render_debug_image_with_timing_line_does_not_crash():
     debug_img = render_debug_image(
         frame_bgr, mask, result, linear_x=0.15, angular_z=0.1,
         state_name="FOLLOW_ROW", timing_line="inf=450ms e2e=500ms proc=2.0Hz",
+        detector_line="exit: blk 5/8 open 0/5 rows=0 frac=0.12 armed o:Y b:Y",
     )
     assert debug_img.shape == frame_bgr.shape
 

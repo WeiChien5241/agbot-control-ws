@@ -82,7 +82,14 @@
   <arg name="exit_clear_speed"        default="0.10" /><!-- m/s during the post-exit leg -->
 
   <arg name="exit_detect_frames"      default="5" />   <!-- debounce frames for the OPEN signature -->
-  <arg name="blocked_detect_frames"   default="8" />   <!-- debounce frames for the BLOCKED signature -->
+  <arg name="blocked_detect_frames"   default="8" />   <!-- debounce frames for the BLOCKED signature
+                                                            (leaky counter: noise delays, not resets) -->
+  <arg name="blocked_min_traversable_fraction" default="0.08" />
+       <!-- BLOCKED also requires this much of the lower half traversable
+            (rejects lens occlusion). 0.15 deadlocked in sim: stopped nose-up
+            to a blocker, the visible ground fraction stays below it and the
+            back-out never triggers. Lower further (0.05) if the HUD frac=
+            value sits below this while blocked. -->
 
   <!-- Rear camera for the blocked-row back-out (mission mode only). Enable in
        Gazebo with: rear_camera_enabled:=true. For a future real USB camera,
@@ -125,6 +132,7 @@
     <param name="exit_clear_speed"         value="$(arg exit_clear_speed)" />
     <param name="exit_detect_frames"       value="$(arg exit_detect_frames)" />
     <param name="blocked_detect_frames"    value="$(arg blocked_detect_frames)" />
+    <param name="blocked_min_traversable_fraction" value="$(arg blocked_min_traversable_fraction)" />
     <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)" />
     <param name="rear_camera_topic"        value="$(arg rear_camera_topic)" />
     <param name="rear_camera_topic_is_compressed" value="$(arg rear_camera_topic_is_compressed)" />

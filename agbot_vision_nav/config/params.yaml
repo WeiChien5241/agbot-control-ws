@@ -75,7 +75,7 @@ num_rows: 3                # corridors to drive; 0 = keep going until no rows le
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)
 row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
-traverse_distance: 0.6     # m of sideways travel after TURN_1. Deliberately
+traverse_distance: 0.65     # m of sideways travel after TURN_1. Deliberately
                            # SHORTER than row_spacing: at 0.75 the nose got
                            # too close to the next row's corn just before
                            # TURN_2 (field near-miss, 2026-07); REACQUIRE +
@@ -103,7 +103,12 @@ blocked_detect_frames: 8   # consecutive frames of BLOCKED signature required
                            # (longer: leaves brushing the image center for a
                            # few frames must not trigger a back-out)
 min_in_row_distance: 2.0   # m of in-row travel before OPEN exit detection arms
-blocked_min_traversable_fraction: 0.15  # ground still visible when blocked ahead
+blocked_min_traversable_fraction: 0.08  # BLOCKED also needs this much of the
+                                        # lower half traversable (rejects lens
+                                        # occlusion, frac ~0). 0.15 deadlocked
+                                        # in sim: stopped nose-up to a blocker
+                                        # the ground fraction stays below it
+                                        # and the back-out never fires.
 blocked_arming_distance: 0.3  # m of in-row travel before BLOCKED detection arms
                               # (much earlier than open, so obstacles right
                               # after row entry still trigger the back-out)
