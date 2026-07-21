@@ -246,6 +246,41 @@ def test_controller_reset_on_new_row():
     assert fsm._controller.reset_calls == resets_before + 1
 
 
+def test_traverse_leg_uses_traverse_distance_not_row_spacing():
+    fsm = make_fsm(traverse_distance=0.5)
+    assert fsm.row_spacing == pytest.approx(0.75)  # physical value untouched
+    pose, _, _ = drive_row_to_exit(fsm)
+    open_r = open_result()
+    x, y, yaw = pose
+
+    # EXIT_CLEAR -> TURN_1
+    for i in range(1, 20):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        _, _, state, _ = fsm.update(open_r, p, WIDTH)
+        if state == STATE_TURN_1:
+            x, y = p[0], p[1]
+            break
+    assert fsm.state == STATE_TURN_1
+
+    # rotate into TRAVERSE
+    for i in range(1, 20):
+        p = (x, y, yaw + i * 0.1)
+        _, _, state, _ = fsm.update(open_r, p, WIDTH)
+        if state == STATE_TRAVERSE:
+            yaw = p[2]
+            break
+    assert fsm.state == STATE_TRAVERSE
+
+    # 0.45 m along the leg: still traversing
+    p = (x + 0.45 * math.cos(yaw), y + 0.45 * math.sin(yaw), yaw)
+    _, _, state, _ = fsm.update(open_r, p, WIDTH)
+    assert state == STATE_TRAVERSE
+    # 0.55 m: past traverse_distance but short of row_spacing -> TURN_2
+    p = (x + 0.55 * math.cos(yaw), y + 0.55 * math.sin(yaw), yaw)
+    _, _, state, _ = fsm.update(open_r, p, WIDTH)
+    assert state == STATE_TURN_2
+
+
 # ---------------------------------------------------------------- back-out --
 def drive_row_to_block(fsm, start=(0.0, 0.0, 0.0)):
     """Follow a row past arming, then feed blocked frames until BACKOUT.
@@ -417,6 +452,20 @@ def test_blocked_final_row_backs_out_then_done():
     assert state == STATE_DONE
     assert done
     assert fsm.blocked_events == [(1, pytest.approx(3.0, abs=0.2))]
+
+
+def test_backout_progress_reports_distance():
+    fsm = make_fsm(num_rows=3)
+    pose, _, _ = drive_row_to_block(fsm)
+    reversed_m, target = fsm.backout_progress(pose)
+    assert reversed_m == pytest.approx(0.0)
+    assert target == pytest.approx(3.0, abs=0.2)
+    x, y, yaw = pose
+    p = (x - 0.5 * math.cos(yaw), y - 0.5 * math.sin(yaw), yaw)
+    fsm.update(blocked_result(), p, WIDTH)
+    reversed_m, _ = fsm.backout_progress(p)
+    assert reversed_m == pytest.approx(0.5)
+    assert fsm.backout_progress(None)[0] is None  # no odom -> unknown
 
 
 def test_backout_states_stop_without_odom():

@@ -8,7 +8,7 @@ State graph (boustrophedon coverage):
   FOLLOW_ROW --open exit--> EXIT_CLEAR --> TURN_1 (90 deg)
       ^                                        |
       |                                        v
-  REACQUIRE <-- TURN_2 (90 deg, same dir) <-- TRAVERSE (row_spacing m)
+  REACQUIRE <-- TURN_2 (90 deg, same dir) <-- TRAVERSE (traverse_distance m)
 
 Blocked-row back-out branch (rows are too tight to turn around in; the
 robot reverses out the end it entered, steering from the REAR camera):
@@ -16,7 +16,7 @@ robot reverses out the end it entered, steering from the REAR camera):
   FOLLOW_ROW --blocked exit--> BACKOUT (reverse d_block, rear-steered)
       --> BACKOUT_CLEAR (reverse headland_clearance more, straight)
       --> BACKOUT_TURN_1 (90 deg, turn_sign)
-      --> BACKOUT_TRAVERSE (row_spacing m, forward)
+      --> BACKOUT_TRAVERSE (traverse_distance m, forward)
       --> BACKOUT_TURN_2 (90 deg, MINUS turn_sign: S-shaped lane change)
       --> REACQUIRE
 
@@ -32,9 +32,10 @@ robot reverses out the end it entered, steering from the REAR camera):
 
 - All maneuver segments are closed-loop on wheel odometry: turns integrate
   measured yaw until 90 degrees is swept; EXIT_CLEAR / TRAVERSE integrate
-  measured displacement. The TRAVERSE leg is exactly one row spacing, which
-  is what guarantees the robot re-enters a NEW row rather than the one it
-  just exited -- no guessing.
+  measured displacement. The TRAVERSE leg is traverse_distance (default
+  0.6 m, deliberately a bit under the 0.75 m row spacing so the nose stays
+  clear of the next row's corn at TURN_2); the small undershoot is closed
+  by REACQUIRE + the MPC once the new row is entered.
 - Turn direction alternates after every completed transition (two lefts
   into this row means two rights into the next).
 - Termination: `num_rows` corridors driven (exit of the final corridor goes
@@ -100,6 +101,7 @@ class MissionFSM:
         num_rows=3,
         first_turn_direction="left",
         row_spacing=0.75,
+        traverse_distance=0.6,
         headland_clearance=1.0,
         turn_rate=0.4,
         yaw_tolerance_deg=5.0,
@@ -117,6 +119,12 @@ class MissionFSM:
         self._detector = detector
         self.num_rows = num_rows
         self.row_spacing = row_spacing
+        # Length of the TRAVERSE/BACKOUT_TRAVERSE leg. Intentionally SHORTER
+        # than row_spacing: stopping ~0.15 m before the next row's centerline
+        # keeps the nose away from the second row's corn at TURN_2 (field
+        # near-miss, 2026-07); REACQUIRE + the MPC close the remaining
+        # lateral offset.
+        self.traverse_distance = traverse_distance
         self.headland_clearance = headland_clearance
         self.turn_rate = abs(turn_rate)
         self.yaw_tolerance = math.radians(yaw_tolerance_deg)
@@ -175,6 +183,14 @@ class MissionFSM:
             self._swept += _wrap_angle(yaw - self._last_yaw)
         self._last_yaw = yaw
         return abs(self._swept)
+
+    def backout_progress(self, odom_pose):
+        """(meters reversed so far or None, target meters) while in
+        STATE_BACKOUT; used by the ROS node's back-out telemetry log."""
+        return (
+            self._distance_from_entry(odom_pose),
+            self._backout_target if self._backout_target is not None else 0.0,
+        )
 
     def _corridor_looks_like_row(self, centerline_result, image_width):
         if not centerline_result.valid:
@@ -312,7 +328,7 @@ class MissionFSM:
             next_turn = (
                 STATE_TURN_2 if self.state == STATE_TRAVERSE else STATE_BACKOUT_TURN_2
             )
-            if self._distance_from_entry(odom_pose) >= self.row_spacing:
+            if self._distance_from_entry(odom_pose) >= self.traverse_distance:
                 self._enter(next_turn, odom_pose)
                 return 0.0, 0.0, self.state, False
             return self._controller.linear_x_cruise, 0.0, self.state, False
