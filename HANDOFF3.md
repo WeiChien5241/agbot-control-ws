@@ -9,6 +9,57 @@ session can continue with zero context. Supersedes the previous HANDOFF3.
 
 ---
 
+## 0. SESSION UPDATE 2026-07-21 (read this first; supersedes stale bits below)
+
+**Field status (real robot, TALL camera):** in-row navigation and the headland
+turns both WORK. The front-deck camera experiment is concluded — the user is
+back on the tall mount (URDF working-tree toggle is still uncommitted user
+state; don't commit/revert it unprompted). Remaining field issue: at the end
+of the TRAVERSE leg the nose got too close to the NEXT row's corn.
+
+**Changes this session (all committed + pushed; 65/65 unit tests):**
+- `traverse_distance` (new param, default **0.6 m**) — TRAVERSE and
+  BACKOUT_TRAVERSE now drive this instead of `row_spacing` (0.75, unchanged,
+  still the physical spacing). Turning ~0.15 m before the next row's
+  centerline keeps the nose off the corn; REACQUIRE + MPC close the offset.
+  `headland_clearance` stays 0.75 — deliberate, do not conflate the two legs.
+- **Pipeline timing instrumentation** (`timing_stats.py`, wired into the
+  node): 5 s-throttled `timing:` log line and a debug-HUD line with camera
+  Hz, processed Hz (= control rate), inference ms, end-to-end
+  camera-stamp→cmd_vel latency, and dropped-frame % (high dropped % is BY
+  DESIGN of latest-frame-wins, not a bug).
+- **`model_device` param (default `auto`)** — model is moved to CUDA when
+  available; the node logs `Model loaded on device: ...` at startup.
+  **On the RTX 4060 robot check this line first**: if it says `cpu`, torch
+  has no usable CUDA there and that is why it feels as slow as the CPU robot.
+- **`scripts/benchmark_inference.py`** (no ROS): run identically on laptop /
+  CPU robot / GPU robot for the comparison table (mean/p50/p95 ms, FPS).
+- **BACKOUT telemetry**: 1 Hz log of rear offset/slope → angular_z and
+  reverse progress, for the steering-sign nudge test.
+
+**Back-out retest protocol (Gazebo, next session)** — the failed run
+("ran over the fake corn, S-turn didn't work") predates the mpc_dt fix
+(`0f93215`) and the 0.175 angular clamp; that same bug made field steering
+5× too aggressive, so retest before changing any back-out logic:
+1. Pull latest, `catkin build`, small maize world.
+2. Rear segmentation preview (robot idle, zero-code): launch the node
+   pointed at the rear camera with cmd_vel diverted —
+   `roslaunch agbot_vision_nav vision_nav.launch sim:=true
+   camera_topic:=/camera_rear/image_raw camera_topic_is_compressed:=false
+   cmd_vel_topic:=/cmd_vel_rear_preview`, then
+   `rqt_image_view /vision_nav_node/debug/image`.
+3. Blocker run: box mid-corridor, `mission_enabled:=true
+   rear_camera_enabled:=true num_rows:=3 delta_angular_z_max:=0.1
+   mpc_r_delta:=1.5`. During BACKOUT the SAME debug topic shows the rear
+   camera (`state=BACKOUT (REAR)` HUD) — there is no separate rear topic.
+   Record a bag of `/odometry/filtered /cmd_vel /vision_nav_node/debug/image`.
+4. Nudge test: drag the robot off-center in Gazebo during BACKOUT; the
+   BACKOUT telemetry log must show angular_z re-centering it. Only if it
+   steers AWAY, flip the rear steering sign (update
+   `test_backout_rear_steering_signs` first).
+
+---
+
 ## 1. GOAL
 
 Vision-based navigation for the Purdue P-AgBot (Clearpath Jackal): DINOv3
