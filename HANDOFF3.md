@@ -10,42 +10,35 @@ context. Supersedes all previous HANDOFF3 content.
 
 ---
 
-## 0. START HERE — open bug: after back-out, no turn, mission ends DONE
+## 0. START HERE — FIXED (2026-07-22): blocked rows no longer count toward num_rows
 
-Last sim run of the session (small maize world, box blocker,
-`sim:=true mission_enabled:=true rear_camera_enabled:=true num_rows:=3`):
-the back-out itself WORKED — blocked fired, robot reversed steering from
-the rear camera (direction correct), and the new rear-exit watcher ended
-the reverse near the row entrance instead of overshooting. But then the
-robot "did not turn and just returned the state as finished": no visible
-S-turn, state went to DONE, mission over. NOT diagnosed yet.
+The §0 "no turn after back-out → DONE" bug is FIXED (commit `7003a3b`).
+Root cause was **hypothesis 2, confirmed from the code** (not a REACQUIRE
+failure): `mission_fsm.update()` incremented `rows_driven` on EVERY exit,
+including blocked ones, and set `_done_after_backout = (rows_driven >=
+num_rows)`. Field run 2026-07-22 with `num_rows=2` and the box in row 2:
+row 1 open-exit → `rows_driven=1`; row 2 blocked → `rows_driven=2` →
+`mission_complete=True` → backed out then straight to DONE, no S-turn.
 
-Ranked hypotheses (mission_fsm.py):
-1. **REACQUIRE gave up** (`REACQUIRE` → DONE when no corridor within
-   `reacquire_max_distance` 2.0 m). The S-turn (BACKOUT_TURN_1 →
-   BACKOUT_TRAVERSE → BACKOUT_TURN_2) is quick and easy to miss in rqt;
-   if it DID happen, the failure is REACQUIRE not recognizing the next
-   row (`_corridor_looks_like_row`: needs valid centerline + mean
-   corridor width < `reacquire_max_width` 0.6 for `reacquire_frames` 3
-   consecutive frames). From the headland the corridor may read wider
-   than 0.6 until the robot is fairly close.
-2. **`_done_after_backout` path** (BACKOUT_CLEAR → DONE directly, no
-   turn): taken only when the blocked row was the FINAL counted row
-   (`rows_driven >= num_rows` at block time — that behavior is BY
-   DESIGN). If the blocker was in row 1 of 3 and this path fired,
-   `rows_driven` was somehow inflated — that would be a real bug (each
-   exit/blocked event increments it).
-3. Odometry hiccup is unlikely (maneuver states just hold, not DONE).
+Fix (matches the user's model — "a failed row doesn't count"):
+- `rows_driven` now increments ONLY on an OPEN exit (a successfully driven
+  row). A blocked exit leaves it untouched.
+- Removed `_done_after_backout` entirely: a block ALWAYS backs out and
+  S-turns into the next physical row. A block never ends the mission on
+  its own. Mission ends on `num_rows` SUCCESSFUL rows, or REACQUIRE
+  finding no further row.
+- `blocked_events` index is now the attempt number (`rows_driven + 1`);
+  so `num_rows=2`, box in row 2 reports `row 2 blocked at X m`.
+- Tests: `test_blocked_row_does_not_count_continues_to_next_row` (num_rows
+  =1 block still continues) and `test_blocked_middle_row_still_requires_
+  full_num_rows` (the exact field scenario) added; 72 tests pass.
 
-**How to disambiguate in one run:** watch the console for the one-shot
-`Mission DONE: rows_driven=N, blocked rows: row K blocked at X m` line —
-N tells you instantly whether hypothesis 2 applies (N should be 1 if the
-box was in row 1). Watch the HUD `state=` sequence right before DONE:
-`BACKOUT_CLEAR → DONE` = hypothesis 2; `...TURN_2 → REACQUIRE → DONE` =
-hypothesis 1. Record a bag of `/odometry/filtered /cmd_vel
-/vision_nav_node/debug/image`. If it's hypothesis 1, candidate knobs:
-`reacquire_max_width` (0.6 → 0.7) or `reacquire_max_distance` (2.0 →
-2.5); also check BACKOUT_TURN_2's end pose actually faces the next row.
+Still worth a sim/field confirmation run: `num_rows=2`, blocker in row 2 →
+expect back-out → S-turn → drive row 3 → `Mission DONE: rows_driven=2,
+blocked rows: row 2 blocked at X m`. If the S-turn happens but REACQUIRE
+then fails to latch the next row (a SEPARATE issue from this fix), the old
+hypothesis-1 knobs apply: `reacquire_max_width` (0.6 → 0.7) or
+`reacquire_max_distance` (2.0 → 2.5).
 
 ---
 
@@ -145,8 +138,9 @@ boustrophedon sign flip per transition. Blocked branch: BACKOUT (reverse,
 rear-steered, ends on rear open-exit OR d_block bound) → BACKOUT_CLEAR
 (reverse `headland_clearance` more) → BACKOUT_TURN_1 → BACKOUT_TRAVERSE →
 BACKOUT_TURN_2 (counter-rotate, S-shape) → REACQUIRE with ONE suppressed
-sign flip; next row same world direction. Blocked FINAL row: backs fully
-out then DONE (no turn — remember this when judging §0). Gated:
+sign flip; next row same world direction. A blocked row does NOT count
+toward num_rows (fixed 2026-07-22, §0): it ALWAYS backs out + S-turns to
+the next physical row; only open-exit rows count. Gated:
 `backout_enabled` = mission_enabled AND rear_camera_enabled; without rear
 camera a blocked signal stops + DONE + report. Rear steering signs
 UNCHANGED (mirror × reverse = identity; `test_backout_rear_steering_signs`).
@@ -261,8 +255,10 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 4. **Exit detector arms on odometry distance**: no `/odometry/filtered` ⇒
    never arms ⇒ never leaves FOLLOW_ROW. Blocked arms at 0.3 m, open at
    2.0 m — respawning mid-row can leave open detection unarmed (6 m rows).
-5. **Blocked FINAL row goes DONE without turning by design** — don't
-   misread that as the §0 bug; check `rows_driven` in the DONE log.
+5. **Blocked rows do NOT count toward num_rows** (fixed 2026-07-22, §0):
+   a block always backs out and S-turns to the next physical row; only
+   open-exit rows increment `rows_driven`. The old "blocked FINAL row →
+   DONE" behavior is GONE.
 6. **This dev sandbox is ROS2 Humble, not ROS1** — catkin/roslaunch/
    rostopic run on the user's WSL2 ROS1 Noetic machine (same filesystem).
    Unit tests DO run in the sandbox. Model runs in `~/agbot_venv`.
