@@ -432,12 +432,19 @@ class VisionNavNode(object):
         rospy.loginfo_throttle(5.0, "timing: %s", self._timing.format_summary())
 
         detector_line = self._detector_line()
-        if detector_line is not None and (
-            is_rear or self._detector.last_status.blocked_count > 0
-        ):
-            # Countdowns (to a back-out, or to the rear seeing the row
-            # exit) are worth seeing in the console too.
-            rospy.loginfo_throttle(2.0, "%s", detector_line)
+        if detector_line is not None:
+            # Countdowns (to a back-out, or to the rear seeing the row exit)
+            # are worth seeing quickly; everything else shares the 5 s
+            # cadence of the timing line so a mission run always leaves a
+            # state + detector trace in the console ("why didn't the exit
+            # fire" must be answerable from the log alone).
+            counting_down = is_rear or (
+                self._detector.last_status is not None
+                and self._detector.last_status.blocked_count > 0
+            )
+            rospy.loginfo_throttle(
+                2.0 if counting_down else 5.0, "%s", detector_line
+            )
 
         if self._debug_pub is not None:
             self._publish_debug(
@@ -446,26 +453,31 @@ class VisionNavNode(object):
             )
 
     def _detector_line(self):
-        """HUD/log line showing why the exit detector is (not) firing.
+        """HUD/log line showing the mission state and, where one applies,
+        why the exit detector is (not) firing.
 
         FOLLOW_ROW shows the front detector; BACKOUT shows the rear-view
-        open-exit watcher that ends the reverse leg; None elsewhere.
+        open-exit watcher that ends the reverse leg; every other state shows
+        the state alone, so the trace never goes silent (a silent log cannot
+        distinguish "blocker never seen" from "mission already moved on").
+        None only outside mission mode.
         """
         if self._detector is None:
             return None
+        prefix = "state=%s " % self._fsm.state
         if self._fsm.state == STATE_BACKOUT:
             rear = self._fsm.rear_exit_detector
             if rear.last_status is None:
-                return None
-            return "rear exit: open %d/%d wide=%d" % (
+                return prefix.rstrip()
+            return prefix + "rear exit: open %d/%d wide=%d" % (
                 rear.last_status.open_count,
                 rear.exit_detect_frames,
                 rear.last_status.wide_rows,
             )
         if self._detector.last_status is None or self._fsm.state != STATE_FOLLOW_ROW:
-            return None
+            return prefix.rstrip()
         s = self._detector.last_status
-        return "exit: blk %d/%d open %d/%d rows=%d frac=%.2f armed o:%s b:%s" % (
+        return prefix + "exit: blk %d/%d open %d/%d rows=%d frac=%.2f armed o:%s b:%s" % (
             s.blocked_count,
             self._detector.blocked_detect_frames,
             s.open_count,
