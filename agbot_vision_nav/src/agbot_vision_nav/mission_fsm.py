@@ -27,8 +27,11 @@ robot reverses out the end it entered, steering from the REAR camera):
   The next row is entered from the SAME end and traveled in the SAME world
   direction as the blocked attempt, so the boustrophedon turn-direction
   flip at the following REACQUIRE is suppressed exactly once. A blocked
-  FINAL row (num_rows reached) still backs fully out of the crop
-  (BACKOUT -> BACKOUT_CLEAR) before stopping in DONE.
+  row does NOT count toward num_rows (a failed row is not a driven row):
+  the robot always backs out and continues to the next physical row, so a
+  block never ends the mission on its own. The mission ends only when
+  num_rows SUCCESSFUL (open-exit) rows have been driven, or when REACQUIRE
+  finds no further row.
 
   With backout_enabled=False (no rear camera), the BACKOUT states are
   unreachable: a blocked signal stops the robot in place and ends the
@@ -167,7 +170,6 @@ class MissionFSM:
         self._swept = 0.0          # accumulated yaw swept in current turn
         self._reacquire_hits = 0   # consecutive corridor-looking frames
         self._backout_target = None    # meters to reverse in BACKOUT
-        self._done_after_backout = False
         self._suppress_flip = False    # skip one turn-sign flip at REACQUIRE
 
     # ------------------------------------------------------------ helpers --
@@ -253,17 +255,16 @@ class MissionFSM:
                 centerline_result, image_width, self._distance_from_entry(odom_pose)
             )
             if exit_signal != EXIT_NONE:
-                self.rows_driven += 1
-                mission_complete = (
-                    self.num_rows > 0 and self.rows_driven >= self.num_rows
-                )
                 if exit_signal == EXIT_ROW_END_BLOCKED:
                     # Blocked ahead (mid-row obstacle or crop wall at the row
-                    # end): reverse out the end we entered. d_block is never
+                    # end): a failed row does NOT count toward num_rows, so
+                    # rows_driven is left untouched -- the robot backs out and
+                    # goes on to the next physical row. The reported row index
+                    # is the attempt number = rows_driven + 1. d_block is never
                     # None here -- the detector only fires when armed, which
                     # requires odometry.
                     d_block = self._distance_from_entry(odom_pose)
-                    self.blocked_events.append((self.rows_driven, d_block))
+                    self.blocked_events.append((self.rows_driven + 1, d_block))
                     if not self.backout_enabled:
                         # No rear camera: nothing safe left to do. Stop in
                         # place and end the mission; the blocked row is in
@@ -271,11 +272,13 @@ class MissionFSM:
                         self._enter(STATE_DONE, odom_pose)
                         return 0.0, 0.0, self.state, True
                     self._backout_target = d_block
-                    self._done_after_backout = mission_complete
                     self._suppress_flip = True
                     self._enter(STATE_BACKOUT, odom_pose)
                     return 0.0, 0.0, self.state, False
-                if mission_complete:
+                # Open exit: a row successfully driven. Count it and end the
+                # mission once num_rows of them are done.
+                self.rows_driven += 1
+                if self.num_rows > 0 and self.rows_driven >= self.num_rows:
                     self._enter(STATE_DONE, odom_pose)
                     return 0.0, 0.0, self.state, True
                 self._enter(STATE_EXIT_CLEAR, odom_pose)
@@ -327,9 +330,8 @@ class MissionFSM:
 
         if self.state == STATE_BACKOUT_CLEAR:
             if self._distance_from_entry(odom_pose) >= self.headland_clearance:
-                if self._done_after_backout:
-                    self._enter(STATE_DONE, odom_pose)
-                    return 0.0, 0.0, self.state, True
+                # A blocked row never ends the mission on its own -- always
+                # S-turn into the next physical row.
                 self._enter(STATE_BACKOUT_TURN_1, odom_pose)
                 return 0.0, 0.0, self.state, False
             return -self.backout_speed, 0.0, self.state, False

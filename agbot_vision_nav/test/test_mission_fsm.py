@@ -367,10 +367,10 @@ def test_blocked_exit_enters_backout_not_exit_clear():
     pose, state, done = drive_row_to_block(fsm)
     assert state == STATE_BACKOUT
     assert not done
-    assert fsm.rows_driven == 1
+    assert fsm.rows_driven == 0  # a blocked row does not count as driven
     assert len(fsm.blocked_events) == 1
     row, dist = fsm.blocked_events[0]
-    assert row == 1
+    assert row == 1  # reported index = attempt number (rows_driven + 1)
     assert dist == pytest.approx(3.0, abs=0.2)
     # next tick actually reverses
     lin, ang, state, _ = fsm.update(blocked_result(), pose, WIDTH)
@@ -423,11 +423,13 @@ def test_backout_full_sequence_and_flip_suppression():
     assert state == STATE_FOLLOW_ROW
     assert fsm._turn_sign == +1
 
-    # row 2 exits normally: headland still turns LEFT, and the flip at the
-    # following reacquire happens again (no double suppression)
+    # the next physical row exits normally: headland still turns LEFT, and
+    # the flip at the following reacquire happens again (no double
+    # suppression). The blocked row did NOT count, so this open exit is the
+    # first driven row.
     pose, state, _ = drive_row_to_exit(fsm, start=pose)
     assert state == STATE_EXIT_CLEAR
-    assert fsm.rows_driven == 2
+    assert fsm.rows_driven == 1
     pose = run_headland(fsm, pose, turn_sign=+1)
     for _ in range(3):
         _, _, state, _ = fsm.update(corridor, pose, WIDTH)
@@ -435,23 +437,62 @@ def test_backout_full_sequence_and_flip_suppression():
     assert fsm._turn_sign == -1
 
 
-def test_blocked_final_row_backs_out_then_done():
+def test_blocked_row_does_not_count_continues_to_next_row():
+    # A blocked row is a FAILED row: it must not count toward num_rows.
+    # Even with num_rows=1, a block on the first row backs out and S-turns
+    # into the next physical row instead of ending the mission (regression,
+    # 2026-07-22 field run: robot backed out then went straight to DONE).
     fsm = make_fsm(num_rows=1)
     pose, state, done = drive_row_to_block(fsm)
     assert state == STATE_BACKOUT
-    assert not done  # backs out before stopping
+    assert not done
     front = blocked_result()
     x, y, yaw = pose
-    done = False
     for i in range(1, 60):
         p = (x - i * 0.1 * math.cos(yaw), y - i * 0.1 * math.sin(yaw), yaw)
         lin, ang, state, done = fsm.update(front, p, WIDTH)
-        if done:
+        assert not done  # a block never ends the mission on its own
+        if state == STATE_BACKOUT_TURN_1:
             break
-        assert lin <= 0.0  # only ever reverses (or holds at transitions)
+    # backed fully out and started the S-turn into the next row -- NOT DONE
+    assert fsm.state == STATE_BACKOUT_TURN_1
+    assert fsm.rows_driven == 0
+    assert fsm.blocked_events == [(1, pytest.approx(3.0, abs=0.2))]
+
+
+def test_blocked_middle_row_still_requires_full_num_rows():
+    # User's field scenario: num_rows=2, obstacle in row 2. The blocked row
+    # must not satisfy the count -- the robot backs out, S-turns, and only
+    # finishes after TWO successful (open-exit) rows.
+    fsm = make_fsm(num_rows=2, first_turn_direction="left")
+    # row 1 open exit: counts (rows_driven 1), headland into row 2
+    pose, state, _ = drive_row_to_exit(fsm)
+    assert state == STATE_EXIT_CLEAR
+    assert fsm.rows_driven == 1
+    pose = run_headland(fsm, pose, turn_sign=+1)
+    corridor = corridor_result()
+    for _ in range(3):
+        _, _, state, _ = fsm.update(corridor, pose, WIDTH)
+    assert fsm.state == STATE_FOLLOW_ROW
+
+    # row 2 blocked: does NOT count, back out + S-turn into row 3
+    pose, state, done = drive_row_to_block(fsm, start=pose)
+    assert state == STATE_BACKOUT
+    assert not done
+    assert fsm.rows_driven == 1  # still only one successful row
+    # after row 1's headland the boustrophedon sign has flipped to -1
+    pose = run_backout(fsm, pose, turn_sign=-1)
+    for _ in range(3):
+        _, _, state, _ = fsm.update(corridor, pose, WIDTH)
+    assert fsm.state == STATE_FOLLOW_ROW
+
+    # the next physical row (row 3) open exit: NOW rows_driven reaches 2 and
+    # the mission completes
+    pose, state, done = drive_row_to_exit(fsm, start=pose)
+    assert fsm.rows_driven == 2
     assert state == STATE_DONE
     assert done
-    assert fsm.blocked_events == [(1, pytest.approx(3.0, abs=0.2))]
+    assert fsm.blocked_events == [(2, pytest.approx(3.0, abs=0.2))]
 
 
 def test_backout_ends_early_when_rear_sees_open_field():
