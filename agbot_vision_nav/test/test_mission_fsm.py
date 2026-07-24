@@ -362,6 +362,15 @@ def run_backout(fsm, pose, turn_sign):
     return (x, y, yaw)
 
 
+def test_rear_exit_detector_mirrors_flank_margin():
+    # The rear open-exit watcher must use the same flank-edge margin as the
+    # front detector so backing out into open field stops the reverse leg
+    # exactly as before.
+    det = RowExitDetector(exit_flank_edge_margin=0.07)
+    fsm = MissionFSM(StubController(), det, num_rows=3)
+    assert fsm.rear_exit_detector.exit_flank_edge_margin == 0.07
+
+
 def test_blocked_exit_enters_backout_not_exit_clear():
     fsm = make_fsm(num_rows=3)
     pose, state, done = drive_row_to_block(fsm)

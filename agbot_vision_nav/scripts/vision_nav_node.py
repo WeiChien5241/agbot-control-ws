@@ -131,6 +131,9 @@ class VisionNavNode(object):
                     "~exit_open_rows_required", 1
                 ),
                 blocked_detect_frames=rospy.get_param("~blocked_detect_frames", 8),
+                exit_flank_edge_margin=rospy.get_param(
+                    "~exit_flank_edge_margin", 0.05
+                ),
             )
             self._detector = detector
             self._fsm = MissionFSM(
@@ -477,12 +480,17 @@ class VisionNavNode(object):
         if self._detector.last_status is None or self._fsm.state != STATE_FOLLOW_ROW:
             return prefix.rstrip()
         s = self._detector.last_status
-        return prefix + "exit: blk %d/%d open %d/%d rows=%d frac=%.2f armed o:%s b:%s" % (
+        return prefix + (
+            "exit: blk %d/%d open %d/%d rows=%d wide=%d openrows=%d frac=%.2f "
+            "armed o:%s b:%s"
+        ) % (
             s.blocked_count,
             self._detector.blocked_detect_frames,
             s.open_count,
             self._detector.exit_detect_frames,
             s.corridor_rows,
+            s.wide_rows,
+            s.open_rows,
             s.traversable_fraction,
             "Y" if s.open_armed else "N",
             "Y" if s.blocked_armed else "N",

@@ -270,3 +270,76 @@ def test_interrupted_streak_resets():
     assert feed(det, corridor, distance=5.0, n=1) == EXIT_NONE  # streak broken
     assert feed(det, open_mask, distance=5.0, n=4) == EXIT_NONE
     assert feed(det, open_mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+
+
+# ---------------------------------------------- flank-clear (open exit) gate --
+def make_wide_but_flanked_mask(margin=16, sky_rows=20):
+    """Mid-row side-gap: the corridor is WIDE (>= exit_width_threshold) but corn
+    still flanks it on BOTH sides -- it stops `margin` px short of each image
+    edge. Must NOT read as an open exit (this is the low-camera false-positive
+    the flank check fixes)."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:sky_rows, :] = CLASS_SKY
+    mask[sky_rows:, margin : WIDTH - margin] = CLASS_TRAVERSABLE
+    return mask
+
+
+def make_left_open_right_corn_mask(right_margin=16, sky_rows=20):
+    """Corridor reaches the LEFT image edge but corn borders it on the right."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:sky_rows, :] = CLASS_SKY
+    mask[sky_rows:, 0 : WIDTH - right_margin] = CLASS_TRAVERSABLE
+    return mask
+
+
+def test_open_blocked_by_flank_corn_mid_row_gap():
+    # Core regression (low camera + GPU robot): a near scan row widens to ~0.84
+    # at a mid-row gap but corn still flanks the corridor short of the edges.
+    # wide_rows sees it, but open_rows must stay 0 so OPEN never fires.
+    det = RowExitDetector(exit_detect_frames=5)  # default margin 0.05
+    mask = make_wide_but_flanked_mask(margin=16)
+    result = estimate_centerline(mask)
+    widths = normalized_corridor_widths(result, WIDTH)
+    assert all(w is not None and w >= 0.8 for w in widths)  # genuinely wide
+    assert feed(det, mask, distance=5.0, n=30) == EXIT_NONE
+    s = det.last_status
+    assert s.wide_rows == 3 and s.open_rows == 0
+
+
+def test_open_fires_when_corridor_reaches_both_edges():
+    det = RowExitDetector(exit_detect_frames=5)
+    mask = make_open_field_mask()  # traversable edge-to-edge below the sky
+    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
+    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    assert det.last_status.open_rows >= 1
+
+
+def test_one_sided_edge_does_not_fire():
+    # Reaches the left edge but corn on the right -> not flank-clear (both
+    # sides must be clear). Proves the AND, not just total width.
+    det = RowExitDetector(exit_detect_frames=5)
+    mask = make_left_open_right_corn_mask(right_margin=16)
+    result = estimate_centerline(mask)
+    widths = normalized_corridor_widths(result, WIDTH)
+    assert all(w is not None and w >= 0.8 for w in widths)  # wide
+    assert feed(det, mask, distance=5.0, n=30) == EXIT_NONE
+    assert det.last_status.open_rows == 0
+
+
+def test_flank_margin_large_restores_width_only_behavior():
+    # exit_flank_edge_margin >= 1.0 disables the flank check: a merely-wide
+    # (but corn-flanked) row fires again, i.e. pre-fix width-only behavior.
+    det = RowExitDetector(exit_detect_frames=5, exit_flank_edge_margin=1.0)
+    mask = make_wide_but_flanked_mask(margin=16)
+    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
+    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+
+
+def test_last_status_reports_open_rows():
+    det = RowExitDetector()
+    open_result = estimate_centerline(make_open_field_mask())
+    det.update(open_result, WIDTH, 5.0)
+    assert det.last_status.open_rows >= 1
+    flanked_result = estimate_centerline(make_wide_but_flanked_mask(margin=16))
+    det.update(flanked_result, WIDTH, 5.0)
+    assert det.last_status.open_rows == 0

@@ -56,6 +56,7 @@ ExitDetectorStatus = namedtuple(
         "traversable_fraction",
         "open_count",            # debounce counters AFTER this frame
         "blocked_count",
+        "open_rows",             # scan rows that are wide AND flank-clear
     ],
 )
 
@@ -76,6 +77,29 @@ def normalized_corridor_widths(centerline_result, image_width):
     return widths
 
 
+def flank_clear_flags(centerline_result, image_width, edge_margin_frac):
+    """Per-scan-row: True if the traversable corridor reaches within
+    `edge_margin_frac` of BOTH image borders, i.e. no non-traversable region
+    (corn/sky) flanks the corridor on either side.
+
+    This is the "open exit" discriminator: still inside the row, corn borders
+    the corridor and it stops short of the image edge; at a true row end the
+    corridor runs edge-to-edge. Returns a list aligned with
+    centerline_result.scan_rows; None for rows with no corridor.
+    """
+    margin_px = int(round(edge_margin_frac * (image_width - 1)))
+    flags = []
+    for sr in centerline_result.scan_rows:
+        if sr.x_left is None:
+            flags.append(None)
+        else:
+            flags.append(
+                sr.x_left <= margin_px
+                and sr.x_right >= (image_width - 1) - margin_px
+            )
+    return flags
+
+
 class RowExitDetector:
     """Debounced end-of-row detection from centerline results."""
 
@@ -88,6 +112,7 @@ class RowExitDetector:
         blocked_arming_distance=0.3,
         exit_open_rows_required=1,
         blocked_detect_frames=8,
+        exit_flank_edge_margin=0.05,
     ):
         self.exit_width_threshold = exit_width_threshold
         self.exit_detect_frames = exit_detect_frames
@@ -96,6 +121,12 @@ class RowExitDetector:
         self.blocked_arming_distance = blocked_arming_distance
         self.exit_open_rows_required = exit_open_rows_required
         self.blocked_detect_frames = blocked_detect_frames
+        # OPEN also requires the corridor to reach within this fraction of the
+        # image width of BOTH borders (no corn flanking the corridor); a
+        # mid-row side-gap widens the corridor but leaves corn short of the
+        # edge, so it must NOT read as an exit. Larger => more permissive;
+        # >= 1.0 disables the flank check (width-only, pre-fix behavior).
+        self.exit_flank_edge_margin = exit_flank_edge_margin
         self._consecutive_open = 0
         self._consecutive_blocked = 0
         self.last_status = None
@@ -119,7 +150,7 @@ class RowExitDetector:
             self.reset()
             self.last_status = ExitDetectorStatus(
                 None, False, False, 0, 0,
-                centerline_result.traversable_fraction, 0, 0,
+                centerline_result.traversable_fraction, 0, 0, 0,
             )
             return EXIT_NONE
 
@@ -131,20 +162,31 @@ class RowExitDetector:
             self.reset()
             self.last_status = ExitDetectorStatus(
                 distance_in_row, False, False, 0, 0,
-                centerline_result.traversable_fraction, 0, 0,
+                centerline_result.traversable_fraction, 0, 0, 0,
             )
             return EXIT_NONE
 
         widths = normalized_corridor_widths(centerline_result, image_width)
+        flank_flags = flank_clear_flags(
+            centerline_result, image_width, self.exit_flank_edge_margin
+        )
         valid_widths = [w for w in widths if w is not None]
 
-        # OPEN: at least exit_open_rows_required scan rows (ANY of them) see
-        # a corridor spanning >= exit_width_threshold of the image. No
-        # specific row is required, so unreliable segmentation of distant
-        # ground (far rows invalid beyond the field) cannot mask the exit:
-        # whichever row sees open field first starts the debounce.
+        # OPEN: at least exit_open_rows_required scan rows (ANY of them) see a
+        # corridor that is BOTH wide (>= exit_width_threshold) AND flank-clear
+        # (reaches within exit_flank_edge_margin of both image borders -- no
+        # corn beside the corridor). No specific row is required, so unreliable
+        # segmentation of distant ground (far rows invalid beyond the field)
+        # cannot mask the exit: whichever row sees open field first starts the
+        # debounce. The flank-clear term rejects a mid-row side-gap that merely
+        # widens the corridor while corn still borders it.
         wide_rows = sum(1 for w in valid_widths if w >= self.exit_width_threshold)
-        open_signature = wide_rows >= max(1, self.exit_open_rows_required)
+        open_rows = sum(
+            1
+            for w, fc in zip(widths, flank_flags)
+            if w is not None and w >= self.exit_width_threshold and fc
+        )
+        open_signature = open_rows >= max(1, self.exit_open_rows_required)
         blocked_signature = (
             len(valid_widths) == 0
             and centerline_result.traversable_fraction
@@ -175,6 +217,7 @@ class RowExitDetector:
             centerline_result.traversable_fraction,
             self._consecutive_open,
             self._consecutive_blocked,
+            open_rows,
         )
 
         if self._consecutive_open >= self.exit_detect_frames:

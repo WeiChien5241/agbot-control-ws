@@ -96,6 +96,14 @@ reacquire_max_distance: 2.0  # m of creep without a corridor => no rows left =>
                              # overshoot: the robot may re-approach the rows
                              # from farther out than a normal headland turn.
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
+exit_flank_edge_margin: 0.05  # OPEN also requires the corridor to reach within
+                           # this fraction of the image width of BOTH borders
+                           # (no corn flanking the corridor). A mid-row side-gap
+                           # widens the corridor to ~0.83 but leaves corn short
+                           # of the edge, so it must NOT read as an exit; a true
+                           # row end runs edge-to-edge. Smaller = stricter
+                           # (must reach the edges more exactly); >= 1.0
+                           # disables the flank check (width-only behavior).
 exit_open_rows_required: 1 # how many scan rows (ANY of them) must be wide
                            # for the open exit. 1 = fire off whichever row
                            # sees open field first -- robust to garbage

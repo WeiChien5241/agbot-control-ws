@@ -137,6 +137,7 @@ class MissionFSM:
             exit_detect_frames=detector.exit_detect_frames,
             min_in_row_distance=0.0,
             exit_open_rows_required=detector.exit_open_rows_required,
+            exit_flank_edge_margin=detector.exit_flank_edge_margin,
         )
         self.num_rows = num_rows
         self.row_spacing = row_spacing
