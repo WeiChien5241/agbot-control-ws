@@ -98,6 +98,13 @@
        timings at any inference rate. Both accumulators are leaky. -->
   <arg name="exit_confirm_distance"   default="0.4" /> <!-- m of sustained OPEN before firing -->
   <arg name="exit_detect_min_frames"  default="2" />   <!-- floor: no single frame may fire it -->
+  <arg name="exit_leak_ratio"         default="0.5" /> <!-- how fast the OPEN meter drains vs
+                                                            fills. 1.0 (symmetric) means a signature
+                                                            true half the frames nets ZERO and can
+                                                            never fire, which is what a marginal but
+                                                            real exit looks like. 1.0 restores the
+                                                            old behavior. -->
+  <arg name="blocked_leak_ratio"      default="1.0" /> <!-- BLOCKED stays symmetric -->
   <arg name="blocked_confirm_seconds" default="4.0" /> <!-- s of sustained BLOCKED before backing out;
                                                             SECONDS because a blocked view stops the
                                                             robot, so meters would never accumulate -->
@@ -125,6 +132,12 @@
   <!-- Rear camera for the blocked-row back-out (mission mode only). Enable in
        Gazebo with: rear_camera_enabled:=true. For a future real USB camera,
        point rear_camera_topic at it and set the compressed flag. -->
+  <!-- REACQUIRE: a row is recognized by CORN ON BOTH SIDES of the near scan
+       row, not by corridor width. The old "width < 0.6" rule was a
+       camera-height constant and could never be met on the low camera. -->
+  <arg name="reacquire_confirm_distance" default="0.12" /><!-- m of in-row view to latch -->
+  <arg name="reacquire_steering_enabled" default="true" /><!-- steer while creeping -->
+
   <arg name="rear_camera_enabled" default="false" />
   <arg name="rear_camera_topic"
        default="$(eval '/camera_rear/image_raw' if arg('sim') else '/usb_cam_rear/image_raw/compressed')" />
@@ -167,6 +180,10 @@
     <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)" />
     <param name="exit_detect_min_frames"   value="$(arg exit_detect_min_frames)" />
     <param name="blocked_confirm_seconds"  value="$(arg blocked_confirm_seconds)" />
+    <param name="exit_leak_ratio"          value="$(arg exit_leak_ratio)" />
+    <param name="blocked_leak_ratio"       value="$(arg blocked_leak_ratio)" />
+    <param name="reacquire_confirm_distance" value="$(arg reacquire_confirm_distance)" />
+    <param name="reacquire_steering_enabled" value="$(arg reacquire_steering_enabled)" />
     <param name="exit_revoke_enabled"      value="$(arg exit_revoke_enabled)" />
     <param name="exit_revoke_distance"     value="$(arg exit_revoke_distance)" />
     <param name="exit_revoke_fail_distance" value="$(arg exit_revoke_fail_distance)" />

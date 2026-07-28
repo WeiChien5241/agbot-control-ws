@@ -122,8 +122,20 @@ exit_revoke_fail_distance: 0.25  # m of continuous corn beside the near row => r
 turn_rate: 0.4             # rad/s during in-place 90-degree turns
 yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
-reacquire_max_width: 0.6   # corridor must look narrower than this (normalized)
-reacquire_frames: 3        # consecutive corridor frames to re-enter FOLLOW_ROW
+reacquire_confirm_distance: 0.12  # m of sustained in-row view before re-entering
+                           # FOLLOW_ROW (= the old 3 frames at 2 Hz and
+                           # 0.08 m/s). A row is recognized by CORN ON BOTH
+                           # SIDES of the near scan row, not by corridor width:
+                           # the old "width < 0.6" rule is a camera-height
+                           # constant (normal in-row width is ~0.5 tall but
+                           # ~0.7 low), so on the low camera it could never be
+                           # satisfied inside a row -- the FSM then crept the
+                           # full reacquire_max_distance blind and nearly drove
+                           # into the corn (sim, 2026-07-28).
+reacquire_steering_enabled: true  # steer while creeping instead of driving dead
+                           # straight. Holding a fixed heading for up to
+                           # reacquire_max_distance preserves whatever lateral
+                           # error the turn left behind; steering closes it.
 reacquire_max_distance: 2.0  # m of creep without a corridor => no rows left =>
                              # DONE. 2.0 (was 1.5) leaves margin for back-out
                              # overshoot: the robot may re-approach the rows
@@ -166,6 +178,20 @@ exit_confirm_distance: 0.4  # m of sustained OPEN evidence before firing
                            # the streak would mean it never fires.
 exit_detect_min_frames: 2  # floor: no single large-odometry-delta frame may
                            # fire the exit on its own
+exit_leak_ratio: 0.5       # how fast the OPEN meter drains vs fills. 1.0
+                           # (symmetric) sounds neutral but is not: a signature
+                           # true HALF the frames then nets exactly zero and can
+                           # NEVER fire, however far the robot drives. That is
+                           # what a real-but-marginal exit looks like -- sim
+                           # 2026-07-28, where the ground IS traversable but
+                           # segments imperfectly (width ~0.8-0.9, patchy
+                           # edges): the meter reached 0.13 of 0.40 m, drained
+                           # to zero, and the robot drove off the world. At 0.5
+                           # anything true more than ~1/3 of the time still
+                           # climbs, while a brief mid-row gap still drains
+                           # away. Set 1.0 to restore the old behavior.
+blocked_leak_ratio: 1.0    # BLOCKED stays symmetric: its leak was tuned in sim
+                           # and a back-out is a far bigger commitment.
 blocked_confirm_seconds: 4.0  # s of sustained BLOCKED evidence before backing
                            # out (= the old 8 frames at 2 Hz). SECONDS, not
                            # meters: a blocked view stops the robot (the MPC

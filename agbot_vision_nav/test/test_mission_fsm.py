@@ -24,7 +24,10 @@ from agbot_vision_nav.mission_fsm import (
     STATE_TURN_2,
     MissionFSM,
 )
-from agbot_vision_nav.row_exit_detector import RowExitDetector
+from agbot_vision_nav.row_exit_detector import (
+    RowExitDetector,
+    normalized_corridor_widths,
+)
 
 HEIGHT = 100
 WIDTH = 200
@@ -197,6 +200,24 @@ def run_headland(fsm, pose, turn_sign):
     return (x, y, yaw)
 
 
+def reacquire_into_row(fsm, pose, result=None, meters=0.4, step=0.05):
+    """Creep forward feeding an in-row view until REACQUIRE latches.
+
+    The latch is confirmed over reacquire_confirm_distance METERS, so the
+    robot has to actually move -- feeding frames from a parked pose never
+    latches.
+    """
+    result = corridor_result() if result is None else result
+    x, y, yaw = pose
+    state = fsm.state
+    for i in range(1, int(round(meters / step)) + 1):
+        p = (x + i * step * math.cos(yaw), y + i * step * math.sin(yaw), yaw)
+        _, _, state, _ = update(fsm, result, p, WIDTH)
+        if state != STATE_REACQUIRE:
+            return p, state
+    return p, state
+
+
 def test_full_transition_cycle_and_direction_flip():
     fsm = make_fsm(num_rows=3, first_turn_direction="left")
     pose, state, done = drive_row_to_exit(fsm)
@@ -206,10 +227,8 @@ def test_full_transition_cycle_and_direction_flip():
 
     pose = run_headland(fsm, pose, turn_sign=+1)  # left turns
 
-    # reacquire: corridor for reacquire_frames consecutive frames
-    corridor = corridor_result()
-    for _ in range(3):
-        _, _, state, _ = update(fsm, corridor, pose, WIDTH)
+    # reacquire: creep forward with an in-row view until it latches
+    pose, state = reacquire_into_row(fsm, pose)
     assert state == STATE_FOLLOW_ROW
 
     # second transition must turn RIGHT (boustrophedon)
@@ -274,9 +293,7 @@ def test_controller_reset_on_new_row():
     pose, _, _ = drive_row_to_exit(fsm)
     pose = run_headland(fsm, pose, turn_sign=+1)
     resets_before = fsm._controller.reset_calls
-    corridor = corridor_result()
-    for _ in range(3):
-        update(fsm, corridor, pose, WIDTH)
+    reacquire_into_row(fsm, pose)
     assert fsm.state == STATE_FOLLOW_ROW
     assert fsm._controller.reset_calls == resets_before + 1
 
@@ -463,9 +480,7 @@ def test_backout_full_sequence_and_flip_suppression():
     pose = run_backout(fsm, pose, turn_sign=+1)
 
     # reacquire the next row: turn sign must NOT flip (same world direction)
-    corridor = corridor_result()
-    for _ in range(3):
-        _, _, state, _ = update(fsm, corridor, pose, WIDTH)
+    pose, state = reacquire_into_row(fsm, pose)
     assert state == STATE_FOLLOW_ROW
     assert fsm._turn_sign == +1
 
@@ -477,8 +492,7 @@ def test_backout_full_sequence_and_flip_suppression():
     assert state == STATE_EXIT_CLEAR
     assert fsm.rows_driven == 1
     pose = run_headland(fsm, pose, turn_sign=+1)
-    for _ in range(3):
-        _, _, state, _ = update(fsm, corridor, pose, WIDTH)
+    pose, state = reacquire_into_row(fsm, pose)
     assert state == STATE_FOLLOW_ROW
     assert fsm._turn_sign == -1
 
@@ -516,9 +530,7 @@ def test_blocked_middle_row_still_requires_full_num_rows():
     assert state == STATE_EXIT_CLEAR
     assert fsm.rows_driven == 1
     pose = run_headland(fsm, pose, turn_sign=+1)
-    corridor = corridor_result()
-    for _ in range(3):
-        _, _, state, _ = update(fsm, corridor, pose, WIDTH)
+    pose, _ = reacquire_into_row(fsm, pose)
     assert fsm.state == STATE_FOLLOW_ROW
 
     # row 2 blocked: does NOT count, back out + S-turn into row 3
@@ -528,8 +540,7 @@ def test_blocked_middle_row_still_requires_full_num_rows():
     assert fsm.rows_driven == 1  # still only one successful row
     # after row 1's headland the boustrophedon sign has flipped to -1
     pose = run_backout(fsm, pose, turn_sign=-1)
-    for _ in range(3):
-        _, _, state, _ = update(fsm, corridor, pose, WIDTH)
+    pose, _ = reacquire_into_row(fsm, pose)
     assert fsm.state == STATE_FOLLOW_ROW
 
     # the next physical row (row 3) open exit: NOW rows_driven reaches 2 and
@@ -788,3 +799,133 @@ def test_exit_scan_rows_feed_the_detector_only():
         if state != STATE_FOLLOW_ROW:
             break
     assert fsm.state == STATE_EXIT_CLEAR        # detector read the exit rows
+
+
+# ------------------------------------------------------------- REACQUIRE --
+def low_camera_row_result():
+    """In-row view from a LOW camera: corridor ~0.7 of the image width, corn
+    on both sides. The old latch test (mean width < reacquire_max_width 0.6)
+    can never pass on this, which is why REACQUIRE crept blind for 2 m."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:20, :] = CLASS_SKY
+    margin = int(WIDTH * 0.15)          # corridor spans 70% of the width
+    mask[20:, margin : WIDTH - margin] = CLASS_TRAVERSABLE
+    return estimate_centerline(mask)
+
+
+def enter_reacquire(fsm=None):
+    """Drive a full row + headland so the FSM is sitting in REACQUIRE."""
+    fsm = make_fsm(num_rows=3) if fsm is None else fsm
+    pose, _, _ = drive_row_to_exit(fsm)
+    pose = run_headland(fsm, pose, turn_sign=+1)
+    assert fsm.state == STATE_REACQUIRE
+    return fsm, pose
+
+
+def test_low_camera_row_latches_reacquire():
+    """The 2026-07-28 regression. Corridor width ~0.7 -- wider than the old
+    0.6 bar -- but corn on both sides, so it is unambiguously a row."""
+    fsm, pose = enter_reacquire()
+    view = low_camera_row_result()
+    widths = [
+        w for w in normalized_corridor_widths(view, WIDTH) if w is not None
+    ]
+    assert min(widths) > 0.6          # the old rule could never have latched
+    _, state = reacquire_into_row(fsm, pose, result=view)
+    assert state == STATE_FOLLOW_ROW
+
+
+def test_open_headland_does_not_latch_reacquire():
+    fsm, pose = enter_reacquire()
+    _, state = reacquire_into_row(fsm, pose, result=open_result(), meters=0.3)
+    assert state == STATE_REACQUIRE
+
+
+def test_low_traversable_fraction_no_longer_blocks_the_latch():
+    """The old test also required centerline_result.valid, i.e.
+    traversable_fraction >= 0.10. The sim headland measured 0.09, so REACQUIRE
+    was failing on a second, unrelated count."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:20, :] = CLASS_SKY
+    mask[88:, 60:140] = CLASS_TRAVERSABLE      # thin strip: frac well under 0.10
+    view = estimate_centerline(mask)
+    assert view.traversable_fraction < 0.10
+    assert not view.valid
+
+    fsm, pose = enter_reacquire()
+    _, state = reacquire_into_row(fsm, pose, result=view)
+    assert state == STATE_FOLLOW_ROW
+
+
+def test_reacquire_confirms_over_distance_not_frames():
+    fsm, pose = enter_reacquire()
+    view = corridor_result()
+    # well under reacquire_confirm_distance (0.12 m), however many frames
+    _, state = reacquire_into_row(fsm, pose, result=view, meters=0.05, step=0.005)
+    assert state == STATE_REACQUIRE
+    _, state = reacquire_into_row(fsm, pose, result=view, meters=0.4)
+    assert state == STATE_FOLLOW_ROW
+
+
+def test_reacquire_latches_at_same_distance_at_any_frame_rate():
+    latched_at = []
+    for step in (0.04, 0.004):      # 2 Hz and 20 Hz at 0.08 m/s
+        fsm, pose = enter_reacquire()
+        view = corridor_result()
+        x, y, yaw = pose
+        i = 0
+        while fsm.state == STATE_REACQUIRE:
+            i += 1
+            assert i * step < 1.0, "never latched"
+            update(fsm, view, (x + i * step, y, yaw), WIDTH)
+        latched_at.append(i * step)
+    slow, fast = latched_at
+    assert abs(slow - fast) <= 0.04 + 1e-9      # one coarse sample
+    assert all(0.12 <= d <= 0.12 + 0.04 for d in latched_at)
+
+
+def test_reacquire_steers_toward_an_off_centre_row():
+    """REACQUIRE used to command angular_z = 0.0 for up to 2.0 m, holding
+    whatever lateral error the headland turn left behind -- which is how it
+    nearly drove into the corn."""
+    fsm = MissionFSM(
+        SteeringStubController(),
+        RowExitDetector(
+            exit_confirm_distance=0.2,
+            blocked_confirm_seconds=1.0,
+            min_in_row_distance=2.0,
+        ),
+        num_rows=3,
+    )
+    fsm, pose = enter_reacquire(fsm)
+    off_centre = corridor_result(shift=20)
+    assert off_centre.offset_norm > 0.0
+    x, y, yaw = pose
+    _, ang, state, _ = update(fsm, off_centre, (x + 0.02, y, yaw), WIDTH)
+    assert state == STATE_REACQUIRE
+    assert ang == pytest.approx(-off_centre.offset_norm)   # steering back
+
+
+def test_reacquire_drives_straight_without_a_row():
+    fsm, pose = enter_reacquire()
+    x, y, yaw = pose
+    lin, ang, state, _ = update(fsm, open_result(), (x + 0.02, y, yaw), WIDTH)
+    assert state == STATE_REACQUIRE
+    assert lin > 0.0 and ang == 0.0
+
+
+def test_reacquire_steering_can_be_disabled():
+    fsm = MissionFSM(
+        SteeringStubController(),
+        RowExitDetector(
+            exit_confirm_distance=0.2,
+            blocked_confirm_seconds=1.0,
+            min_in_row_distance=2.0,
+        ),
+        num_rows=3,
+        reacquire_steering_enabled=False,
+    )
+    fsm, pose = enter_reacquire(fsm)
+    x, y, yaw = pose
+    _, ang, _, _ = update(fsm, corridor_result(shift=20), (x + 0.02, y, yaw), WIDTH)
+    assert ang == 0.0

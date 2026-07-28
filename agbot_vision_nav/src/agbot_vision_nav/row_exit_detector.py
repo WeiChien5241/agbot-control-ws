@@ -36,13 +36,18 @@ Guards against false positives:
       stops the robot (the MPC goes invalid), so a distance-based counter
       would never fill and the back-out would deadlock -- it must be timed by
       the clock.
-  Both accumulators are LEAKY and symmetric: a non-signature frame subtracts
-  the same increment it would have added, floored at zero. Strict
-  consecutiveness must NOT be used with these units -- 0.4 m at 25 Hz is ~65
-  consecutive frames, and one flickery frame resetting the streak would turn
-  the debounce into a never-fires bug. The leaky form asks for NET sustained
-  evidence instead, which is what is actually meant. `exit_detect_min_frames`
-  is a floor so no single large-delta frame can fire the exit alone.
+  Both accumulators are LEAKY: a non-signature frame subtracts rather than
+  resetting. Strict consecutiveness must NOT be used with these units -- 0.4 m
+  at 25 Hz is ~65 consecutive frames, and one flickery frame resetting the
+  streak would turn the debounce into a never-fires bug. The leaky form asks
+  for NET sustained evidence instead.
+  The OPEN leak is ASYMMETRIC (`exit_leak_ratio` 0.5): it drains at half the
+  rate it fills. Symmetric leak sounds neutral but is not -- a signature true
+  half the frames nets exactly zero and can never fire, no matter how far the
+  robot drives, which is what a real-but-marginal exit looks like (sim,
+  2026-07-28: the meter reached 0.13 of 0.40 m, drained to zero, and the robot
+  drove off the end of the world). `exit_detect_min_frames` is a floor so no
+  single large-delta frame can fire the exit alone.
 - Arming distance, per signature: the OPEN signature is disabled until the
   robot has travelled `min_in_row_distance` meters (odometry) inside the
   current row, so the open-field view at row entry cannot trigger an exit.
@@ -84,6 +89,12 @@ ExitDetectorStatus = namedtuple(
         "open_rows",             # scan rows that are wide AND flank-clear
         "open_streak_start",     # distance_in_row where the streak began
         "near_row_flank_clear",  # nearest scan row flank-clear? (revocation)
+        # Raw numbers for the nearest scan row, so the HUD can say WHICH
+        # threshold is blocking an exit. Without these, "width just under the
+        # bar" and "edges just under the bar" both render as openrows=0 and
+        # there is no way to pick the knob to turn.
+        "near_row_width",        # normalized corridor width, or None
+        "near_row_edges",        # (left_clear_frac, right_clear_frac) or None
     ],
 )
 
@@ -149,6 +160,14 @@ def flank_clear_flags(
     return flags
 
 
+def nearest_row_index(centerline_result):
+    """Index of the scan row closest to the robot (largest row_y), or None."""
+    rows = centerline_result.scan_rows
+    if not rows:
+        return None
+    return max(range(len(rows)), key=lambda i: rows[i].row_y)
+
+
 def nearest_row_flank_clear(
     centerline_result, image_width, edge_margin_frac, min_clear_fraction=0.8
 ):
@@ -161,13 +180,12 @@ def nearest_row_flank_clear(
     also independent of `exit_open_rows_required`, so raising that knob cannot
     break revocation.
     """
-    rows = centerline_result.scan_rows
-    if not rows:
+    near_index = nearest_row_index(centerline_result)
+    if near_index is None:
         return None
     flags = flank_clear_flags(
         centerline_result, image_width, edge_margin_frac, min_clear_fraction
     )
-    near_index = max(range(len(rows)), key=lambda i: rows[i].row_y)
     return flags[near_index]
 
 
@@ -186,6 +204,8 @@ class RowExitDetector:
         exit_flank_edge_margin=0.05,
         exit_flank_min_clear_fraction=0.8,
         exit_detect_min_frames=2,
+        exit_leak_ratio=0.5,
+        blocked_leak_ratio=1.0,
     ):
         self.exit_width_threshold = exit_width_threshold
         # Meters of sustained OPEN evidence before firing. Default 0.4 m
@@ -210,6 +230,21 @@ class RowExitDetector:
         # Floor on the number of frames contributing to an open streak, so a
         # single frame carrying a large odometry delta cannot fire the exit.
         self.exit_detect_min_frames = exit_detect_min_frames
+        # How fast the OPEN accumulator drains on a non-signature frame,
+        # relative to how fast it fills on a signature frame. 1.0 is
+        # symmetric, which sounds neutral but is not: a signature that is true
+        # HALF the frames then nets exactly zero and can NEVER fire, however
+        # far the robot drives. That is precisely a real-but-marginal exit --
+        # sim field, 2026-07-28: the meter reached 0.13 of 0.40 m and drained
+        # back to zero while the robot drove off the end of the world. At 0.5,
+        # anything true more than ~1/3 of the time still climbs, while a brief
+        # mid-row gap (open for ~0.2 m, then closed for meters) still drains
+        # away without firing. The EXIT_CLEAR revocation is the backstop for
+        # what does slip through.
+        self.exit_leak_ratio = exit_leak_ratio
+        # BLOCKED stays symmetric by default: its leak was tuned in sim and a
+        # back-out is a much bigger commitment than a headland turn.
+        self.blocked_leak_ratio = blocked_leak_ratio
 
         self._open_distance = 0.0
         self._open_streak_start = None
@@ -259,8 +294,10 @@ class RowExitDetector:
         if distance_in_row is None:
             self.reset()
             self._last_now = now
-            self.last_status = self._status(None, False, False, 0, 0,
-                                            centerline_result, 0, None)
+            self.last_status = self._status(
+                None, False, False, 0, 0, centerline_result, 0, None,
+                image_width,
+            )
             return EXIT_NONE
 
         # Per-frame increments. Distance deltas are clamped non-negative so a
@@ -290,7 +327,8 @@ class RowExitDetector:
             self._open_frames = 0
             self._blocked_seconds = 0.0
             self.last_status = self._status(
-                distance_in_row, False, False, 0, 0, centerline_result, 0, None
+                distance_in_row, False, False, 0, 0, centerline_result, 0,
+                None, image_width,
             )
             return EXIT_NONE
 
@@ -325,16 +363,19 @@ class RowExitDetector:
 
         if open_signature and open_armed:
             if self._open_streak_start is None:
-                # First frame of a streak: record where it began and credit no
-                # distance yet, so _open_distance stays exactly "meters driven
-                # since the exit was first seen".
-                self._open_streak_start = distance_in_row
-                self._open_frames = 1
-            else:
-                self._open_distance += d_delta
-                self._open_frames += 1
+                # Streak begins at the PREVIOUS sample: this frame's d_delta is
+                # the travel it is evidence for. Crediting nothing on the first
+                # frame instead would deadlock a flickering signature, whose
+                # accumulator returns to zero between bursts -- every open
+                # frame would then be a "first" frame and bank nothing.
+                self._open_streak_start = distance_in_row - d_delta
+                self._open_frames = 0
+            self._open_distance += d_delta
+            self._open_frames += 1
         else:
-            self._open_distance = max(0.0, self._open_distance - d_delta)
+            self._open_distance = max(
+                0.0, self._open_distance - d_delta * self.exit_leak_ratio
+            )
             if self._open_distance <= 0.0:
                 self._open_streak_start = None
                 self._open_frames = 0
@@ -342,7 +383,9 @@ class RowExitDetector:
         if blocked_signature and blocked_armed:
             self._blocked_seconds += t_delta
         else:
-            self._blocked_seconds = max(0.0, self._blocked_seconds - t_delta)
+            self._blocked_seconds = max(
+                0.0, self._blocked_seconds - t_delta * self.blocked_leak_ratio
+            )
 
         near_clear = nearest_row_flank_clear(
             centerline_result,
@@ -359,6 +402,7 @@ class RowExitDetector:
             centerline_result,
             open_rows,
             near_clear,
+            image_width,
         )
 
         if (
@@ -372,7 +416,16 @@ class RowExitDetector:
 
     def _status(self, distance_in_row, open_armed, blocked_armed,
                 corridor_rows, wide_rows, centerline_result, open_rows,
-                near_clear):
+                near_clear, image_width):
+        near_width = None
+        near_edges = None
+        near_index = nearest_row_index(centerline_result)
+        if near_index is not None:
+            sr = centerline_result.scan_rows[near_index]
+            if sr.x_left is not None:
+                near_width = (sr.x_right - sr.x_left + 1) / float(image_width)
+            if sr.left_clear_frac is not None:
+                near_edges = (sr.left_clear_frac, sr.right_clear_frac)
         return ExitDetectorStatus(
             distance_in_row=distance_in_row,
             open_armed=open_armed,
@@ -385,4 +438,6 @@ class RowExitDetector:
             open_rows=open_rows,
             open_streak_start=self._open_streak_start,
             near_row_flank_clear=near_clear,
+            near_row_width=near_width,
+            near_row_edges=near_edges,
         )

@@ -70,7 +70,6 @@ from agbot_vision_nav.row_exit_detector import (
     EXIT_ROW_END_OPEN,
     RowExitDetector,
     nearest_row_flank_clear,
-    normalized_corridor_widths,
 )
 
 STATE_FOLLOW_ROW = "FOLLOW_ROW"
@@ -123,8 +122,8 @@ class MissionFSM:
         turn_rate=0.4,
         yaw_tolerance_deg=5.0,
         reacquire_speed=0.08,
-        reacquire_max_width=0.6,
-        reacquire_frames=3,
+        reacquire_confirm_distance=0.12,
+        reacquire_steering_enabled=True,
         reacquire_max_distance=1.5,
         backout_speed=0.10,
         backout_enabled=True,
@@ -165,8 +164,14 @@ class MissionFSM:
         self.turn_rate = abs(turn_rate)
         self.yaw_tolerance = math.radians(yaw_tolerance_deg)
         self.reacquire_speed = reacquire_speed
-        self.reacquire_max_width = reacquire_max_width
-        self.reacquire_frames = reacquire_frames
+        # Meters of sustained in-row view to latch the new row. 0.12 m is the
+        # field-proven 3 frames at 2 Hz and 0.08 m/s, expressed so it means the
+        # same thing at any inference rate.
+        self.reacquire_confirm_distance = reacquire_confirm_distance
+        # Steer while creeping instead of driving dead straight: REACQUIRE
+        # could otherwise cover up to reacquire_max_distance misaligned, which
+        # is how it nearly put the robot into the corn (sim, 2026-07-28).
+        self.reacquire_steering_enabled = reacquire_steering_enabled
         self.reacquire_max_distance = reacquire_max_distance
         self.backout_speed = abs(backout_speed)
         self.backout_enabled = backout_enabled
@@ -205,7 +210,8 @@ class MissionFSM:
         self._revoke_last_distance = None
         self._last_yaw = None      # previous yaw sample, for sweep integration
         self._swept = 0.0          # accumulated yaw swept in current turn
-        self._reacquire_hits = 0   # consecutive corridor-looking frames
+        self._reacquire_distance = 0.0   # m of in-row view banked (leaky)
+        self._reacquire_last = None      # previous REACQUIRE distance sample
         self._backout_target = None    # meters to reverse in BACKOUT
         self._suppress_flip = False    # skip one turn-sign flip at REACQUIRE
 
@@ -215,7 +221,8 @@ class MissionFSM:
         self._entry_xy = (odom_pose[0], odom_pose[1]) if odom_pose else None
         self._last_yaw = odom_pose[2] if odom_pose else None
         self._swept = 0.0
-        self._reacquire_hits = 0
+        self._reacquire_distance = 0.0
+        self._reacquire_last = None
         if state == STATE_EXIT_CLEAR:
             self._revoke_fail = 0.0
             self._revoke_last_distance = None
@@ -310,24 +317,37 @@ class MissionFSM:
         self._entry_xy = self._row_entry_xy
         self._last_yaw = odom_pose[2] if odom_pose else None
         self._swept = 0.0
-        self._reacquire_hits = 0
+        self._reacquire_distance = 0.0
+        self._reacquire_last = None
         self._exit_clear_offset = 0.0
         self._controller.reset()
         self._detector.reset()
         return True
 
-    def _corridor_looks_like_row(self, centerline_result, image_width):
-        if not centerline_result.valid:
-            return False
-        widths = [
-            w
-            for w in normalized_corridor_widths(centerline_result, image_width)
-            if w is not None
-        ]
-        if not widths:
-            return False
-        mean_width = sum(widths) / len(widths)
-        return mean_width < self.reacquire_max_width
+    def _looks_like_row(self, centerline_result, image_width):
+        """True when the near scan row has a corridor with corn on BOTH sides.
+
+        The exact inverse of the open-exit test, and deliberately not a width
+        threshold. The previous rule -- mean corridor width < 0.6 -- is a
+        camera-height constant: normal in-row width is ~0.5 on the tall mount
+        but ~0.7 on the low one, so on the low camera it could never be
+        satisfied inside a row. The FSM then crept the full
+        reacquire_max_distance blind (2.0 m at 0.08 m/s = 25 s) and nearly
+        drove into the corn (sim, 2026-07-28). Corn is corn at any camera
+        height. It also drops the old `valid` requirement
+        (traversable_fraction >= 0.10), a second unrelated way to fail to
+        latch: this test is strictly more specific than a global pixel count,
+        needing a traversable run at image centre AND corn in both strips.
+        """
+        return (
+            nearest_row_flank_clear(
+                centerline_result,
+                image_width,
+                self._detector.exit_flank_edge_margin,
+                self._detector.exit_flank_min_clear_fraction,
+            )
+            is False
+        )
 
     # ------------------------------------------------------------- update --
     def update(self, centerline_result, odom_pose, image_width,
@@ -507,11 +527,19 @@ class MissionFSM:
             return self._controller.linear_x_cruise, 0.0, self.state, False
 
         if self.state == STATE_REACQUIRE:
-            if self._corridor_looks_like_row(centerline_result, image_width):
-                self._reacquire_hits += 1
+            travelled = self._distance_from_entry(odom_pose)
+            delta = (
+                max(0.0, travelled - self._reacquire_last)
+                if self._reacquire_last is not None
+                else 0.0
+            )
+            self._reacquire_last = travelled
+            in_row = self._looks_like_row(exit_centerline_result, image_width)
+            if in_row:
+                self._reacquire_distance += delta
             else:
-                self._reacquire_hits = 0
-            if self._reacquire_hits >= self.reacquire_frames:
+                self._reacquire_distance = 0.0
+            if self._reacquire_distance >= self.reacquire_confirm_distance - 1e-9:
                 # New row acquired: flip turn direction for the next headland
                 # -- unless this row was reached via a back-out, in which case
                 # it is traveled in the SAME world direction as the blocked
@@ -522,10 +550,22 @@ class MissionFSM:
                     self._turn_sign = -self._turn_sign
                 self._enter(STATE_FOLLOW_ROW, odom_pose)
                 return 0.0, 0.0, self.state, False
-            if self._distance_from_entry(odom_pose) >= self.reacquire_max_distance:
+            if travelled >= self.reacquire_max_distance:
                 # No corridor where a row should be: no rows left. Stop.
                 self._enter(STATE_DONE, odom_pose)
                 return 0.0, 0.0, self.state, True
-            return self.reacquire_speed, 0.0, self.state, False
+            # Steer while creeping. Driving dead straight for up to
+            # reacquire_max_distance is how REACQUIRE nearly put the robot into
+            # the corn: entering a row slightly off-centre, it held the error
+            # instead of closing it. Only steer once a row is actually visible;
+            # angular_z_max clamps whatever the MPC makes of a headland view.
+            angular_z = 0.0
+            if self.reacquire_steering_enabled and in_row:
+                _, angular_z = self._controller.compute(
+                    centerline_result.offset_norm,
+                    centerline_result.slope_term,
+                    True,
+                )
+            return self.reacquire_speed, angular_z, self.state, False
 
         raise RuntimeError("unknown state: %s" % self.state)

@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 
 from agbot_vision_nav.centerline_estimator import (
@@ -168,7 +169,11 @@ def test_open_accumulator_drains_on_sustained_non_open():
     det = RowExitDetector(exit_confirm_distance=0.4)
     d = Drive(det)
     assert d.meters(make_open_field_mask(), 0.30) == EXIT_NONE
-    assert d.meters(make_corridor_mask(), 0.40) == EXIT_NONE   # drained to 0
+    # Draining is deliberately slower than filling (exit_leak_ratio 0.5), so
+    # clearing 0.30 m of evidence takes 0.60 m of in-row driving.
+    assert d.meters(make_corridor_mask(), 0.40) == EXIT_NONE
+    assert det.last_status.open_distance == pytest.approx(0.10)
+    assert d.meters(make_corridor_mask(), 0.30) == EXIT_NONE   # drained to 0
     assert det.last_status.open_distance == 0.0
     assert det.open_streak_start is None
     assert d.meters(make_open_field_mask(), 0.30) == EXIT_NONE  # starts over
@@ -236,16 +241,20 @@ def test_unarmed_before_min_distance():
 
 
 def test_debounce_does_not_straddle_arming_boundary():
+    """Open field visible the whole way, driving continuously through the
+    arming distance: the 0.5 m seen BEFORE arming must not count toward the
+    confirmation, so the exit cannot fire until ~0.4 m past 2.0 m."""
     det = RowExitDetector(min_in_row_distance=2.0, exit_confirm_distance=0.4)
     mask = make_open_field_mask()
-    # travel before the arming distance is discarded...
     d = Drive(det, distance=1.5)
+    # everything before the arming distance is discarded
     assert d.meters(mask, 0.45) == EXIT_NONE
     assert det.last_status.open_distance == 0.0
-    # ...so the full 0.4 m is still required after arming
-    d = Drive(det, distance=2.05)
-    assert d.meters(mask, 0.30) == EXIT_NONE
-    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
+    # ...and the confirmation only starts accumulating from there
+    assert d.meters(mask, 0.25) == EXIT_NONE          # ~2.20 m
+    while d.feed(mask) == EXIT_NONE:
+        assert d.distance < 2.6, "exit never fired"
+    assert 2.3 <= d.distance <= 2.5
 
 
 def test_blocked_arms_earlier_than_open():
@@ -541,3 +550,89 @@ def test_nearest_row_flank_clear_picks_the_bottom_row():
     assert nearest_row_flank_clear(
         estimate_centerline(make_open_field_mask()), WIDTH, 0.05, 0.8
     ) is True
+
+
+# ------------------------------------------------ asymmetric leak (marginal exit) --
+def alternating(drive, mask_a, mask_b, meters, duty):
+    """Feed frames alternating between two views with the given duty cycle on
+    mask_a, driving `meters` in total. Models a marginal exit: the mask is
+    good enough to read as open only some of the time."""
+    frames = int(round(meters / drive.step_m))
+    signal = EXIT_NONE
+    acc = 0.0
+    for _ in range(frames):
+        acc += duty
+        if acc >= 1.0:
+            acc -= 1.0
+            signal = drive.feed(mask_a)
+        else:
+            signal = drive.feed(mask_b)
+        if signal != EXIT_NONE:
+            return signal
+    return signal
+
+
+def test_marginal_exit_fires_despite_a_flickering_signature():
+    """The 2026-07-28 sim failure. At the row end the model DOES label the
+    ground traversable, just imperfectly -- width ~0.8-0.9 with patchy edges --
+    so the open signature is true only about half the frames. Under a
+    symmetric leak that nets exactly zero and can NEVER fire however far the
+    robot drives (the log showed the meter reach 0.13 of 0.40 m and drain back
+    to 0.00 while the robot left the world). Filling faster than it drains
+    fixes it."""
+    det = RowExitDetector(exit_confirm_distance=0.4)   # default leak 0.5
+    d = Drive(det)
+    assert alternating(
+        d, make_open_field_mask(), make_corridor_mask(), meters=3.0, duty=0.5
+    ) == EXIT_ROW_END_OPEN
+
+
+def test_symmetric_leak_reproduces_the_failure():
+    """exit_leak_ratio=1.0 restores the old behavior exactly -- and with it,
+    the bug: a 50% signature never fires. Kept as the counter-example that
+    documents WHY the default is 0.5."""
+    det = RowExitDetector(exit_confirm_distance=0.4, exit_leak_ratio=1.0)
+    d = Drive(det)
+    assert alternating(
+        d, make_open_field_mask(), make_corridor_mask(), meters=5.0, duty=0.5
+    ) == EXIT_NONE
+
+
+def test_weak_signature_still_does_not_fire():
+    """The leak must not be so forgiving that noise accumulates. A signature
+    true only ~20% of the time is noise, not a row end."""
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    d = Drive(det)
+    assert alternating(
+        d, make_open_field_mask(), make_corridor_mask(), meters=5.0, duty=0.2
+    ) == EXIT_NONE
+
+
+def test_short_mid_row_gap_still_does_not_fire():
+    """The false positive this whole subsystem exists to prevent: a gap in the
+    corn reads open for ~0.25 m, then the row closes back up. Even with the
+    gentler leak it must not reach 0.40 m."""
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    d = Drive(det)
+    assert d.meters(make_open_field_mask(), 0.25) == EXIT_NONE
+    assert d.meters(make_corridor_mask(), 1.0) == EXIT_NONE
+    assert det.last_status.open_distance == 0.0
+
+
+def test_near_row_width_and_edges_reported():
+    """The HUD needs to say WHICH threshold is blocking an exit: without these
+    numbers 'width just under the bar' and 'edges just under the bar' both
+    render as openrows=0."""
+    det = RowExitDetector()
+    det.update(estimate_centerline(make_open_field_mask()), WIDTH, 5.0, now=0.0)
+    s = det.last_status
+    assert s.near_row_width == pytest.approx(1.0)
+    assert s.near_row_edges == (1.0, 1.0)
+
+    det.update(
+        estimate_centerline(make_wide_but_flanked_mask(margin=16)),
+        WIDTH, 5.0, now=0.5,
+    )
+    s = det.last_status
+    assert 0.8 <= s.near_row_width < 1.0        # wide enough...
+    assert s.near_row_edges == (0.0, 0.0)       # ...but corn in both strips

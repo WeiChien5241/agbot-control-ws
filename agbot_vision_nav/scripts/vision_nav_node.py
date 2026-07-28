@@ -154,6 +154,8 @@ class VisionNavNode(object):
                 exit_detect_min_frames=rospy.get_param(
                     "~exit_detect_min_frames", 2
                 ),
+                exit_leak_ratio=rospy.get_param("~exit_leak_ratio", 0.5),
+                blocked_leak_ratio=rospy.get_param("~blocked_leak_ratio", 1.0),
             )
             self._detector = detector
             self._fsm = MissionFSM(
@@ -167,8 +169,12 @@ class VisionNavNode(object):
                 turn_rate=rospy.get_param("~turn_rate", 0.4),
                 yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 5.0),
                 reacquire_speed=rospy.get_param("~reacquire_speed", 0.08),
-                reacquire_max_width=rospy.get_param("~reacquire_max_width", 0.6),
-                reacquire_frames=rospy.get_param("~reacquire_frames", 3),
+                reacquire_confirm_distance=rospy.get_param(
+                    "~reacquire_confirm_distance", 0.12
+                ),
+                reacquire_steering_enabled=rospy.get_param(
+                    "~reacquire_steering_enabled", True
+                ),
                 reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 2.0),
                 backout_speed=rospy.get_param("~backout_speed", 0.10),
                 backout_enabled=self._rear_camera_enabled,
@@ -508,12 +514,18 @@ class VisionNavNode(object):
             # cadence of the timing line so a mission run always leaves a
             # state + detector trace in the console ("why didn't the exit
             # fire" must be answerable from the log alone).
+            # A meter that is moving -- filling OR draining -- is the whole
+            # story of why an exit did or did not fire. At 5 s throttling on a
+            # 2 Hz robot only 1 frame in 10 is printed, which is how a
+            # partially-firing exit signature (open 0.13/0.40 m) was misread as
+            # never firing at all (sim, 2026-07-28).
+            s = self._detector.last_status
             counting_down = is_rear or (
-                self._detector.last_status is not None
-                and self._detector.last_status.blocked_seconds > 0.0
+                s is not None
+                and (s.blocked_seconds > 0.0 or s.open_distance > 0.0)
             )
             rospy.loginfo_throttle(
-                2.0 if counting_down else 5.0, "%s", detector_line
+                1.0 if counting_down else 5.0, "%s", detector_line
             )
 
         if self._debug_pub is not None:
@@ -547,9 +559,13 @@ class VisionNavNode(object):
         if self._detector.last_status is None or self._fsm.state != STATE_FOLLOW_ROW:
             return prefix.rstrip()
         s = self._detector.last_status
+        # near w= / edges= say WHICH threshold is holding an exit back. Without
+        # them, "width just under exit_width_threshold" and "edges just under
+        # exit_flank_min_clear_fraction" both render as openrows=0 and there is
+        # no way to tell which knob to turn.
         return prefix + (
             "exit: blk %.1f/%.1f s open %.2f/%.2f m rows=%d wide=%d openrows=%d "
-            "nearflank=%s frac=%.2f armed o:%s b:%s"
+            "near w=%s edges=%s frac=%.2f armed o:%s b:%s"
         ) % (
             s.blocked_seconds,
             self._detector.blocked_confirm_seconds,
@@ -558,7 +574,10 @@ class VisionNavNode(object):
             s.corridor_rows,
             s.wide_rows,
             s.open_rows,
-            {True: "Y", False: "N", None: "-"}[s.near_row_flank_clear],
+            "-" if s.near_row_width is None else "%.2f" % s.near_row_width,
+            "-"
+            if s.near_row_edges is None
+            else "%.2f/%.2f" % s.near_row_edges,
             s.traversable_fraction,
             "Y" if s.open_armed else "N",
             "Y" if s.blocked_armed else "N",
