@@ -94,6 +94,59 @@ stay that way.
 `exit_flank_min_clear_fraction` (edges under 0.8) or `exit_width_threshold`
 (width under 0.8) — do NOT reach for `exit_leak_ratio` first.
 
+### DONE + committed: joystick takeover — in-node override (`291e0db`)
+The last open safety item. The grad student could not override the node while
+the robot drove into corn; killing it was the only recourse.
+
+**The wiring model, read from `jackal/jackal_control/config/twist_mux.yaml`:**
+`bt_joy` = `bluetooth_teleop/cmd_vel`, timeout 0.5, **priority 9**; `external`
+= `cmd_vel`, timeout 0.5, **priority 1**. twist_mux arbitrates by PRIORITY,
+never by publish rate, so whenever the joystick publishes it wins at any rate.
+**A rate-dependent takeover failure therefore means the mux was BYPASSED** —
+two publishers racing on the controller topic, faster one wins. That is a
+wiring/config fault. (`teleop_ps4.yaml`: `enable_button: 4` = L1 deadman,
+`joy_node/autorepeat_rate: 20`; `teleop_twist_joy` publishes only while the
+deadman is held.)
+
+**Robot-side diagnosis (§5 step 1) — run it and record the result here.** The
+decisive command is `rostopic info /jackal_velocity_controller/cmd_vel` with
+the node running: **exactly one publisher, and it must be `/twist_mux`**.
+
+**Code fix, which stands regardless of what the diagnosis finds:**
+- **In-node operator override** (`src/agbot_vision_nav/operator_override.py`,
+  rospy-free + unit-tested). Any message on `operator_override_topic`
+  (default `/bluetooth_teleop/cmd_vel`) means a human is holding the deadman
+  and driving → the node publishes **NOTHING**, not zeros. Silence lets the
+  mux's 0.5 s `external` timeout expire, and it is the only thing that still
+  works if the mux is out of the path. Resumes `override_hold_off_sec` (2.0 s)
+  after the stick goes quiet; both transitions `logwarn`.
+- **The FSM is not advanced during an override**, so manual driving cannot
+  feed its odometry accumulators. On resume `MissionFSM.resume_after_override()`
+  clears every distance-delta reference — otherwise the first frame back would
+  credit the whole manual excursion at once, easily satisfying
+  `exit_confirm_distance` and firing a spurious exit the instant the operator
+  let go. The row-entry pose is KEPT so arming survives (the robot never left
+  the row).
+- **One publisher.** A timer at `cmd_publish_rate` (20 Hz) is now the sole
+  publisher; the inference thread only stores the command. Previously BOTH the
+  10 Hz keep-alive and every inference published (~35 Hz on the GPU robot).
+  Outgoing rate no longer scales with inference speed, the override has exactly
+  one gate, and worst-case staleness improves 100 ms → 50 ms.
+- **Startup self-check**: logs the resolved cmd_vel topic and warns loudly if
+  it is not `/cmd_vel`, spelling out that this bypasses twist_mux. That line
+  would have caught the field failure.
+
+⚠ **Auto-resume is a deliberate user choice.** After a takeover the node
+restarts autonomy on its own once the joystick is quiet for
+`override_hold_off_sec` — in a situation the operator judged unsafe. Raise the
+hold-off, or set `operator_override_enabled: false` to rely on twist_mux alone.
+
+⚠ **`e_stop` is NOT the takeover path.** twist_mux's `e_stop` lock (priority
+255, `std_msgs/Bool` on `/e_stop`) locks out *every* input including the
+joystick. Useful for a future "stop everything" button, wrong for a handover.
+
+**116 tests pass** (106 → 116).
+
 ### User decisions this session (do not re-propose)
 - **No odometry row-length fallback**, and **no re-reading "lost view past the
   row end" as an exit.** Consequence, recorded once: a genuine segmentation
@@ -198,8 +251,9 @@ early-approach and world-edge tripwires (open field reaches the edges).
 (Superseded in mechanism by `a9c6ed3` above: the flank rule survives but now
 measures strip occupancy, and the frame debounce is gone.)
 
-### DEFERRED (user scoped out this session) — two open items
-- **SAFETY: joystick takeover on the fast robot.** The grad student could
+### DEFERRED — one open item (joystick takeover was FIXED, see §0 `291e0db`)
+- ~~**SAFETY: joystick takeover on the fast robot.**~~ FIXED 2026-07-28.
+  Original analysis, kept because the reasoning still applies: The grad student could
   NOT override cmd_vel when the robot hit corn; killing the node was the only
   recourse. Rate-dependent (fine on the 2 Hz robot, broken on the fast GPU
   robot). BUT: the node publishes to `/cmd_vel` = twist_mux `external` input
@@ -422,10 +476,11 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 | `src/agbot_vision_nav/mission_fsm.py` | Mission FSM incl. BACKOUT branch, `rear_exit_detector`, `backout_progress()`, `traverse_distance`, `blocked_events`; EXIT_CLEAR back-dating + revocation (`_revoke_exit()`, `revoked_exits`), `_row_entry_xy` separate from `_entry_xy`, optional `exit_centerline_result`. |
 | `src/agbot_vision_nav/timing_stats.py` | Rolling pipeline metrics; `inf` = predict() wall time, `dropped %` = skipped frames (by design). |
 | `src/agbot_vision_nav/debug_viz.py` | HUD overlay: state, per-row `w=`, `timing_line`, `detector_line` (renders whatever string the node builds — no change needed for new fields). |
+| `src/agbot_vision_nav/operator_override.py` | `OperatorOverride`: hold-off timing for joystick takeover (rospy-free). |
 | `scripts/vision_nav_node.py` | Only rospy file. Frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging; HUD detector line now shows `wide=`/`openrows=`. |
 | `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
 | `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. ⚠ launch-arg defaults override params.yaml (§6). |
-| `test/` | **106 tests**: controller 17, centerline 9, viz 3, detector 35, fsm 35, timing 7. |
+| `test/` | **116 tests**: controller 17, centerline 9, viz 3, detector 35, fsm 37, timing 7, override 8. |
 
 ### `agbot_bringup/`
 | File | Purpose |
@@ -445,16 +500,21 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 
 ## 5. NEXT STEPS (priority order)
 
-1. **SAFETY: fix joystick takeover** (§0 DEFERRED). Verify the mux wiring on
-   the robot and/or add an in-node operator override. **Do this before any
-   further autonomous field run** — right now there is no reliable human
-   override on the fast robot. Ten-minute bench test, robot on blocks:
-   `rostopic info jackal_velocity_controller/cmd_vel` with the node running
-   must show exactly ONE publisher (twist_mux). If the node or the teleop node
-   publishes there directly, that is the whole bug — a rate-dependent override
-   failure is the fingerprint of the mux being bypassed, since twist_mux
-   arbitrates by priority, not publish rate. Then also cap the node's publish
-   rate (~20 Hz) so inference speed stops leaking into control behavior.
+1. **Verify the takeover on the robot, wheels OFF the ground** (code is in,
+   `291e0db`; the mux wiring itself is still unconfirmed):
+   ```bash
+   rosnode list | grep twist_mux
+   rostopic info /jackal_velocity_controller/cmd_vel   # EXACTLY ONE publisher: /twist_mux
+   rosparam get /vision_nav_node/cmd_vel_topic         # expect /cmd_vel
+   rostopic hz /bluetooth_teleop/cmd_vel               # hold L1, move the stick
+   rostopic echo /jackal_velocity_controller/cmd_vel   # must follow the stick
+   ```
+   If the node or a teleop node publishes to the controller directly, that is
+   the original bug — fix the launch/remap, do NOT point `cmd_vel_topic` at
+   the controller. Then confirm the in-node override: hold L1 → one `OPERATOR
+   OVERRIDE` warning and `/cmd_vel` goes silent; release → resume after ~2 s.
+   Mid-row, the `open x/0.40 m` meter must NOT jump after a resume. Record the
+   findings in §0.
 2. **Field-validate the exit path** on the GPU robot (sim is now green — see
    §0 SIM-VALIDATED — so this is the next real unknown):
    - mid-row gap → HUD `openrows=0` even when a `w=` reads ≥0.8, and the
@@ -522,7 +582,14 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 6. **Blocked rows do NOT count toward num_rows** (2026-07-22).
 7. **Joystick takeover**: keep the node on `/cmd_vel`; don't override
    `cmd_vel_topic` onto the controller/teleop topic (bypasses twist_mux
-   priority — the suspected cause of the takeover failure).
+   priority — the suspected cause of the takeover failure). The node now warns
+   loudly at startup if `cmd_vel_topic` is not `/cmd_vel`.
+7b. **The node publishes from ONE place** (the `cmd_publish_rate` timer). Do
+   not re-add a publish in the inference thread: that reintroduces
+   rate-scaling AND a path that bypasses the operator-override gate.
+7c. **Holding L1 makes the node publish nothing at all** (not zeros), and the
+   FSM is frozen while it does. Autonomy auto-resumes 2 s after the stick goes
+   quiet — raise `override_hold_off_sec` if that is too eager.
 8. **This dev sandbox is ROS2 Humble, not ROS1** — catkin/roslaunch/rostopic
    run on the user's WSL2 ROS1 Noetic machine (same filesystem). Unit tests DO
    run in the sandbox. Model runs in `~/agbot_venv`.
@@ -579,5 +646,5 @@ PYTHONPATH=src python3 scripts/benchmark_inference.py \
 
 # Unit tests (no ROS needed)
 cd ~/agbot_control_ws/src/agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v     # expected: 106 passed
+PYTHONPATH=src python3 -m pytest test/ -v     # expected: 116 passed
 ```
