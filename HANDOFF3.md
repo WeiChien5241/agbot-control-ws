@@ -1,18 +1,87 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-24.
-Field status: in-row nav + headland turns WORK on the real robot. This
-session (2026-07-24) brought up the new NVIDIA-GPU robot, found and FIXED a
-mid-row false-EXIT_CLEAR bug caused by the low camera + fast inference, and
-surfaced a safety issue (joystick takeover) that is DEFERRED. Written so a
-fresh session picks up with zero context. Supersedes all previous HANDOFF3
-content.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-28.
+Field status: in-row nav + headland turns WORK on the real robot. Session
+2026-07-24 brought up the new NVIDIA-GPU robot and found a mid-row
+false-EXIT_CLEAR bug (low camera + fast inference). Session 2026-07-28 found
+the DEEPER cause — a frame-counted debounce — and rebuilt the exit path
+around it. Written so a fresh session picks up with zero context. Supersedes
+all previous HANDOFF3 content.
 
 ---
 
-## 0. START HERE — this session (2026-07-24)
+## 0. START HERE — this session (2026-07-28)
 
-### DONE + committed: mid-row false EXIT_CLEAR fixed (commit `bcf7d6d`)
+### DONE + committed: exit detection rebuilt (commit `a9c6ed3`)
+The 2026-07-24 flank fix treated a symptom. The user pushed back with the
+right question — *"doesn't requiring corn beside the corridor just mean the
+exit needs width 1.0? Where is the actual threshold?"* — and that was right:
+`x_left <= 0.05W AND x_right >= 0.95W` implies `width >= 0.90`, so the flank
+rule was a width bar in disguise. Its ONLY addition over a plain width bar is
+rejecting **one-sided** openings (corridor pinned to the left edge with corn
+still on the right), which happens to be exactly what a gap in a single row of
+corn looks like — so it was worth keeping, but it was not the fix.
+
+The real defects, all now fixed:
+
+1. **The debounce was counted in FRAMES.** `exit_detect_frames=5` = 2.5 s at
+   2 Hz but 0.2 s at ~25 Hz. Same constant, 12x different meaning; the
+   confirmation that was field-proven on the CPU robot effectively did not
+   exist on the GPU robot. **OPEN now accumulates METERS TRAVELLED**
+   (`exit_confirm_distance` 0.4 m) and **BLOCKED accumulates SECONDS**
+   (`blocked_confirm_seconds` 4.0 s). The unit split is deliberate and load
+   bearing: a blocked view stops the robot (MPC goes invalid), so a
+   distance-based blocked counter would never fill and the back-out would
+   deadlock. Both accumulators are **leaky, not strictly consecutive** — 0.4 m
+   at 25 Hz is ~65 frames and one flickery frame resetting the streak would
+   turn the debounce into a never-fires bug. Defaults reproduce the
+   field-proven CPU-robot timings at any rate (5 frames @ 2 Hz @ 0.15 m/s =
+   0.375 m; 8 frames @ 2 Hz = 4 s).
+2. **EXIT_CLEAR was a one-way commit**, so a false positive was a collision
+   rather than a wobble. It is now **revocable** for its first
+   `exit_revoke_distance` (0.5 m): if the **NEAREST scan row** stays
+   corn-flanked for `exit_revoke_fail_distance` (0.25 m), the FSM falls back
+   to FOLLOW_ROW and un-counts the row. **Only the near row is consulted** —
+   the user correctly objected that during a genuine exit the FAR rows see the
+   corn block across the headland, so "corn reappears beside the corridor"
+   would revoke every real exit. Tripwire:
+   `test_far_row_corn_across_headland_does_not_revoke`.
+3. **The flank test was vetoed by one stray pixel**, because the corridor scan
+   stops at the FIRST non-traversable column — a false-negative risk on the
+   thinly-trained low-camera masks. It now measures outer-strip **occupancy**
+   (`exit_flank_min_clear_fraction` 0.8), computed in `estimate_centerline`
+   and carried on `ScanRowResult` as defaulted fields (hand-built results
+   still take the old edge-reach path).
+
+Also landed:
+- **`headland_clearance` is back-dated to where the exit was FIRST seen**, so
+  the confirmation distance is not added on top. Without this the robot would
+  overrun by 0.4 + 0.75 = 1.15 m. `exit_clear_min_distance` (0.2 m) is always
+  driven regardless.
+- **`exit_scan_row_fractions`** (empty = share the steering rows): the exit
+  detector can use its own scan rows without touching field-proven steering.
+  Rear stays on the steering rows — the FSM uses one rear result both to watch
+  for the exit behind and to steer the reverse leg.
+- HUD/log now read `open 0.12/0.40 m`, `blk 1.5/4.0 s`, `nearflank=Y/N/-`;
+  a revocation logs `EXIT REVOKED: row N at X m` (unthrottled) and the DONE
+  line reports the revoked count.
+
+**93 tests pass** (78 → 93). All prior tripwires stayed green.
+
+**Next:** everything below is desk-work-complete and wants the lab/field.
+See §5.
+
+### Deliberately NOT done (decided this session)
+- **Adaptive/relative width threshold.** Would learn the median in-row width
+  over the last few meters and fire at ~1.35x baseline, auto-calibrating
+  across camera mounts. Unnecessary while the flank rule already pins the bar
+  near 1.0, and it adds state that can fail silently. Revisit only if
+  per-mount tuning proves painful.
+- **Offline mask-vs-prediction harness.** The user judged the reported widths
+  accurate (the low camera genuinely reads ~1.0 at a real row end and ~0.83 at
+  a gap), so this is detector logic, not segmentation quality.
+
+### Prior session (2026-07-24): mid-row flank-clear fix (commit `bcf7d6d`)
 On the new GPU robot (fast inference) the mission FSM falsely fired
 `EXIT_CLEAR` **in the middle of a row**, drove into the corn, and — because
 the pipeline is so fast — committed before anyone could react. Root cause:
@@ -38,10 +107,8 @@ disabled by using a large value. HUD now shows `wide=` and `openrows=`.
 **78 tests pass** (72 → 78; +6). All prior tests stayed green, including the
 early-approach and world-edge tripwires (open field reaches the edges).
 
-**Next:** field-validate on the GPU robot — at a mid-row gap the HUD should
-read `openrows=0` even when a `w=` shows ≥0.8; `openrows≥1` only at the true
-row end. Tune `exit_flank_edge_margin` from there (smaller = must reach the
-edges more exactly; larger = more permissive). See §5.
+(Superseded in mechanism by `a9c6ed3` above: the flank rule survives but now
+measures strip occupancy, and the frame debounce is gone.)
 
 ### DEFERRED (user scoped out this session) — two open items
 - **SAFETY: joystick takeover on the fast robot.** The grad student could
@@ -149,18 +216,23 @@ back-out is sim-validated.
 
 ### Detector semantics (row_exit_detector.py, current)
 - OPEN: ≥ `exit_open_rows_required` (1) scan rows — ANY of them — that are BOTH
-  wide (corridor width ≥ `exit_width_threshold` 0.8) AND **flank-clear**
-  (corridor reaches within `exit_flank_edge_margin` 0.05 of BOTH image edges,
-  i.e. no corn flanking it). `exit_detect_frames` (5) CONSECUTIVE frames,
-  armed after `min_in_row_distance` (2.0 m). `exit_flank_edge_margin >= 1.0`
-  disables the flank term (width-only). Helper: `flank_clear_flags()`.
+  wide (corridor width ≥ `exit_width_threshold` 0.8) AND **flank-clear** (the
+  outer `exit_flank_edge_margin` 0.05 strip on EACH side is ≥
+  `exit_flank_min_clear_fraction` 0.8 traversable). Confirmed over
+  `exit_confirm_distance` (0.4 m) of **travel**, leaky, floored at
+  `exit_detect_min_frames` (2) frames; armed after `min_in_row_distance`
+  (2.0 m). `exit_flank_edge_margin >= 1.0` disables the flank term
+  (width-only). Helpers: `flank_clear_flags()`, `nearest_row_flank_clear()`,
+  `open_streak_start` (feeds the FSM's back-dating).
 - BLOCKED: zero corridors at ALL scan rows + `traversable_fraction` ≥
   `blocked_min_traversable_fraction` (0.02), accumulated over
-  `blocked_detect_frames` (8) with a LEAKY counter, armed after
-  `blocked_arming_distance` (0.3 m). UNCHANGED this session.
-- `last_status` (ExitDetectorStatus namedtuple) exposes internals incl.
-  `wide_rows` and the new `open_rows` (wide AND flank-clear count) — that's
-  what the HUD renders.
+  `blocked_confirm_seconds` (4.0) of **elapsed time** with a LEAKY counter,
+  armed after `blocked_arming_distance` (0.3 m). Seconds, not meters — the
+  robot is stopped by then.
+- `update()` takes `now=` (the node passes `rospy.get_time()`, which follows
+  sim time under Gazebo; the default `time.monotonic()` is for tests).
+- `last_status` exposes `wide_rows`, `open_rows`, `open_distance`,
+  `blocked_seconds`, `open_streak_start`, `near_row_flank_clear`.
 
 ### Mission FSM (mission_fsm.py, current)
 FOLLOW_ROW → EXIT_CLEAR (0.10 m/s, `headland_clearance` 0.75) → TURN_1 →
@@ -188,14 +260,26 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 
 ## 3. KEY DECISIONS (do not re-litigate without new information)
 
-- **Open exit = wide AND flank-clear** (2026-07-24). A row counts toward the
-  open exit only if its corridor reaches within `exit_flank_edge_margin` of
-  BOTH image edges (no corn flanking). Rejects the low-camera mid-row
-  side-gap false positive (width ~0.83 but corn short of the edge). Strictly
-  better than raising the width threshold: requires BOTH sides clear, not just
-  a large total width. Implemented in the detector from existing corridor
-  bounds — segmentation/centerline untouched. Tripwire tests:
-  `test_open_blocked_by_flank_corn_mid_row_gap`, `test_one_sided_edge_does_not_fire`.
+- **Never debounce in frames** (2026-07-28). Any frame count means a different
+  thing on every robot, and the fleet spans 2 Hz to ~25 Hz. Use meters for
+  anything confirmed by driving, seconds for anything confirmed while
+  stopped. Tripwire: `test_open_fires_at_same_distance_at_any_frame_rate`.
+- **Leaky, never strictly-consecutive, for distance/time debounces.** At
+  25 Hz a 0.4 m window is ~65 frames; a reset-on-any-dropout rule would never
+  complete. Tripwire: `test_open_tolerates_a_dropout_frame`.
+- **Revocation reads the NEAREST scan row only** (2026-07-28). The far rows
+  legitimately see the corn block across the headland during a genuine exit,
+  so "corn beside the corridor" as a global test would revoke every real exit.
+  Tripwire: `test_far_row_corn_across_headland_does_not_revoke`.
+- **Open exit = wide AND flank-clear** (2026-07-24, refined 2026-07-28). Be
+  honest about what this is: reaching within 0.05 of both edges implies
+  width ≥ 0.90, so it is mostly a stricter width bar. Its real addition is
+  rejecting ONE-SIDED openings (corridor at the left edge, corn still on the
+  right) — which is exactly what a gap in a single row of corn looks like.
+  Kept for that. Now measured as outer-strip occupancy so a stray pixel can't
+  veto it. Tripwires: `test_open_blocked_by_flank_corn_mid_row_gap`,
+  `test_one_sided_edge_does_not_fire`,
+  `test_stray_edge_pixel_does_not_veto_a_real_exit`.
 - **Exit detection: open = "ANY N rows wide", never specific/farthest rows.**
   Beyond the field edge, far scan rows can stay invalid FOREVER (garbage
   segmentation); a farthest-rows criterion never fired and the robot drove off
@@ -228,16 +312,16 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 | File | Purpose |
 |---|---|
 | `src/agbot_vision_nav/segmentation_model.py` | lightly_train wrapper; classes 0=sky,1=traversable,2=obstacle; `device=` param + `device_str`. |
-| `src/agbot_vision_nav/centerline_estimator.py` | 3 scan rows outward from center column → `CenterlineResult` (untouched this session). |
+| `src/agbot_vision_nav/centerline_estimator.py` | 3 scan rows outward from center column → `CenterlineResult`; also reports per-row outer-strip traversable fractions (`left_clear_frac`/`right_clear_frac`, defaulted None) for the flank test. |
 | `src/agbot_vision_nav/controller.py` | `MPCRowController` (SLSQP, N=8, dt-scaled). Reused unchanged for rear reverse steering. |
-| `src/agbot_vision_nav/row_exit_detector.py` | OPEN (wide AND flank-clear via `flank_clear_flags()` + `exit_flank_edge_margin`) / BLOCKED signatures, leaky blocked debounce, per-signature arming, `last_status` (incl. `open_rows`). |
-| `src/agbot_vision_nav/mission_fsm.py` | Mission FSM incl. BACKOUT branch, `rear_exit_detector` (mirrors flank margin), `backout_progress()`, `traverse_distance`, `blocked_events`. |
+| `src/agbot_vision_nav/row_exit_detector.py` | OPEN (wide AND flank-clear; strip occupancy via `flank_clear_flags()`) debounced in METERS, BLOCKED debounced in SECONDS, both leaky; `nearest_row_flank_clear()` for revocation; `open_streak_start` for back-dating; per-signature arming; `last_status`. |
+| `src/agbot_vision_nav/mission_fsm.py` | Mission FSM incl. BACKOUT branch, `rear_exit_detector`, `backout_progress()`, `traverse_distance`, `blocked_events`; EXIT_CLEAR back-dating + revocation (`_revoke_exit()`, `revoked_exits`), `_row_entry_xy` separate from `_entry_xy`, optional `exit_centerline_result`. |
 | `src/agbot_vision_nav/timing_stats.py` | Rolling pipeline metrics; `inf` = predict() wall time, `dropped %` = skipped frames (by design). |
 | `src/agbot_vision_nav/debug_viz.py` | HUD overlay: state, per-row `w=`, `timing_line`, `detector_line` (renders whatever string the node builds — no change needed for new fields). |
 | `scripts/vision_nav_node.py` | Only rospy file. Frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging; HUD detector line now shows `wide=`/`openrows=`. |
 | `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
-| `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_flank_edge_margin` (0.05). ⚠ launch-arg defaults override params.yaml (§6). |
-| `test/` | **78 tests**: controller 17, centerline 9, viz 3, detector 22, fsm 20, timing 7. |
+| `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. ⚠ launch-arg defaults override params.yaml (§6). |
+| `test/` | **93 tests**: controller 17, centerline 9, viz 3, detector 30, fsm 27, timing 7. |
 
 ### `agbot_bringup/`
 | File | Purpose |
@@ -257,15 +341,33 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 
 ## 5. NEXT STEPS (priority order)
 
-1. **Field-validate the mid-row flank-clear fix (`bcf7d6d`)** on the GPU robot:
-   drive a row with a known side gap → must NOT flip to EXIT_CLEAR mid-row
-   (HUD `openrows=0` even when a `w=` shows ≥0.8; `openrows≥1` only at the true
-   row end). Tune `exit_flank_edge_margin` (0.05) from the HUD if a real
-   open-field frame ever fails to fire (raise it) or a gap still trips it
-   (lower it, or check segmentation).
-2. **SAFETY: fix joystick takeover** (§0 DEFERRED). Verify the mux wiring on
-   the robot and/or add an in-node operator override. Do before more
-   autonomous field runs.
+1. **SAFETY: fix joystick takeover** (§0 DEFERRED). Verify the mux wiring on
+   the robot and/or add an in-node operator override. **Do this before any
+   further autonomous field run** — right now there is no reliable human
+   override on the fast robot. Ten-minute bench test, robot on blocks:
+   `rostopic info jackal_velocity_controller/cmd_vel` with the node running
+   must show exactly ONE publisher (twist_mux). If the node or the teleop node
+   publishes there directly, that is the whole bug — a rate-dependent override
+   failure is the fingerprint of the mux being bypassed, since twist_mux
+   arbitrates by priority, not publish rate. Then also cap the node's publish
+   rate (~20 Hz) so inference speed stops leaking into control behavior.
+2. **Field-validate the new exit path (`a9c6ed3`)** on the GPU robot:
+   - mid-row gap → HUD `openrows=0` even when a `w=` reads ≥0.8, and the
+     `open x/0.40 m` bar drains instead of filling;
+   - true row end → the bar fills smoothly and fires, and the turn happens
+     `headland_clearance` after FIRST sighting (not 1.15 m later);
+   - if a false exit still slips through, it should now log
+     `EXIT REVOKED: ...` and return to FOLLOW_ROW rather than commit.
+   Tune from the HUD: `exit_confirm_distance` up if gaps still confirm,
+   `exit_flank_min_clear_fraction` down (or `exit_flank_edge_margin` up) if a
+   real open field fails to fire.
+3. **Calibrate scan rows per camera mount** (lab, ~10 min each): tape at
+   1/2/3 m ahead, one frame per mount, read off the pixel rows, convert to
+   fractions. Put the exit rows in `exit_scan_row_fractions` (steering rows
+   stay put). The current `0.65/0.78/0.92` were heuristic and were never
+   re-derived for the low mount — on the low camera the bottom row images
+   ground so close that it is wide (~0.7) BOTH in-row and at an exit, which is
+   what made it a weak discriminator in the first place.
 3. **Full back-out mission end-to-end in sim** (confirms the 2026-07-22
    blocked-count fix): blocked row 1 → back out → S-turn → reacquire → finish
    3 rows → `Mission DONE: rows_driven=3, blocked rows: row 1 blocked at X m`.
@@ -284,10 +386,20 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 
 ## 6. GOTCHAS
 
-1. **Open exit now needs BOTH wide AND flank-clear** (2026-07-24). If exits
-   stop firing in real open field, the flanks aren't reaching the image edges —
-   raise `exit_flank_edge_margin` or check segmentation, don't revert. To fully
-   restore old width-only behavior set `exit_flank_edge_margin >= 1.0`.
+1. **Open exit needs BOTH wide AND flank-clear.** If exits stop firing in real
+   open field, the outer strips aren't reading clear — lower
+   `exit_flank_min_clear_fraction` or raise `exit_flank_edge_margin`, and check
+   segmentation. Don't revert. `exit_flank_edge_margin >= 1.0` fully restores
+   width-only behavior.
+1b. **Debounce knobs are meters (open) and seconds (blocked), not frames.**
+   `exit_detect_frames` / `blocked_detect_frames` no longer exist anywhere —
+   passing them raises TypeError rather than being silently ignored, which is
+   intentional.
+1c. **A revoked exit must NOT reset the row-entry pose.** `_row_entry_xy` is
+   deliberately separate from `_entry_xy`; calling `_enter(STATE_FOLLOW_ROW)`
+   on a revert would disarm the detector for another 2 m inside a row it never
+   left. Tripwire: the re-arm assertion in
+   `test_exit_revoked_when_near_row_stays_corn_flanked`.
 2. **Never key the exit on far scan rows** — the hard-won one. Don't restore
    commit `54e8ef8`'s detector logic. (The flank gate is per-row, not far-row.)
 3. **Launch-arg defaults override params.yaml** for every duplicated knob
@@ -324,8 +436,11 @@ roslaunch agbot_bringup agbot_gazebo.launch
 roslaunch agbot_vision_nav vision_nav.launch sim:=true \
   mission_enabled:=true rear_camera_enabled:=true num_rows:=3
 
-# Tune the new flank gate if needed (0.05 default; >=1.0 disables)
-#   ... exit_flank_edge_margin:=0.05
+# Tune if needed:
+#   exit_confirm_distance:=0.4          m of travel to confirm an exit
+#   exit_flank_min_clear_fraction:=0.8  lower if real exits fail to fire
+#   exit_revoke_fail_distance:=0.25     m of near-row corn that withdraws an exit
+#   exit_scan_row_fractions:="[0.55, 0.70, 0.82]"   exit rows only (per mount)
 
 # Rear-camera segmentation preview (robot idle, cmd_vel diverted)
 roslaunch agbot_vision_nav vision_nav.launch sim:=true \
@@ -334,11 +449,15 @@ roslaunch agbot_vision_nav vision_nav.launch sim:=true \
 
 # Monitor
 rqt_image_view /vision_nav_node/debug/image
-# HUD detector line: 'exit: blk n/8 open n/5 rows= wide= openrows= frac= armed o: b:'
-#   openrows=0 with wide>=1 at a mid-row gap == the flank gate working.
+# HUD detector line:
+#   'exit: blk 0.0/4.0 s open 0.12/0.40 m rows= wide= openrows= nearflank= frac= armed o: b:'
+#   openrows=0 with wide>=1 at a mid-row gap == the flank gate working;
+#   the 'open x/0.40 m' bar draining instead of filling == the gap being rejected.
 rostopic echo /cmd_vel
 # Console: 'timing:' every 5 s, 'exit: blk n/8' countdown, BACKOUT telemetry,
-#          one-shot 'Mission DONE: rows_driven=N, blocked rows: ...'
+#          'EXIT REVOKED: row N at X m' (unthrottled) when a false exit is
+#          withdrawn, one-shot 'Mission DONE: rows_driven=N, blocked rows: ...,
+#          revoked exits: N'
 
 # Offline inference benchmark (per machine, in the venv)
 source ~/agbot_venv/bin/activate
@@ -348,5 +467,5 @@ PYTHONPATH=src python3 scripts/benchmark_inference.py \
 
 # Unit tests (no ROS needed)
 cd ~/agbot_control_ws/src/agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v     # expected: 78 passed
+PYTHONPATH=src python3 -m pytest test/ -v     # expected: 93 passed
 ```
