@@ -4,15 +4,80 @@ Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-28.
 Field status: in-row nav + headland turns WORK on the real robot. Session
 2026-07-24 brought up the new NVIDIA-GPU robot and found a mid-row
 false-EXIT_CLEAR bug (low camera + fast inference). Session 2026-07-28 found
-the DEEPER cause — a frame-counted debounce — and rebuilt the exit path
-around it. Written so a fresh session picks up with zero context. Supersedes
-all previous HANDOFF3 content.
+the DEEPER cause — a frame-counted debounce — rebuilt the exit path around
+it, then sim-tested that rebuild and fixed the two failures it exposed (a
+symmetric accumulator leak that can never fire on a marginal signal, and a
+REACQUIRE latch keyed on a camera-height-specific width). Written so a fresh
+session picks up with zero context. Supersedes all previous HANDOFF3 content.
 
 ---
 
 ## 0. START HERE — this session (2026-07-28)
 
-### DONE + committed: exit detection rebuilt (commit `a9c6ed3`)
+### DONE + committed: sim run of `a9c6ed3` failed twice; both fixed (`3fd99ad`)
+
+**Read the log correctly.** The detector line was throttled to one print per
+5 s, so at 2 Hz only 1 frame in 10 was visible. The first reading of the run
+("the corridor never widened, `wide=0`") was WRONG. The giveaway is in the log
+itself: `open 0.13/0.40 m`. That meter only grows on a frame where a row is
+wide AND flank-clear, so the open signature *was* firing, in frames that were
+never printed. It reached 0.13 m and drained back to 0.00.
+
+**Failure 1 — the meter leaked as fast as it filled.** Symmetric leak sounds
+neutral. It is not: a signature true HALF the frames nets exactly zero and can
+**never** fire, however far the robot drives. At the sim row end the model
+*does* label the ground traversable — it is just imperfect, width ~0.8–0.9
+with patchy edges — so the signature flickers, and the robot drove past the
+row end toward the world edge. Fixed with `exit_leak_ratio` (0.5): drains at
+half the fill rate, so anything true more than ~1/3 of the time still climbs,
+while a short mid-row gap still drains away. `exit_leak_ratio: 1.0` restores
+the old behavior, and `test_symmetric_leak_reproduces_the_failure` pins that
+the old behavior *is* the bug.
+  - Sub-bug this exposed: the first frame of a streak credited no distance (so
+    `open_distance` would equal "meters since first sighting" exactly). With a
+    flickering signature the accumulator returns to zero between bursts, making
+    **every** open frame a "first" frame that banks nothing — a hard deadlock.
+    The streak now starts at the previous sample and every frame credits.
+  - ⚠ **Cost of a marginal signal:** net fill rate is `1.5*duty - 0.5`. At 50%
+    duty that is 0.25, so 0.4 m of evidence needs ~1.6 m of driving (measured:
+    fires at 1.45 m). At 70% duty, ~0.7 m. **Raise the signal quality rather
+    than loosening the leak further** — that is what the new HUD numbers are
+    for. The `exit_clear_min_distance` clamp keeps the overshoot from
+    compounding: back-dating has already consumed `headland_clearance`, so
+    EXIT_CLEAR ends after 0.2 m instead of another 0.75 m.
+
+**Failure 2 — REACQUIRE could not latch, crept 25 s blind, nearly hit corn.**
+It latched on `mean corridor width < reacquire_max_width (0.6)` — a
+camera-height constant (normal in-row width ~0.5 tall, ~0.7 low), so on the
+low camera it could never be satisfied *inside a row*. It also required
+`traversable_fraction >= 0.10` while the sim headland measured 0.09 — failing
+on both counts. The FSM then crept the full `reacquire_max_distance` (2.0 m at
+0.08 m/s = **25 s**) with `angular_z` hard-coded to 0.0, holding whatever
+lateral error the turn left behind. Now it latches on **the near scan row
+having corn on BOTH sides** (inverse of the open-exit test, reusing
+`nearest_row_flank_clear`), confirms over `reacquire_confirm_distance`
+**meters**, and **steers while creeping**. `reacquire_max_width` and
+`reacquire_frames` are removed.
+
+**Diagnostics** (this run cost a session to interpret): the detector line
+prints at **1 Hz whenever the meter is moving** and now carries `near w=` and
+`edges=`. Without those, "width under the bar" and "edges under the bar" both
+render as `openrows=0` with no way to tell which knob to turn.
+
+**106 tests pass** (93 → 106).
+
+**Next:** re-run the sim. If the exit still will not fire, read `near w=` /
+`edges=` and lower `exit_flank_min_clear_fraction` (edges under 0.8) or
+`exit_width_threshold` (width under 0.8) — do NOT reach for `exit_leak_ratio`
+first.
+
+### User decisions this session (do not re-propose)
+- **No odometry row-length fallback**, and **no re-reading "lost view past the
+  row end" as an exit.** Consequence, recorded once: a genuine segmentation
+  failure over open ground still has nothing catching it, and a blocked signal
+  with no rear camera still ends the mission where it stands.
+
+### Earlier the same session: exit detection rebuilt (commit `a9c6ed3`)
 The 2026-07-24 flank fix treated a symptom. The user pushed back with the
 right question — *"doesn't requiring corn beside the corridor just mean the
 exit needs width 1.0? Where is the actual threshold?"* — and that was right:
@@ -226,15 +291,20 @@ back-out is sim-validated.
   `open_streak_start` (feeds the FSM's back-dating).
 - BLOCKED: zero corridors at ALL scan rows + `traversable_fraction` ≥
   `blocked_min_traversable_fraction` (0.02), accumulated over
-  `blocked_confirm_seconds` (4.0) of **elapsed time** with a LEAKY counter,
-  armed after `blocked_arming_distance` (0.3 m). Seconds, not meters — the
+  `blocked_confirm_seconds` (4.0) of **elapsed time** with a LEAKY counter
+  (`blocked_leak_ratio` 1.0 = symmetric), armed after
+  `blocked_arming_distance` (0.3 m). Seconds, not meters — the
   robot is stopped by then.
 - `update()` takes `now=` (the node passes `rospy.get_time()`, which follows
   sim time under Gazebo; the default `time.monotonic()` is for tests).
 - `last_status` exposes `wide_rows`, `open_rows`, `open_distance`,
-  `blocked_seconds`, `open_streak_start`, `near_row_flank_clear`.
+  `blocked_seconds`, `open_streak_start`, `near_row_flank_clear`, and
+  `near_row_width` / `near_row_edges` (which threshold is blocking an exit).
 
 ### Mission FSM (mission_fsm.py, current)
+REACQUIRE latches on the near scan row having corn on BOTH sides (NOT a width
+threshold — that was camera-height-specific and unlatchable on the low mount),
+confirmed over `reacquire_confirm_distance` (0.12 m), steering while creeping.
 FOLLOW_ROW → EXIT_CLEAR (0.10 m/s, `headland_clearance` 0.75) → TURN_1 →
 TRAVERSE (`traverse_distance`) → TURN_2 → REACQUIRE → FOLLOW_ROW;
 boustrophedon sign flip per transition. Blocked branch: BACKOUT (reverse,
@@ -267,6 +337,15 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 - **Leaky, never strictly-consecutive, for distance/time debounces.** At
   25 Hz a 0.4 m window is ~65 frames; a reset-on-any-dropout rule would never
   complete. Tripwire: `test_open_tolerates_a_dropout_frame`.
+- **The OPEN leak must be ASYMMETRIC** (2026-07-28). Draining as fast as it
+  fills means a signature true half the frames nets zero and can never fire —
+  which is what a real-but-marginal exit looks like. Tripwires:
+  `test_marginal_exit_fires_despite_a_flickering_signature` and its
+  counter-example `test_symmetric_leak_reproduces_the_failure`.
+- **Never latch REACQUIRE on corridor WIDTH** (2026-07-28). Width is
+  camera-height-specific (~0.5 tall, ~0.7 low) and the old 0.6 bar was
+  unlatchable inside a row on the low mount. Ask whether corn is on both
+  sides. Tripwire: `test_low_camera_row_latches_reacquire`.
 - **Revocation reads the NEAREST scan row only** (2026-07-28). The far rows
   legitimately see the corn block across the headland during a genuine exit,
   so "corn beside the corridor" as a global test would revoke every real exit.
@@ -321,7 +400,7 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 | `scripts/vision_nav_node.py` | Only rospy file. Frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging; HUD detector line now shows `wide=`/`openrows=`. |
 | `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
 | `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. ⚠ launch-arg defaults override params.yaml (§6). |
-| `test/` | **93 tests**: controller 17, centerline 9, viz 3, detector 30, fsm 27, timing 7. |
+| `test/` | **106 tests**: controller 17, centerline 9, viz 3, detector 35, fsm 35, timing 7. |
 
 ### `agbot_bringup/`
 | File | Purpose |
@@ -351,7 +430,14 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    failure is the fingerprint of the mux being bypassed, since twist_mux
    arbitrates by priority, not publish rate. Then also cap the node's publish
    rate (~20 Hz) so inference speed stops leaking into control behavior.
-2. **Field-validate the new exit path (`a9c6ed3`)** on the GPU robot:
+2. **Re-run the sim mission** (`3fd99ad`): the exit meter should now climb
+   through the patchy row-end mask instead of stalling near 0.13 and draining,
+   and REACQUIRE should latch within ~0.2 m of entering the new row instead of
+   creeping for ~25 s (verifiable at the low-camera turn 1→2, which already
+   worked). If the exit still will not fire, read `near w=` / `edges=` and
+   lower `exit_flank_min_clear_fraction` or `exit_width_threshold` — not
+   `exit_leak_ratio`.
+3. **Field-validate the exit path** on the GPU robot:
    - mid-row gap → HUD `openrows=0` even when a `w=` reads ≥0.8, and the
      `open x/0.40 m` bar drains instead of filling;
    - true row end → the bar fills smoothly and fires, and the turn happens
@@ -361,7 +447,7 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    Tune from the HUD: `exit_confirm_distance` up if gaps still confirm,
    `exit_flank_min_clear_fraction` down (or `exit_flank_edge_margin` up) if a
    real open field fails to fire.
-3. **Calibrate scan rows per camera mount** (lab, ~10 min each): tape at
+4. **Calibrate scan rows per camera mount** (lab, ~10 min each): tape at
    1/2/3 m ahead, one frame per mount, read off the pixel rows, convert to
    fractions. Put the exit rows in `exit_scan_row_fractions` (steering rows
    stay put). The current `0.65/0.78/0.92` were heuristic and were never
@@ -395,6 +481,9 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    `exit_detect_frames` / `blocked_detect_frames` no longer exist anywhere —
    passing them raises TypeError rather than being silently ignored, which is
    intentional.
+1d. **`reacquire_max_width` / `reacquire_frames` no longer exist.** REACQUIRE
+   asks whether corn flanks the near scan row and confirms over meters. Do not
+   reintroduce a width bar there — it is unlatchable on the low camera.
 1c. **A revoked exit must NOT reset the row-entry pose.** `_row_entry_xy` is
    deliberately separate from `_entry_xy`; calling `_enter(STATE_FOLLOW_ROW)`
    on a revert would disarm the detector for another 2 m inside a row it never
@@ -438,6 +527,8 @@ roslaunch agbot_vision_nav vision_nav.launch sim:=true \
 
 # Tune if needed:
 #   exit_confirm_distance:=0.4          m of travel to confirm an exit
+#   exit_leak_ratio:=0.5                meter drain rate vs fill (1.0 = old)
+#   reacquire_confirm_distance:=0.12    m of in-row view to latch a new row
 #   exit_flank_min_clear_fraction:=0.8  lower if real exits fail to fire
 #   exit_revoke_fail_distance:=0.25     m of near-row corn that withdraws an exit
 #   exit_scan_row_fractions:="[0.55, 0.70, 0.82]"   exit rows only (per mount)
@@ -450,7 +541,9 @@ roslaunch agbot_vision_nav vision_nav.launch sim:=true \
 # Monitor
 rqt_image_view /vision_nav_node/debug/image
 # HUD detector line:
-#   'exit: blk 0.0/4.0 s open 0.12/0.40 m rows= wide= openrows= nearflank= frac= armed o: b:'
+#   'exit: blk 0.0/4.0 s open 0.12/0.40 m rows= wide= openrows=
+#    near w=0.87 edges=0.72/0.95 frac= armed o: b:'
+#   near w=/edges= say WHICH threshold is blocking an exit.
 #   openrows=0 with wide>=1 at a mid-row gap == the flank gate working;
 #   the 'open x/0.40 m' bar draining instead of filling == the gap being rejected.
 rostopic echo /cmd_vel
@@ -467,5 +560,5 @@ PYTHONPATH=src python3 scripts/benchmark_inference.py \
 
 # Unit tests (no ROS needed)
 cd ~/agbot_control_ws/src/agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v     # expected: 93 passed
+PYTHONPATH=src python3 -m pytest test/ -v     # expected: 106 passed
 ```
