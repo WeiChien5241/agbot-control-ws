@@ -138,15 +138,6 @@
   <arg name="reacquire_confirm_distance" default="0.12" /><!-- m of in-row view to latch -->
   <arg name="reacquire_steering_enabled" default="true" /><!-- steer while creeping -->
 
-  <!-- Operator takeover. Any message on operator_override_topic (the joystick
-       teleop output, published only while the L1 deadman is held) makes the
-       node publish nothing at all until the stick has been quiet for
-       override_hold_off_sec. Defence in depth behind twist_mux priority. -->
-  <arg name="operator_override_enabled" default="true" />
-  <arg name="operator_override_topic"   default="/bluetooth_teleop/cmd_vel" />
-  <arg name="override_hold_off_sec"     default="2.0" />
-  <arg name="cmd_publish_rate"          default="20.0" /><!-- Hz; single publisher -->
-
   <arg name="rear_camera_enabled" default="false" />
   <arg name="rear_camera_topic"
        default="$(eval '/camera_rear/image_raw' if arg('sim') else '/usb_cam_rear/image_raw/compressed')" />
@@ -161,10 +152,6 @@
     <param name="camera_topic"             value="$(arg camera_topic)" />
     <param name="camera_topic_is_compressed" value="$(arg camera_topic_is_compressed)" />
     <param name="cmd_vel_topic"            value="$(arg cmd_vel_topic)" />
-    <param name="cmd_publish_rate"         value="$(arg cmd_publish_rate)" />
-    <param name="operator_override_enabled" value="$(arg operator_override_enabled)" />
-    <param name="operator_override_topic"  value="$(arg operator_override_topic)" />
-    <param name="override_hold_off_sec"    value="$(arg override_hold_off_sec)" />
     <param name="mpc_q_offset"             value="$(arg mpc_q_offset)" />
     <param name="mpc_q_heading"            value="$(arg mpc_q_heading)" />
     <param name="mpc_alpha"                value="$(arg mpc_alpha)" />

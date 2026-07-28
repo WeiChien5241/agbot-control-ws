@@ -11,34 +11,7 @@ model_device: auto      # auto = CUDA when available, else CPU; or force
                         # startup -- verify it says 'cuda' on the GPU robot.
 camera_topic: /usb_cam/image_raw/compressed
 camera_topic_is_compressed: true
-cmd_vel_topic: /cmd_vel  # MUST stay /cmd_vel on the Jackal: that is twist_mux's
-                         # 'external' input (priority 1), and the joystick at
-                         # priority 9 outranks it. Pointing this at
-                         # jackal_velocity_controller/cmd_vel bypasses the mux
-                         # entirely and the joystick can no longer take over --
-                         # the suspected cause of the field takeover failure.
-                         # The node logs a warning at startup if this is not
-                         # /cmd_vel.
-cmd_publish_rate: 20.0   # Hz. A timer is the SINGLE publisher; the inference
-                         # thread only stores commands. Keeps the outgoing rate
-                         # independent of inference speed (the node used to
-                         # publish from both places, ~35 Hz on the GPU robot)
-                         # and gives the override one place to gate.
-
-# Operator takeover (see operator_override.py). Any message on the teleop
-# output means a human is holding the deadman and driving, so the node stops
-# publishing entirely -- not zeros, nothing -- until the joystick has been
-# quiet for override_hold_off_sec. This is defence in depth BEHIND twist_mux:
-# it is the only thing that still works if the mux is bypassed, which is what
-# a rate-dependent takeover failure points to.
-operator_override_enabled: true
-operator_override_topic: /bluetooth_teleop/cmd_vel  # Jackal PS4 pad; teleop_twist_joy
-                         # publishes here only while the L1 deadman is held
-override_hold_off_sec: 2.0  # autonomy resumes this long after the stick goes
-                         # quiet. NOTE this means the robot restarts autonomy
-                         # on its own after a takeover -- raise it if that is
-                         # too eager, or set operator_override_enabled false
-                         # and rely on twist_mux alone.
+cmd_vel_topic: /cmd_vel
 debug_image_topic: "~debug/image"
 publish_debug_image: true
 
@@ -122,7 +95,7 @@ traverse_distance: 0.65     # m of sideways travel after TURN_1. Deliberately
                            # the MPC close the remaining lateral offset.
 exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
                            # post-exit leg is where overshoot hurts most)
-headland_clearance: 0.85   # m of EXIT_CLEAR forward travel before turning,
+headland_clearance: 0.75   # m of EXIT_CLEAR forward travel before turning,
                            # measured from where the exit was FIRST SEEN (the
                            # start of the confirmation streak), not from where
                            # it confirmed -- otherwise exit_confirm_distance
