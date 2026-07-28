@@ -74,21 +74,46 @@
   <arg name="min_in_row_distance"  default="2.0" />  <!-- m of in-row travel before exit detection arms -->
 
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
-  <arg name="headland_clearance"      default="0.75" /> <!-- m forward after exit fires, before
-                                                             turning; 0.5 clipped corn in the field,
-                                                             raise toward 1.0 if turns still hit -->
+  <arg name="headland_clearance"      default="0.75" /> <!-- m forward before turning, measured from
+                                                             where the exit was FIRST SEEN (not where it
+                                                             confirmed, else the confirm distance adds on
+                                                             top); 0.5 clipped corn in the field, raise
+                                                             toward 1.0 if turns still hit -->
+  <arg name="exit_clear_min_distance" default="0.2" /> <!-- m always driven after the exit confirms -->
   <arg name="exit_width_threshold"    default="0.8" /> <!-- normalized corridor width = "open field" -->
-  <arg name="exit_flank_edge_margin"  default="0.05" /><!-- OPEN also needs the corridor to reach
-                                                            within this fraction of BOTH image edges
-                                                            (no corn flanking it); a mid-row side-gap
-                                                            widens the corridor but leaves corn short
-                                                            of the edge. >= 1.0 disables (width-only) -->
+  <arg name="exit_flank_edge_margin"  default="0.05" /><!-- width of the outer strip checked at EACH
+                                                            side; OPEN needs both strips mostly clear
+                                                            of corn. Effectively a ~0.90 width bar PLUS
+                                                            "both sides clear", which is what rejects a
+                                                            one-sided gap. >= 1.0 disables (width-only) -->
+  <arg name="exit_flank_min_clear_fraction" default="0.8" /><!-- fraction of each strip that must be
+                                                            traversable; < 1.0 so one stray pixel near a
+                                                            border cannot veto a real exit -->
   <arg name="exit_open_rows_required" default="1" />   <!-- scan rows (any) that must be wide -->
   <arg name="exit_clear_speed"        default="0.10" /><!-- m/s during the post-exit leg -->
 
-  <arg name="exit_detect_frames"      default="5" />   <!-- debounce frames for the OPEN signature -->
-  <arg name="blocked_detect_frames"   default="8" />   <!-- debounce frames for the BLOCKED signature
-                                                            (leaky counter: noise delays, not resets) -->
+  <!-- Debounce in PHYSICAL units, never frames: 5 frames is 2.5 s at 2 Hz but
+       0.2 s at 25 Hz, which is how a mid-row gap fired EXIT_CLEAR instantly on
+       the GPU robot (2026-07-24). Defaults reproduce the field-proven CPU-robot
+       timings at any inference rate. Both accumulators are leaky. -->
+  <arg name="exit_confirm_distance"   default="0.4" /> <!-- m of sustained OPEN before firing -->
+  <arg name="exit_detect_min_frames"  default="2" />   <!-- floor: no single frame may fire it -->
+  <arg name="blocked_confirm_seconds" default="4.0" /> <!-- s of sustained BLOCKED before backing out;
+                                                            SECONDS because a blocked view stops the
+                                                            robot, so meters would never accumulate -->
+
+  <!-- EXIT_CLEAR revocation: a false exit costs a wobble, not a collision.
+       Judged on the NEAREST scan row only - the far rows legitimately see the
+       corn block across the headland during a genuine exit. -->
+  <arg name="exit_revoke_enabled"       default="true" />
+  <arg name="exit_revoke_distance"      default="0.5" />  <!-- m window after confirming -->
+  <arg name="exit_revoke_fail_distance" default="0.25" /> <!-- m of corn beside the near row => revert -->
+
+  <!-- Optional dedicated scan rows for the exit detector; empty = share the
+       steering rows. Lets the exit rows move UP for a low camera mount without
+       touching field-proven steering. YAML list syntax, e.g. "[0.55, 0.7, 0.8]" -->
+  <arg name="exit_scan_row_fractions" default="[]" />
+  <arg name="exit_scan_row_weights"   default="[]" />
   <arg name="blocked_min_traversable_fraction" default="0.02" />
        <!-- BLOCKED also requires this much of the lower half traversable;
             only rejects a truly black/zero view (lens fully pressed into
@@ -137,8 +162,16 @@
     <param name="exit_flank_edge_margin"   value="$(arg exit_flank_edge_margin)" />
     <param name="exit_open_rows_required"  value="$(arg exit_open_rows_required)" />
     <param name="exit_clear_speed"         value="$(arg exit_clear_speed)" />
-    <param name="exit_detect_frames"       value="$(arg exit_detect_frames)" />
-    <param name="blocked_detect_frames"    value="$(arg blocked_detect_frames)" />
+    <param name="exit_clear_min_distance"  value="$(arg exit_clear_min_distance)" />
+    <param name="exit_flank_min_clear_fraction" value="$(arg exit_flank_min_clear_fraction)" />
+    <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)" />
+    <param name="exit_detect_min_frames"   value="$(arg exit_detect_min_frames)" />
+    <param name="blocked_confirm_seconds"  value="$(arg blocked_confirm_seconds)" />
+    <param name="exit_revoke_enabled"      value="$(arg exit_revoke_enabled)" />
+    <param name="exit_revoke_distance"     value="$(arg exit_revoke_distance)" />
+    <param name="exit_revoke_fail_distance" value="$(arg exit_revoke_fail_distance)" />
+    <rosparam param="exit_scan_row_fractions" subst_value="true">$(arg exit_scan_row_fractions)</rosparam>
+    <rosparam param="exit_scan_row_weights"   subst_value="true">$(arg exit_scan_row_weights)</rosparam>
     <param name="blocked_min_traversable_fraction" value="$(arg blocked_min_traversable_fraction)" />
     <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)" />
     <param name="rear_camera_topic"        value="$(arg rear_camera_topic)" />

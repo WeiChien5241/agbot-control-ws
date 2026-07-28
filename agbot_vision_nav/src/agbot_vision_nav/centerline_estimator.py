@@ -23,9 +23,29 @@ CLASS_SKY = 0
 CLASS_TRAVERSABLE = 1
 CLASS_OBSTACLE = 2
 
+# left_clear_frac / right_clear_frac: fraction of TRAVERSABLE pixels in the
+# outer strip at each side of this scan row (strip width = flank_margin_frac of
+# the image width). They feed the row-exit detector's flank-clear test, which
+# asks "is there still corn immediately beside the corridor?". Measuring strip
+# OCCUPANCY rather than how far the contiguous corridor reaches makes that test
+# immune to a single stray misclassified pixel truncating the outward scan --
+# a real risk on the low-camera masks, where a lone false pixel 8% in from the
+# border would otherwise veto flank-clearance outright. Both are None when
+# flank_margin_frac is None, and the detector then falls back to the corridor
+# bounds; that keeps hand-built ScanRowResults in the unit tests working.
 ScanRowResult = namedtuple(
-    "ScanRowResult", ["row_y", "x_left", "x_right", "x_mid", "offset_norm"]
+    "ScanRowResult",
+    [
+        "row_y",
+        "x_left",
+        "x_right",
+        "x_mid",
+        "offset_norm",
+        "left_clear_frac",
+        "right_clear_frac",
+    ],
 )
+ScanRowResult.__new__.__defaults__ = (None, None)
 
 CenterlineResult = namedtuple(
     "CenterlineResult",
@@ -57,11 +77,19 @@ def _scan_row_boundaries(row, cx):
     return x_left, x_right
 
 
+def _strip_clear_fractions(row, margin_px):
+    """Traversable fraction of the outer `margin_px` columns on each side."""
+    left = float(np.mean(row[:margin_px] == CLASS_TRAVERSABLE))
+    right = float(np.mean(row[-margin_px:] == CLASS_TRAVERSABLE))
+    return left, right
+
+
 def estimate_centerline(
     mask,
     scan_row_fractions=(0.65, 0.78, 0.92),
     scan_row_weights=(0.2, 0.3, 0.5),
     min_traversable_fraction=0.10,
+    flank_margin_frac=0.05,
 ):
     """Estimate the row corridor's lateral offset from image center.
 
@@ -78,6 +106,11 @@ def estimate_centerline(
         min_traversable_fraction: minimum fraction of traversable pixels
             required in the lower half of the frame for the result to be
             considered valid (guards against a lost/occluded row).
+        flank_margin_frac: width (as a fraction of the image width) of the
+            outer strip measured at each side of every scan row, reported as
+            ScanRowResult.left_clear_frac / .right_clear_frac for the row-exit
+            detector's flank-clear test. None skips the measurement (fields
+            stay None and the detector falls back to the corridor bounds).
 
     Returns:
         CenterlineResult
@@ -95,18 +128,42 @@ def estimate_centerline(
     weight_total = 0.0
     scan_rows = []
 
+    margin_px = (
+        max(1, int(round(flank_margin_frac * width)))
+        if flank_margin_frac is not None
+        else None
+    )
+
     for frac, weight in zip(scan_row_fractions, scan_row_weights):
         row_y = int(np.clip(round(frac * (height - 1)), 0, height - 1))
-        x_left, x_right = _scan_row_boundaries(mask[row_y, :], cx)
+        row = mask[row_y, :]
+        x_left, x_right = _scan_row_boundaries(row, cx)
+
+        if margin_px is not None:
+            left_clear, right_clear = _strip_clear_fractions(row, margin_px)
+        else:
+            left_clear, right_clear = None, None
 
         if x_left is None:
-            scan_rows.append(ScanRowResult(row_y, None, None, None, None))
+            scan_rows.append(
+                ScanRowResult(
+                    row_y, None, None, None, None, left_clear, right_clear
+                )
+            )
             continue
 
         x_mid = 0.5 * (x_left + x_right)
         row_offset_norm = (x_mid - cx) / half_width
         scan_rows.append(
-            ScanRowResult(row_y, x_left, x_right, x_mid, row_offset_norm)
+            ScanRowResult(
+                row_y,
+                x_left,
+                x_right,
+                x_mid,
+                row_offset_norm,
+                left_clear,
+                right_clear,
+            )
         )
         weighted_sum += weight * row_offset_norm
         weight_total += weight

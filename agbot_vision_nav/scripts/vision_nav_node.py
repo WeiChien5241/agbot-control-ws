@@ -80,6 +80,16 @@ class VisionNavNode(object):
         self._min_traversable_fraction = rospy.get_param(
             "~min_traversable_fraction", 0.10
         )
+        # Optional dedicated scan rows for the exit detector (empty = share
+        # the steering rows). Weights are irrelevant to the detector, which
+        # reads per-row corridors, so default them to uniform.
+        self._exit_scan_row_fractions = rospy.get_param(
+            "~exit_scan_row_fractions", []
+        )
+        self._exit_scan_row_weights = rospy.get_param(
+            "~exit_scan_row_weights", []
+        ) or [1.0] * len(self._exit_scan_row_fractions)
+        self._flank_margin_frac = rospy.get_param("~exit_flank_edge_margin", 0.05)
         self._max_data_age_sec = rospy.get_param("~max_data_age_sec", 0.5)
         self._publish_debug_image = rospy.get_param("~publish_debug_image", True)
 
@@ -119,7 +129,9 @@ class VisionNavNode(object):
         if self._mission_enabled:
             detector = RowExitDetector(
                 exit_width_threshold=rospy.get_param("~exit_width_threshold", 0.8),
-                exit_detect_frames=rospy.get_param("~exit_detect_frames", 5),
+                exit_confirm_distance=rospy.get_param(
+                    "~exit_confirm_distance", 0.4
+                ),
                 min_in_row_distance=rospy.get_param("~min_in_row_distance", 2.0),
                 blocked_min_traversable_fraction=rospy.get_param(
                     "~blocked_min_traversable_fraction", 0.02
@@ -130,9 +142,17 @@ class VisionNavNode(object):
                 exit_open_rows_required=rospy.get_param(
                     "~exit_open_rows_required", 1
                 ),
-                blocked_detect_frames=rospy.get_param("~blocked_detect_frames", 8),
+                blocked_confirm_seconds=rospy.get_param(
+                    "~blocked_confirm_seconds", 4.0
+                ),
                 exit_flank_edge_margin=rospy.get_param(
                     "~exit_flank_edge_margin", 0.05
+                ),
+                exit_flank_min_clear_fraction=rospy.get_param(
+                    "~exit_flank_min_clear_fraction", 0.8
+                ),
+                exit_detect_min_frames=rospy.get_param(
+                    "~exit_detect_min_frames", 2
                 ),
             )
             self._detector = detector
@@ -153,6 +173,14 @@ class VisionNavNode(object):
                 backout_speed=rospy.get_param("~backout_speed", 0.10),
                 backout_enabled=self._rear_camera_enabled,
                 exit_clear_speed=rospy.get_param("~exit_clear_speed", 0.10),
+                exit_revoke_enabled=rospy.get_param("~exit_revoke_enabled", True),
+                exit_revoke_distance=rospy.get_param("~exit_revoke_distance", 0.5),
+                exit_revoke_fail_distance=rospy.get_param(
+                    "~exit_revoke_fail_distance", 0.25
+                ),
+                exit_clear_min_distance=rospy.get_param(
+                    "~exit_clear_min_distance", 0.2
+                ),
             )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
@@ -175,6 +203,7 @@ class VisionNavNode(object):
         self._latest_rear_frame = None
         self._latest_rear_frame_seq = 0
         self._mission_done_logged = False
+        self._revoked_logged = 0
         self._timing = PipelineTimingStats()
 
         self._last_success_lock = threading.Lock()
@@ -364,7 +393,22 @@ class VisionNavNode(object):
             scan_row_fractions=self._scan_row_fractions,
             scan_row_weights=self._scan_row_weights,
             min_traversable_fraction=self._min_traversable_fraction,
+            flank_margin_frac=self._flank_margin_frac,
         )
+        # The exit detector may look at its own scan rows: steering wants
+        # lookahead spread, exit detection wants maximum in-row vs open-field
+        # separation, and the best rows for one are not the best for the other
+        # (they also shift with camera mount height). Empty
+        # ~exit_scan_row_fractions keeps both on the same rows, as before.
+        exit_result = result
+        if self._exit_scan_row_fractions:
+            exit_result = estimate_centerline(
+                mask,
+                scan_row_fractions=self._exit_scan_row_fractions,
+                scan_row_weights=self._exit_scan_row_weights,
+                min_traversable_fraction=self._min_traversable_fraction,
+                flank_margin_frac=self._flank_margin_frac,
+            )
 
         state_name = None
         if self._fsm is not None:
@@ -375,7 +419,12 @@ class VisionNavNode(object):
                     _INVALID_RESULT,
                     odom_pose,
                     mask.shape[1],
+                    # Rear stays on the steering rows: the FSM uses this one
+                    # result both to watch for the exit behind AND to steer the
+                    # reverse leg, and the reverse steering must keep the
+                    # field-proven scan rows.
                     rear_centerline_result=result,
+                    now=rospy.get_time(),
                 )
                 state_name = state_name + " (REAR)"
                 if self._fsm.state == STATE_BACKOUT:
@@ -394,7 +443,23 @@ class VisionNavNode(object):
                     )
             else:
                 linear_x, angular_z, state_name, done = self._fsm.update(
-                    result, odom_pose, mask.shape[1]
+                    result,
+                    odom_pose,
+                    mask.shape[1],
+                    now=rospy.get_time(),
+                    exit_centerline_result=exit_result,
+                )
+            # A revoked exit is the loudest thing the detector can tell you:
+            # it means the open signature confirmed and then the ground beside
+            # the robot said otherwise. Never throttle it.
+            while self._revoked_logged < len(self._fsm.revoked_exits):
+                row, dist = self._fsm.revoked_exits[self._revoked_logged]
+                self._revoked_logged += 1
+                rospy.logwarn(
+                    "EXIT REVOKED: row %d at %.2f m -- near scan row still "
+                    "corn-flanked; back to FOLLOW_ROW",
+                    row,
+                    -1.0 if dist is None else dist,
                 )
             if done and not self._mission_done_logged:
                 self._mission_done_logged = True
@@ -408,9 +473,11 @@ class VisionNavNode(object):
                     else "none"
                 )
                 rospy.loginfo(
-                    "Mission DONE: rows_driven=%d, blocked rows: %s",
+                    "Mission DONE: rows_driven=%d, blocked rows: %s, "
+                    "revoked exits: %d",
                     self._fsm.rows_driven,
                     summary,
+                    len(self._fsm.revoked_exits),
                 )
         else:
             linear_x, angular_z = self._controller.compute(
@@ -443,7 +510,7 @@ class VisionNavNode(object):
             # fire" must be answerable from the log alone).
             counting_down = is_rear or (
                 self._detector.last_status is not None
-                and self._detector.last_status.blocked_count > 0
+                and self._detector.last_status.blocked_seconds > 0.0
             )
             rospy.loginfo_throttle(
                 2.0 if counting_down else 5.0, "%s", detector_line
@@ -472,25 +539,26 @@ class VisionNavNode(object):
             rear = self._fsm.rear_exit_detector
             if rear.last_status is None:
                 return prefix.rstrip()
-            return prefix + "rear exit: open %d/%d wide=%d" % (
-                rear.last_status.open_count,
-                rear.exit_detect_frames,
+            return prefix + "rear exit: open %.2f/%.2f m wide=%d" % (
+                rear.last_status.open_distance,
+                rear.exit_confirm_distance,
                 rear.last_status.wide_rows,
             )
         if self._detector.last_status is None or self._fsm.state != STATE_FOLLOW_ROW:
             return prefix.rstrip()
         s = self._detector.last_status
         return prefix + (
-            "exit: blk %d/%d open %d/%d rows=%d wide=%d openrows=%d frac=%.2f "
-            "armed o:%s b:%s"
+            "exit: blk %.1f/%.1f s open %.2f/%.2f m rows=%d wide=%d openrows=%d "
+            "nearflank=%s frac=%.2f armed o:%s b:%s"
         ) % (
-            s.blocked_count,
-            self._detector.blocked_detect_frames,
-            s.open_count,
-            self._detector.exit_detect_frames,
+            s.blocked_seconds,
+            self._detector.blocked_confirm_seconds,
+            s.open_distance,
+            self._detector.exit_confirm_distance,
             s.corridor_rows,
             s.wide_rows,
             s.open_rows,
+            {True: "Y", False: "N", None: "-"}[s.near_row_flank_clear],
             s.traversable_fraction,
             "Y" if s.open_armed else "N",
             "Y" if s.blocked_armed else "N",

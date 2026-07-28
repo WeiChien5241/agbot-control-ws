@@ -16,9 +16,22 @@ debug_image_topic: "~debug/image"
 publish_debug_image: true
 
 # Scanline-midpoint centerline estimation (see centerline_estimator.py).
+# These rows drive STEERING. They were chosen empirically on the TALL camera
+# mount; a lower mount images the same ground distances at different heights,
+# so re-derive them per mount (tape at 1/2/3 m ahead, one frame, read off the
+# pixel rows) rather than nudging blind.
 scan_row_fractions: [0.65, 0.78, 0.92]
 scan_row_weights: [0.2, 0.3, 0.5]
 min_traversable_fraction: 0.10
+
+# Optional dedicated scan rows for the EXIT DETECTOR. Empty = share the
+# steering rows above (previous behavior). Steering wants lookahead spread;
+# exit detection wants maximum in-row vs open-field separation, and on the low
+# camera the bottom-most row images ground so close to the bumper that it is
+# wide in BOTH cases (~0.7 in-row) -- moving the exit rows UP separates them
+# again without touching field-proven steering.
+exit_scan_row_fractions: []
+exit_scan_row_weights: []      # empty = uniform
 
 # MPC controller (see controller.py / MPCRowController).
 #
@@ -82,10 +95,30 @@ traverse_distance: 0.65     # m of sideways travel after TURN_1. Deliberately
                            # the MPC close the remaining lateral offset.
 exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
                            # post-exit leg is where overshoot hurts most)
-headland_clearance: 0.75   # m of EXIT_CLEAR forward travel after the open
-                           # exit fires, before turning. 0.5 clipped the last
-                           # plants in field testing (real corn, 2026-07-15);
-                           # raise toward 1.0 if the turn still hits corn.
+headland_clearance: 0.75   # m of EXIT_CLEAR forward travel before turning,
+                           # measured from where the exit was FIRST SEEN (the
+                           # start of the confirmation streak), not from where
+                           # it confirmed -- otherwise exit_confirm_distance
+                           # would be added on top and the robot would overrun
+                           # by 1.15 m. 0.5 clipped the last plants in field
+                           # testing (real corn, 2026-07-15); raise toward 1.0
+                           # if the turn still hits corn.
+exit_clear_min_distance: 0.2  # m always driven after the exit confirms, even
+                           # when back-dating has already consumed all of
+                           # headland_clearance.
+
+# EXIT_CLEAR revocation: for its first exit_revoke_distance meters the FSM
+# keeps checking the exit and falls back to FOLLOW_ROW if it was wrong, so a
+# false positive costs a steering wobble instead of a drive into the corn (the
+# 2026-07-24 field failure was unrecoverable because the transition was a
+# one-way commit). The test looks at the NEAREST scan row only -- the ground
+# right beside the robot. It deliberately ignores the far rows: during a
+# genuine exit those legitimately see the corn block across the headland, so
+# keying revocation on "corn visible beside the corridor anywhere" would revoke
+# every real exit.
+exit_revoke_enabled: true
+exit_revoke_distance: 0.5      # m after confirming during which revert is possible
+exit_revoke_fail_distance: 0.25  # m of continuous corn beside the near row => revert
 turn_rate: 0.4             # rad/s during in-place 90-degree turns
 yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
@@ -96,23 +129,48 @@ reacquire_max_distance: 2.0  # m of creep without a corridor => no rows left =>
                              # overshoot: the robot may re-approach the rows
                              # from farther out than a normal headland turn.
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
-exit_flank_edge_margin: 0.05  # OPEN also requires the corridor to reach within
-                           # this fraction of the image width of BOTH borders
-                           # (no corn flanking the corridor). A mid-row side-gap
-                           # widens the corridor to ~0.83 but leaves corn short
-                           # of the edge, so it must NOT read as an exit; a true
-                           # row end runs edge-to-edge. Smaller = stricter
-                           # (must reach the edges more exactly); >= 1.0
-                           # disables the flank check (width-only behavior).
+exit_flank_edge_margin: 0.05  # width of the outer strip checked at EACH side of
+                           # a scan row. OPEN additionally requires both strips
+                           # to be mostly traversable (no corn flanking the
+                           # corridor). A mid-row side-gap widens the corridor
+                           # to ~0.83 but leaves corn in the strips, so it must
+                           # NOT read as an exit; a true row end runs
+                           # edge-to-edge. NOTE this is effectively a width bar
+                           # of ~1 - 2*margin = 0.90, plus the requirement that
+                           # BOTH sides are clear (a corridor pinned to the left
+                           # edge with corn still on the right is rejected, and
+                           # that one-sided case is exactly what a gap in a
+                           # single row of corn looks like). >= 1.0 disables the
+                           # flank check entirely (width-only behavior).
+exit_flank_min_clear_fraction: 0.8  # fraction of each outer strip that must be
+                           # traversable. Below 1.0 on purpose: the corridor
+                           # scan stops at the FIRST non-traversable pixel, so
+                           # one stray misclassified pixel near a border would
+                           # otherwise veto the exit outright -- a real risk on
+                           # the low-camera masks (~100 annotations vs ~300
+                           # tall). Raise toward 1.0 to be stricter.
 exit_open_rows_required: 1 # how many scan rows (ANY of them) must be wide
                            # for the open exit. 1 = fire off whichever row
                            # sees open field first -- robust to garbage
                            # segmentation of distant ground beyond the field.
                            # Raise to 2 only if a sparse row ever false-fires.
-exit_detect_frames: 5      # consecutive frames of OPEN signature required
-blocked_detect_frames: 8   # consecutive frames of BLOCKED signature required
-                           # (longer: leaves brushing the image center for a
-                           # few frames must not trigger a back-out)
+# Debounce is measured in PHYSICAL UNITS, never in frames: "5 frames" is 2.5 s
+# on the 2 Hz CPU robot but 0.2 s on the ~25 Hz GPU robot, which is how a
+# mid-row gap fired EXIT_CLEAR instantly in the field (2026-07-24). Defaults
+# below reproduce the field-proven CPU-robot timings at ANY inference rate.
+exit_confirm_distance: 0.4  # m of sustained OPEN evidence before firing
+                           # (= the old 5 frames at 2 Hz and 0.15 m/s). The
+                           # accumulator is LEAKY: non-open frames subtract
+                           # rather than reset, because at 25 Hz this is ~65
+                           # consecutive frames and one flickery frame resetting
+                           # the streak would mean it never fires.
+exit_detect_min_frames: 2  # floor: no single large-odometry-delta frame may
+                           # fire the exit on its own
+blocked_confirm_seconds: 4.0  # s of sustained BLOCKED evidence before backing
+                           # out (= the old 8 frames at 2 Hz). SECONDS, not
+                           # meters: a blocked view stops the robot (the MPC
+                           # goes invalid), so a distance counter would never
+                           # fill and the back-out would deadlock.
 min_in_row_distance: 2.0   # m of in-row travel before OPEN exit detection arms
 blocked_min_traversable_fraction: 0.02  # BLOCKED also needs this much of the
                                         # lower half traversable; only rejects

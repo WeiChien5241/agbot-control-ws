@@ -4,6 +4,8 @@ from agbot_vision_nav.centerline_estimator import (
     CLASS_OBSTACLE,
     CLASS_SKY,
     CLASS_TRAVERSABLE,
+    CenterlineResult,
+    ScanRowResult,
     estimate_centerline,
 )
 from agbot_vision_nav.row_exit_detector import (
@@ -11,11 +13,15 @@ from agbot_vision_nav.row_exit_detector import (
     EXIT_ROW_END_BLOCKED,
     EXIT_ROW_END_OPEN,
     RowExitDetector,
+    nearest_row_flank_clear,
     normalized_corridor_widths,
 )
 
 HEIGHT = 100
 WIDTH = 200
+
+STEP_M = 0.05   # meters travelled between frames
+STEP_S = 0.5    # seconds between frames
 
 
 def make_corridor_mask(half_corridor_width=30, sky_rows=20):
@@ -49,13 +55,57 @@ def make_blocked_ahead_mask(sky_rows=20, wall_bottom=95):
     return mask
 
 
-def feed(detector, mask, distance, n):
-    """Feed the same frame n times, return the last signal."""
-    result = estimate_centerline(mask)
-    signal = EXIT_NONE
-    for _ in range(n):
-        signal = detector.update(result, WIDTH, distance)
-    return signal
+class Drive:
+    """Feeds frames to a detector while advancing odometry and the clock.
+
+    The debounce is measured in METERS (open) and SECONDS (blocked), never in
+    frames, so a test has to move the robot and the clock rather than count
+    frames -- which is the whole point of the change: the same test must pass
+    at any frame rate. `.meters()` and `.seconds()` bank exactly the amount
+    asked for, accounting for the first frame of a session crediting nothing
+    (there is no previous sample to take a delta from).
+    """
+
+    def __init__(self, detector, distance=5.0, step_m=STEP_M, step_s=STEP_S):
+        self.det = detector
+        self.distance = distance
+        self.step_m = step_m
+        self.step_s = step_s
+        self.now = 0.0
+        self.last = EXIT_NONE
+        self._primed = False
+
+    def feed(self, mask, frames=1, distance=None):
+        if distance is not None:
+            self.distance = distance
+        result = (
+            mask
+            if isinstance(mask, CenterlineResult)
+            else estimate_centerline(mask)
+        )
+        for _ in range(frames):
+            self.last = self.det.update(
+                result, WIDTH, self.distance, now=self.now
+            )
+            if self.distance is not None:
+                self.distance += self.step_m
+            self.now += self.step_s
+            self._primed = True
+        return self.last
+
+    def meters(self, mask, meters, **kwargs):
+        frames = int(round(meters / self.step_m)) + (0 if self._primed else 1)
+        return self.feed(mask, frames=frames, **kwargs)
+
+    def seconds(self, mask, seconds, **kwargs):
+        frames = int(round(seconds / self.step_s)) + (0 if self._primed else 1)
+        return self.feed(mask, frames=frames, **kwargs)
+
+
+def parked(detector, distance=5.0):
+    """A Drive that does not move -- for BLOCKED, where the MPC has already
+    stopped the robot, so only the clock advances."""
+    return Drive(detector, distance=distance, step_m=0.0)
 
 
 def test_normalized_corridor_widths():
@@ -69,14 +119,78 @@ def test_normalized_corridor_widths():
 
 def test_no_exit_in_row():
     det = RowExitDetector()
-    assert feed(det, make_corridor_mask(), distance=5.0, n=20) == EXIT_NONE
+    assert Drive(det).meters(make_corridor_mask(), 2.0) == EXIT_NONE
 
 
-def test_open_field_triggers_after_debounce():
-    det = RowExitDetector(exit_detect_frames=5)
+def test_open_field_fires_after_confirm_distance():
+    det = RowExitDetector(exit_confirm_distance=0.4)
     mask = make_open_field_mask()
-    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    d = Drive(det)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
+
+
+def test_open_fires_at_same_distance_at_any_frame_rate():
+    """The core regression (field, 2026-07-24). With a frame-counted debounce
+    the exit fired after 5 frames = 2.5 s on the 2 Hz robot but 0.2 s on the
+    25 Hz robot, so a mid-row gap that the slow robot shrugged off committed
+    the fast robot into the corn. Firing must depend on distance travelled,
+    not on how fast the pipeline runs."""
+    mask = make_open_field_mask()
+    steps = (0.075, 0.006)          # 2 Hz and 25 Hz at 0.15 m/s
+    fired_at = []
+    for step_m in steps:
+        det = RowExitDetector(exit_confirm_distance=0.4)
+        d = Drive(det, distance=5.0, step_m=step_m)
+        while d.feed(mask) == EXIT_NONE:
+            assert d.distance < 6.0, "exit never fired"
+        fired_at.append(d.distance - step_m - 5.0)   # distance AT the fire
+    slow, fast = fired_at
+    # Same place to within one sample of the COARSE robot -- all that is left
+    # is quantization. Under the old frame-counted rule these were 0.375 m and
+    # 0.03 m apart, a 12x difference, which is what drove into the corn.
+    assert abs(slow - fast) <= steps[0] + 1e-9
+    assert all(0.4 <= f <= 0.4 + steps[0] for f in fired_at)
+
+
+def test_open_tolerates_a_dropout_frame():
+    """The accumulator is leaky, not strictly consecutive. At 25 Hz, 0.4 m is
+    ~65 frames; if one flickery frame reset the streak the exit would never
+    fire at all."""
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    d = Drive(det)
+    assert d.meters(make_open_field_mask(), 0.35) == EXIT_NONE
+    assert d.feed(make_corridor_mask()) == EXIT_NONE      # one bad frame
+    assert d.meters(make_open_field_mask(), 0.10) == EXIT_ROW_END_OPEN
+
+
+def test_open_accumulator_drains_on_sustained_non_open():
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    d = Drive(det)
+    assert d.meters(make_open_field_mask(), 0.30) == EXIT_NONE
+    assert d.meters(make_corridor_mask(), 0.40) == EXIT_NONE   # drained to 0
+    assert det.last_status.open_distance == 0.0
+    assert det.open_streak_start is None
+    assert d.meters(make_open_field_mask(), 0.30) == EXIT_NONE  # starts over
+
+
+def test_min_frames_floor_blocks_a_single_jump():
+    """One frame carrying a huge odometry delta must not fire the exit alone."""
+    det = RowExitDetector(exit_confirm_distance=0.4, exit_detect_min_frames=3)
+    mask = make_open_field_mask()
+    d = Drive(det, step_m=1.0)
+    assert d.feed(mask, frames=2) == EXIT_NONE   # 1.0 m banked, only 2 frames
+    assert det.last_status.open_distance >= 0.4
+    assert d.feed(mask, frames=1) == EXIT_ROW_END_OPEN
+
+
+def test_open_streak_start_is_reported_for_back_dating():
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    d = Drive(det, distance=5.0)
+    d.meters(make_open_field_mask(), 0.4)
+    # The FSM back-dates the headland leg to here, so the confirmation
+    # distance is not added on top of headland_clearance.
+    assert abs(det.open_streak_start - 5.0) < 1e-9
 
 
 def make_far_open_mask(near_rows_from=85, half_corridor_width=30, sky_rows=20):
@@ -90,68 +204,90 @@ def make_far_open_mask(near_rows_from=85, half_corridor_width=30, sky_rows=20):
     return mask
 
 
-def test_blocked_ahead_triggers_after_debounce():
-    det = RowExitDetector(blocked_detect_frames=5)
+def test_blocked_ahead_fires_after_confirm_seconds():
+    det = RowExitDetector(blocked_confirm_seconds=2.5)
     mask = make_blocked_ahead_mask()
     result = estimate_centerline(mask)
     # sanity: signature preconditions
     assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
     assert result.traversable_fraction >= 0.15
-    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_BLOCKED
+    d = parked(det)
+    assert d.seconds(mask, 2.0) == EXIT_NONE
+    assert d.seconds(mask, 0.5) == EXIT_ROW_END_BLOCKED
+
+
+def test_blocked_fires_while_stationary():
+    """BLOCKED is timed in seconds, not meters, precisely because a blocked
+    view stops the robot: the MPC goes invalid and commands zero. A
+    distance-based counter would never fill and the back-out would deadlock."""
+    det = RowExitDetector(blocked_confirm_seconds=2.0)
+    d = parked(det)   # step_m = 0: the robot never moves
+    assert d.seconds(make_blocked_ahead_mask(), 2.0) == EXIT_ROW_END_BLOCKED
 
 
 def test_unarmed_before_min_distance():
     det = RowExitDetector(min_in_row_distance=2.0)
     mask = make_open_field_mask()
     # open-field view at row entry must NOT trigger
-    assert feed(det, mask, distance=0.5, n=50) == EXIT_NONE
+    assert Drive(det, distance=0.5).feed(mask, frames=10) == EXIT_NONE
     # nor with unknown odometry
-    assert feed(det, mask, distance=None, n=50) == EXIT_NONE
+    d = Drive(det, distance=None)
+    assert d.feed(mask, frames=50) == EXIT_NONE
 
 
 def test_debounce_does_not_straddle_arming_boundary():
-    det = RowExitDetector(min_in_row_distance=2.0, exit_detect_frames=5)
+    det = RowExitDetector(min_in_row_distance=2.0, exit_confirm_distance=0.4)
     mask = make_open_field_mask()
-    # 4 frames before arming distance are discarded...
-    assert feed(det, mask, distance=1.9, n=4) == EXIT_NONE
-    # ...so 4 more after arming still aren't enough; the 5th is
-    assert feed(det, mask, distance=2.1, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=2.1, n=1) == EXIT_ROW_END_OPEN
+    # travel before the arming distance is discarded...
+    d = Drive(det, distance=1.5)
+    assert d.meters(mask, 0.45) == EXIT_NONE
+    assert det.last_status.open_distance == 0.0
+    # ...so the full 0.4 m is still required after arming
+    d = Drive(det, distance=2.05)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
 
 
 def test_blocked_arms_earlier_than_open():
     det = RowExitDetector(
-        min_in_row_distance=2.0, blocked_arming_distance=0.3, blocked_detect_frames=5
+        min_in_row_distance=2.0, blocked_arming_distance=0.3,
+        blocked_confirm_seconds=2.0,
     )
     blocked = make_blocked_ahead_mask()
     # below the blocked arming distance: nothing
-    assert feed(det, blocked, distance=0.2, n=20) == EXIT_NONE
+    assert parked(det, distance=0.2).seconds(blocked, 10.0) == EXIT_NONE
     # between blocked arming and open arming: blocked fires
-    assert feed(det, blocked, distance=1.0, n=5) == EXIT_ROW_END_BLOCKED
+    det.reset()
+    assert parked(det, distance=1.0).seconds(blocked, 2.0) == EXIT_ROW_END_BLOCKED
     # open stays gated by min_in_row_distance in the same window
     det.reset()
-    assert feed(det, make_open_field_mask(), distance=1.0, n=20) == EXIT_NONE
+    d = Drive(det, distance=1.0, step_m=0.0)
+    assert d.feed(make_open_field_mask(), frames=50) == EXIT_NONE
 
 
 def test_blocked_debounce_does_not_straddle_arming_boundary():
-    det = RowExitDetector(blocked_arming_distance=0.3, blocked_detect_frames=5)
+    det = RowExitDetector(
+        blocked_arming_distance=0.3, blocked_confirm_seconds=2.0
+    )
     blocked = make_blocked_ahead_mask()
-    assert feed(det, blocked, distance=0.2, n=4) == EXIT_NONE
-    assert feed(det, blocked, distance=0.4, n=4) == EXIT_NONE
-    assert feed(det, blocked, distance=0.4, n=1) == EXIT_ROW_END_BLOCKED
+    d = parked(det, distance=0.2)
+    assert d.seconds(blocked, 1.5) == EXIT_NONE
+    d = parked(det, distance=0.4)
+    assert d.seconds(blocked, 1.5) == EXIT_NONE
+    assert d.seconds(blocked, 0.5) == EXIT_ROW_END_BLOCKED
 
 
 def test_far_rows_wide_fires_open_before_near_row_clears():
     # The two farthest scan rows wide + nearest still a narrow corridor
     # must read as an open exit (this is the approach to the row end).
-    det = RowExitDetector(exit_open_rows_required=2, exit_detect_frames=5)
+    det = RowExitDetector(exit_open_rows_required=2, exit_confirm_distance=0.4)
     mask = make_far_open_mask()
-    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    d = Drive(det)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
     # ...but requiring all 3 rows keeps the old late behavior
-    det = RowExitDetector(exit_open_rows_required=3, exit_detect_frames=5)
-    assert feed(det, mask, distance=5.0, n=20) == EXIT_NONE
+    det = RowExitDetector(exit_open_rows_required=3, exit_confirm_distance=0.4)
+    assert Drive(det).meters(mask, 2.0) == EXIT_NONE
 
 
 def test_open_fires_when_only_near_row_wide():
@@ -166,30 +302,23 @@ def test_open_fires_when_only_near_row_wide():
     assert widths[0] is None and widths[1] is None  # far rows invalid
     assert widths[2] == 1.0  # near row full width
 
-    det = RowExitDetector(exit_detect_frames=5)  # defaults: required=1
-    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    det = RowExitDetector(exit_confirm_distance=0.4)  # defaults: required=1
+    d = Drive(det)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
     # and this frame must never count as blocked (near row is valid)
-    det = RowExitDetector(blocked_detect_frames=1)
-    det.reset()
-    assert det.update(result, WIDTH, 5.0) != EXIT_ROW_END_BLOCKED
-
-
-def test_blocked_uses_its_own_longer_debounce():
-    det = RowExitDetector(exit_detect_frames=5, blocked_detect_frames=8)
-    mask = make_blocked_ahead_mask()
-    assert feed(det, mask, distance=5.0, n=7) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_BLOCKED
+    det = RowExitDetector(blocked_confirm_seconds=0.5)
+    assert parked(det).seconds(mask, 5.0) != EXIT_ROW_END_BLOCKED
 
 
 def test_far_row_corridor_prevents_blocked():
     # A frame whose far row still has a corridor is not a blocked frame,
     # even if the near rows lose theirs (leaves brushing the camera).
-    det = RowExitDetector(blocked_detect_frames=1)
+    det = RowExitDetector(blocked_confirm_seconds=0.5)
     mask = make_corridor_mask()
     cx = WIDTH // 2
     mask[85:, cx - 40 : cx + 41] = CLASS_OBSTACLE  # near rows blocked
-    assert feed(det, mask, distance=5.0, n=10) == EXIT_NONE
+    assert parked(det).seconds(mask, 10.0) == EXIT_NONE
 
 
 def make_close_blocker_mask(sky_rows=20, ground_cols=8):
@@ -213,30 +342,32 @@ def test_blocked_fires_at_close_range_low_ground_fraction():
     assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
     assert 0.02 <= result.traversable_fraction < 0.08
 
-    det = RowExitDetector(blocked_detect_frames=5)  # default gate 0.02
-    assert feed(det, mask, distance=5.0, n=5) == EXIT_ROW_END_BLOCKED
+    det = RowExitDetector(blocked_confirm_seconds=2.0)  # default gate 0.02
+    assert parked(det).seconds(mask, 2.0) == EXIT_ROW_END_BLOCKED
 
 
 def test_blocked_debounce_is_leaky_not_reset():
-    det = RowExitDetector(blocked_detect_frames=8)
+    det = RowExitDetector(blocked_confirm_seconds=4.0)
     blocked = make_blocked_ahead_mask()
     corridor = make_corridor_mask()
-    # 5 blocked frames, one noisy corridor frame (counter 5 -> 4, NOT 0),
-    # then 4 more blocked frames reach 8 and fire.
-    assert feed(det, blocked, distance=5.0, n=5) == EXIT_NONE
-    assert feed(det, corridor, distance=5.0, n=1) == EXIT_NONE
-    assert feed(det, blocked, distance=5.0, n=3) == EXIT_NONE
-    assert feed(det, blocked, distance=5.0, n=1) == EXIT_ROW_END_BLOCKED
+    # 2.5 s blocked, one noisy corridor frame (4.0 -> 3.5 s of headroom, NOT
+    # a full reset), then the remainder fires.
+    d = parked(det)
+    assert d.seconds(blocked, 2.5) == EXIT_NONE
+    assert d.seconds(corridor, 0.5) == EXIT_NONE
+    assert d.seconds(blocked, 1.5) == EXIT_NONE
+    assert d.seconds(blocked, 0.5) == EXIT_ROW_END_BLOCKED
 
 
 def test_blocked_leak_drains_on_sustained_noise():
     # Alternating blocked/corridor frames must never accumulate to a fire.
-    det = RowExitDetector(blocked_detect_frames=8)
+    det = RowExitDetector(blocked_confirm_seconds=4.0)
     blocked = make_blocked_ahead_mask()
     corridor = make_corridor_mask()
+    d = parked(det)
     for _ in range(30):
-        assert feed(det, blocked, distance=5.0, n=1) == EXIT_NONE
-        assert feed(det, corridor, distance=5.0, n=1) == EXIT_NONE
+        assert d.feed(blocked) == EXIT_NONE
+        assert d.feed(corridor) == EXIT_NONE
 
 
 def test_last_status_reports_detector_internals():
@@ -244,32 +375,24 @@ def test_last_status_reports_detector_internals():
     assert det.last_status is None
 
     corridor_result = estimate_centerline(make_corridor_mask())
-    det.update(corridor_result, WIDTH, None)
+    det.update(corridor_result, WIDTH, None, now=0.0)
     assert det.last_status.distance_in_row is None
 
-    det.update(corridor_result, WIDTH, 1.0)  # blocked armed, open not
+    det.update(corridor_result, WIDTH, 1.0, now=0.5)  # blocked armed, open not
     s = det.last_status
     assert (s.open_armed, s.blocked_armed) == (False, True)
     assert s.corridor_rows == 3 and s.wide_rows == 0
-    assert s.open_count == 0 and s.blocked_count == 0
+    assert s.open_distance == 0.0 and s.blocked_seconds == 0.0
 
     blocked_result = estimate_centerline(make_blocked_ahead_mask())
+    now = 1.0
     for _ in range(3):
-        det.update(blocked_result, WIDTH, 5.0)
+        det.update(blocked_result, WIDTH, 5.0, now=now)
+        now += 0.5
     s = det.last_status
-    assert s.blocked_count == 3
+    assert abs(s.blocked_seconds - 1.5) < 1e-9
     assert s.corridor_rows == 0
     assert s.open_armed and s.blocked_armed
-
-
-def test_interrupted_streak_resets():
-    det = RowExitDetector(exit_detect_frames=5)
-    open_mask = make_open_field_mask()
-    corridor = make_corridor_mask()
-    assert feed(det, open_mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, corridor, distance=5.0, n=1) == EXIT_NONE  # streak broken
-    assert feed(det, open_mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, open_mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
 
 
 # ---------------------------------------------- flank-clear (open exit) gate --
@@ -296,50 +419,125 @@ def test_open_blocked_by_flank_corn_mid_row_gap():
     # Core regression (low camera + GPU robot): a near scan row widens to ~0.84
     # at a mid-row gap but corn still flanks the corridor short of the edges.
     # wide_rows sees it, but open_rows must stay 0 so OPEN never fires.
-    det = RowExitDetector(exit_detect_frames=5)  # default margin 0.05
+    det = RowExitDetector(exit_confirm_distance=0.4)  # default margin 0.05
     mask = make_wide_but_flanked_mask(margin=16)
     result = estimate_centerline(mask)
     widths = normalized_corridor_widths(result, WIDTH)
     assert all(w is not None and w >= 0.8 for w in widths)  # genuinely wide
-    assert feed(det, mask, distance=5.0, n=30) == EXIT_NONE
+    assert Drive(det).meters(mask, 3.0) == EXIT_NONE
     s = det.last_status
     assert s.wide_rows == 3 and s.open_rows == 0
 
 
 def test_open_fires_when_corridor_reaches_both_edges():
-    det = RowExitDetector(exit_detect_frames=5)
+    det = RowExitDetector(exit_confirm_distance=0.4)
     mask = make_open_field_mask()  # traversable edge-to-edge below the sky
-    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    d = Drive(det)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
     assert det.last_status.open_rows >= 1
 
 
 def test_one_sided_edge_does_not_fire():
     # Reaches the left edge but corn on the right -> not flank-clear (both
     # sides must be clear). Proves the AND, not just total width.
-    det = RowExitDetector(exit_detect_frames=5)
+    det = RowExitDetector(exit_confirm_distance=0.4)
     mask = make_left_open_right_corn_mask(right_margin=16)
     result = estimate_centerline(mask)
     widths = normalized_corridor_widths(result, WIDTH)
     assert all(w is not None and w >= 0.8 for w in widths)  # wide
-    assert feed(det, mask, distance=5.0, n=30) == EXIT_NONE
+    assert Drive(det).meters(mask, 3.0) == EXIT_NONE
     assert det.last_status.open_rows == 0
 
 
 def test_flank_margin_large_restores_width_only_behavior():
     # exit_flank_edge_margin >= 1.0 disables the flank check: a merely-wide
     # (but corn-flanked) row fires again, i.e. pre-fix width-only behavior.
-    det = RowExitDetector(exit_detect_frames=5, exit_flank_edge_margin=1.0)
+    det = RowExitDetector(
+        exit_confirm_distance=0.4, exit_flank_edge_margin=1.0
+    )
     mask = make_wide_but_flanked_mask(margin=16)
-    assert feed(det, mask, distance=5.0, n=4) == EXIT_NONE
-    assert feed(det, mask, distance=5.0, n=1) == EXIT_ROW_END_OPEN
+    d = Drive(det)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
 
 
 def test_last_status_reports_open_rows():
     det = RowExitDetector()
     open_result = estimate_centerline(make_open_field_mask())
-    det.update(open_result, WIDTH, 5.0)
+    det.update(open_result, WIDTH, 5.0, now=0.0)
     assert det.last_status.open_rows >= 1
     flanked_result = estimate_centerline(make_wide_but_flanked_mask(margin=16))
-    det.update(flanked_result, WIDTH, 5.0)
+    det.update(flanked_result, WIDTH, 5.0, now=0.5)
     assert det.last_status.open_rows == 0
+
+
+# ------------------------------------------ strip-occupancy flank tolerance --
+def test_stray_edge_pixel_does_not_veto_a_real_exit():
+    """The corridor scan stops at the FIRST non-traversable pixel, so a single
+    misclassified pixel just inside the image would veto an exact-edge-reach
+    test outright -- a real false-negative risk on the low-camera masks.
+    Measuring strip OCCUPANCY instead tolerates it."""
+    mask = make_open_field_mask()
+    mask[:, 12] = CLASS_OBSTACLE          # stray column, outside the 5% strip
+    result = estimate_centerline(mask)
+    near = result.scan_rows[-1]
+    assert near.x_left == 13              # the scan really was truncated
+    assert near.left_clear_frac == 1.0    # ...but the strip itself is clear
+
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    d = Drive(det)
+    assert d.meters(mask, 0.30) == EXIT_NONE
+    assert d.meters(mask, 0.10) == EXIT_ROW_END_OPEN
+
+
+def test_corn_inside_the_strip_still_vetoes():
+    """Partial corn in the outer strip must still block the exit -- and this
+    case the old exact-edge test let through, since the corridor bound (col 6)
+    was within the 5% margin."""
+    mask = make_wide_but_flanked_mask(margin=6)
+    result = estimate_centerline(mask)
+    near = result.scan_rows[-1]
+    assert near.x_left == 6               # would pass the old margin test
+    assert near.left_clear_frac < 0.8     # but the strip is 60% corn
+
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    assert Drive(det).meters(mask, 3.0) == EXIT_NONE
+    assert det.last_status.open_rows == 0
+
+
+def _hand_built_result(x_left, x_right, row_ys=(64, 77, 91)):
+    """CenterlineResult without strip fractions (they default to None)."""
+    rows = [
+        ScanRowResult(y, x_left, x_right, 0.5 * (x_left + x_right), 0.0)
+        for y in row_ys
+    ]
+    return CenterlineResult(0.0, 0.0, True, 0.5, rows)
+
+
+def test_falls_back_to_edge_reach_without_strip_fractions():
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    # Reaches both edges -> open, via the fallback path.
+    assert Drive(det).meters(_hand_built_result(0, WIDTH - 1), 0.4) == (
+        EXIT_ROW_END_OPEN
+    )
+    # Wide but stops short of both edges -> still in row.
+    det = RowExitDetector(exit_confirm_distance=0.4)
+    assert Drive(det).meters(
+        _hand_built_result(16, WIDTH - 17), 3.0
+    ) == EXIT_NONE
+
+
+def test_nearest_row_flank_clear_picks_the_bottom_row():
+    """Revocation reads the NEAREST row only. Here the far rows are open field
+    while the near row is corn-flanked -- exactly the geometry of a false exit
+    fired mid-row, and the inverse of a genuine exit (where the near row is
+    clear and a far row may see the corn block across the headland)."""
+    mask = make_open_field_mask()
+    mask[85:, :40] = CLASS_OBSTACLE
+    mask[85:, -40:] = CLASS_OBSTACLE
+    result = estimate_centerline(mask)
+    assert nearest_row_flank_clear(result, WIDTH, 0.05, 0.8) is False
+    assert nearest_row_flank_clear(
+        estimate_centerline(make_open_field_mask()), WIDTH, 0.05, 0.8
+    ) is True

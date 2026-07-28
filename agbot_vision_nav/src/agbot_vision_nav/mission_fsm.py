@@ -37,6 +37,13 @@ robot reverses out the end it entered, steering from the REAR camera):
   unreachable: a blocked signal stops the robot in place and ends the
   mission in DONE, with the blocked row recorded in blocked_events.
 
+- EXIT_CLEAR is REVOCABLE for its first exit_revoke_distance meters: if the
+  nearest scan row is corn-flanked for a continuous exit_revoke_fail_distance,
+  the FSM falls back to FOLLOW_ROW and un-counts the row. That turns a false
+  open exit (the 2026-07-24 field failure, which drove into the corn and
+  committed) from a collision into a steering wobble. Its odometry reference
+  is also back-dated to where the exit was first seen, so the detector's
+  confirmation distance is not added on top of headland_clearance.
 - All maneuver segments are closed-loop on wheel odometry: turns integrate
   measured yaw until 90 degrees is swept; EXIT_CLEAR / TRAVERSE integrate
   measured displacement. The TRAVERSE leg is traverse_distance (default
@@ -62,6 +69,7 @@ from agbot_vision_nav.row_exit_detector import (
     EXIT_ROW_END_BLOCKED,
     EXIT_ROW_END_OPEN,
     RowExitDetector,
+    nearest_row_flank_clear,
     normalized_corridor_widths,
 )
 
@@ -121,6 +129,10 @@ class MissionFSM:
         backout_speed=0.10,
         backout_enabled=True,
         exit_clear_speed=0.10,
+        exit_revoke_enabled=True,
+        exit_revoke_distance=0.5,
+        exit_revoke_fail_distance=0.25,
+        exit_clear_min_distance=0.2,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -134,10 +146,12 @@ class MissionFSM:
         # Public: the ROS node renders its status on the debug HUD.
         self.rear_exit_detector = RowExitDetector(
             exit_width_threshold=detector.exit_width_threshold,
-            exit_detect_frames=detector.exit_detect_frames,
+            exit_confirm_distance=detector.exit_confirm_distance,
             min_in_row_distance=0.0,
             exit_open_rows_required=detector.exit_open_rows_required,
             exit_flank_edge_margin=detector.exit_flank_edge_margin,
+            exit_flank_min_clear_fraction=detector.exit_flank_min_clear_fraction,
+            exit_detect_min_frames=detector.exit_detect_min_frames,
         )
         self.num_rows = num_rows
         self.row_spacing = row_spacing
@@ -159,6 +173,19 @@ class MissionFSM:
         # EXIT_CLEAR runs slower than cruise: the post-exit leg is where
         # overshoot (world edge, headland obstacles) hurts most.
         self.exit_clear_speed = abs(exit_clear_speed)
+        # EXIT_CLEAR is revocable for its first exit_revoke_distance meters: a
+        # false open exit then costs a steering wobble instead of a collision.
+        # The test looks at the NEAREST scan row only -- the ground immediately
+        # beside the robot. The far rows legitimately see the corn block across
+        # the headland during a genuine exit, so keying revocation on them (or
+        # on "any corn anywhere beside the corridor") would revoke every real
+        # exit. Mid-row, the near row is corn-flanked again within ~0.15 m.
+        self.exit_revoke_enabled = exit_revoke_enabled
+        self.exit_revoke_distance = exit_revoke_distance
+        self.exit_revoke_fail_distance = exit_revoke_fail_distance
+        # Always drive at least this far after the exit confirms, even when
+        # back-dating has already consumed all of headland_clearance.
+        self.exit_clear_min_distance = exit_clear_min_distance
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
@@ -166,7 +193,16 @@ class MissionFSM:
         self.state = STATE_FOLLOW_ROW
         self.rows_driven = 0
         self.blocked_events = []   # (row_index, distance_m) per blocked row
+        self.revoked_exits = []    # (row_index, distance_m) per revoked exit
         self._entry_xy = None      # (x, y) at state entry, for distance legs
+        # (x, y) where the CURRENT row was entered. Distinct from _entry_xy,
+        # which is re-stamped on every maneuver: the exit detector's arming
+        # distance must survive a revoked exit, so the row reference cannot be
+        # reset when EXIT_CLEAR falls back to FOLLOW_ROW.
+        self._row_entry_xy = None
+        self._exit_clear_offset = 0.0   # m already driven since first sighting
+        self._revoke_fail = 0.0         # m of continuous near-row corn
+        self._revoke_last_distance = None
         self._last_yaw = None      # previous yaw sample, for sweep integration
         self._swept = 0.0          # accumulated yaw swept in current turn
         self._reacquire_hits = 0   # consecutive corridor-looking frames
@@ -180,7 +216,11 @@ class MissionFSM:
         self._last_yaw = odom_pose[2] if odom_pose else None
         self._swept = 0.0
         self._reacquire_hits = 0
+        if state == STATE_EXIT_CLEAR:
+            self._revoke_fail = 0.0
+            self._revoke_last_distance = None
         if state == STATE_FOLLOW_ROW:
+            self._row_entry_xy = self._entry_xy
             self._controller.reset()
             self._detector.reset()
         elif state == STATE_BACKOUT:
@@ -189,12 +229,19 @@ class MissionFSM:
             self._controller.reset()
             self.rear_exit_detector.reset()
 
-    def _distance_from_entry(self, odom_pose):
-        if odom_pose is None or self._entry_xy is None:
+    def _distance_from(self, reference_xy, odom_pose):
+        if odom_pose is None or reference_xy is None:
             return None
-        dx = odom_pose[0] - self._entry_xy[0]
-        dy = odom_pose[1] - self._entry_xy[1]
+        dx = odom_pose[0] - reference_xy[0]
+        dy = odom_pose[1] - reference_xy[1]
         return math.hypot(dx, dy)
+
+    def _distance_from_entry(self, odom_pose):
+        return self._distance_from(self._entry_xy, odom_pose)
+
+    def _distance_in_row(self, odom_pose):
+        """Distance since the CURRENT ROW was entered (drives exit arming)."""
+        return self._distance_from(self._row_entry_xy, odom_pose)
 
     def _integrate_yaw(self, odom_pose):
         """Accumulate swept yaw across samples (wrap-safe); returns |swept|."""
@@ -214,6 +261,61 @@ class MissionFSM:
             self._backout_target if self._backout_target is not None else 0.0,
         )
 
+    def _revoke_exit(self, centerline_result, image_width, travelled, odom_pose):
+        """Undo a just-fired open exit that the near scan row contradicts.
+
+        Judged ONLY on the nearest scan row -- the ground immediately beside
+        the robot. Mid-row, a false exit puts corn back alongside within
+        ~0.15 m of travel; in the headland that row stays open no matter what
+        the far rows see of the corn block across the way. Returns True if the
+        FSM fell back to FOLLOW_ROW this tick.
+        """
+        if not self.exit_revoke_enabled or travelled is None:
+            return False
+        if travelled >= self.exit_revoke_distance:
+            return False
+
+        delta = (
+            max(0.0, travelled - self._revoke_last_distance)
+            if self._revoke_last_distance is not None
+            else 0.0
+        )
+        self._revoke_last_distance = travelled
+
+        near_clear = nearest_row_flank_clear(
+            centerline_result,
+            image_width,
+            self._detector.exit_flank_edge_margin,
+            self._detector.exit_flank_min_clear_fraction,
+        )
+        # None = the near row has no corridor at all (something non-traversable
+        # straight ahead); that is not an open exit either, so it counts
+        # against the exit exactly like corn in the flanks does.
+        if near_clear:
+            self._revoke_fail = 0.0
+            return False
+        self._revoke_fail += delta
+        if self._revoke_fail < self.exit_revoke_fail_distance:
+            return False
+
+        # Fall back to row-following WITHOUT _enter(): that would re-stamp
+        # _row_entry_xy to here and disarm the exit detector for another
+        # min_in_row_distance meters. The row was never left, so its entry
+        # reference must survive.
+        self.rows_driven = max(0, self.rows_driven - 1)
+        self.revoked_exits.append(
+            (self.rows_driven + 1, self._distance_in_row(odom_pose))
+        )
+        self.state = STATE_FOLLOW_ROW
+        self._entry_xy = self._row_entry_xy
+        self._last_yaw = odom_pose[2] if odom_pose else None
+        self._swept = 0.0
+        self._reacquire_hits = 0
+        self._exit_clear_offset = 0.0
+        self._controller.reset()
+        self._detector.reset()
+        return True
+
     def _corridor_looks_like_row(self, centerline_result, image_width):
         if not centerline_result.valid:
             return False
@@ -229,7 +331,8 @@ class MissionFSM:
 
     # ------------------------------------------------------------- update --
     def update(self, centerline_result, odom_pose, image_width,
-               rear_centerline_result=None):
+               rear_centerline_result=None, now=None,
+               exit_centerline_result=None):
         """Advance one tick. Returns (linear_x, angular_z, state, done).
 
         Args:
@@ -240,20 +343,33 @@ class MissionFSM:
                 or None. Only used in STATE_BACKOUT; the sign conventions of
                 the front controller apply unchanged (the 180-deg image
                 mirror and the reversed motion cancel exactly).
+            now: timestamp in seconds for the detector's BLOCKED accumulator
+                (the ROS node passes rospy.get_time()).
+            exit_centerline_result: CenterlineResult measured on the exit
+                detector's own scan rows, when those are configured separately
+                from the steering rows. Defaults to centerline_result. Only
+                the exit detector and the revocation test read it; steering
+                and REACQUIRE always use the steering rows.
         """
+        if exit_centerline_result is None:
+            exit_centerline_result = centerline_result
+
         if self.state == STATE_FOLLOW_ROW:
             # Lazily record the row-entry pose (covers mission start, where
             # the initial state was set without an _enter() transition, and
             # any start before the first odometry message arrived).
-            if self._entry_xy is None and odom_pose is not None:
-                self._entry_xy = (odom_pose[0], odom_pose[1])
+            if self._row_entry_xy is None and odom_pose is not None:
+                self._row_entry_xy = (odom_pose[0], odom_pose[1])
+                if self._entry_xy is None:
+                    self._entry_xy = self._row_entry_xy
             linear_x, angular_z = self._controller.compute(
                 centerline_result.offset_norm,
                 centerline_result.slope_term,
                 centerline_result.valid,
             )
+            distance_in_row = self._distance_in_row(odom_pose)
             exit_signal = self._detector.update(
-                centerline_result, image_width, self._distance_from_entry(odom_pose)
+                exit_centerline_result, image_width, distance_in_row, now=now
             )
             if exit_signal != EXIT_NONE:
                 if exit_signal == EXIT_ROW_END_BLOCKED:
@@ -264,7 +380,7 @@ class MissionFSM:
                     # is the attempt number = rows_driven + 1. d_block is never
                     # None here -- the detector only fires when armed, which
                     # requires odometry.
-                    d_block = self._distance_from_entry(odom_pose)
+                    d_block = distance_in_row
                     self.blocked_events.append((self.rows_driven + 1, d_block))
                     if not self.backout_enabled:
                         # No rear camera: nothing safe left to do. Stop in
@@ -277,11 +393,22 @@ class MissionFSM:
                     self._enter(STATE_BACKOUT, odom_pose)
                     return 0.0, 0.0, self.state, False
                 # Open exit: a row successfully driven. Count it and end the
-                # mission once num_rows of them are done.
+                # mission once num_rows of them are done. (On the final row
+                # there is no EXIT_CLEAR and therefore no revocation window --
+                # stopping is the safe failure mode for a false positive.)
                 self.rows_driven += 1
                 if self.num_rows > 0 and self.rows_driven >= self.num_rows:
                     self._enter(STATE_DONE, odom_pose)
                     return 0.0, 0.0, self.state, True
+                # Back-date the headland leg to where the exit was FIRST seen,
+                # so the confirmation distance is not added on top of
+                # headland_clearance (0.4 + 0.75 = 1.15 m of overshoot).
+                streak_start = self._detector.open_streak_start
+                self._exit_clear_offset = (
+                    max(0.0, distance_in_row - streak_start)
+                    if streak_start is not None and distance_in_row is not None
+                    else 0.0
+                )
                 self._enter(STATE_EXIT_CLEAR, odom_pose)
                 return 0.0, 0.0, self.state, False
             return linear_x, angular_z, self.state, False
@@ -294,7 +421,17 @@ class MissionFSM:
             return 0.0, 0.0, self.state, False
 
         if self.state == STATE_EXIT_CLEAR:
-            if self._distance_from_entry(odom_pose) >= self.headland_clearance:
+            travelled = self._distance_from_entry(odom_pose)
+            if self._revoke_exit(exit_centerline_result, image_width, travelled,
+                                 odom_pose):
+                return 0.0, 0.0, self.state, False
+            # headland_clearance is measured from where the exit was first
+            # seen (_exit_clear_offset), but at least exit_clear_min_distance
+            # is always driven after it confirmed.
+            if (
+                travelled >= self.exit_clear_min_distance
+                and travelled + self._exit_clear_offset >= self.headland_clearance
+            ):
                 self._enter(STATE_TURN_1, odom_pose)
                 return 0.0, 0.0, self.state, False
             return self.exit_clear_speed, 0.0, self.state, False
@@ -312,6 +449,7 @@ class MissionFSM:
                     rear_centerline_result,
                     image_width,
                     self._distance_from_entry(odom_pose),
+                    now=now,
                 )
                 if rear_signal == EXIT_ROW_END_OPEN:
                     self._enter(STATE_BACKOUT_CLEAR, odom_pose)
