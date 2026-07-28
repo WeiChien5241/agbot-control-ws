@@ -66,10 +66,33 @@ render as `openrows=0` with no way to tell which knob to turn.
 
 **106 tests pass** (93 → 106).
 
-**Next:** re-run the sim. If the exit still will not fire, read `near w=` /
-`edges=` and lower `exit_flank_min_clear_fraction` (edges under 0.8) or
-`exit_width_threshold` (width under 0.8) — do NOT reach for `exit_leak_ratio`
-first.
+### ✅ SIM-VALIDATED (2026-07-28, after `3fd99ad`): full 3-row mission
+`Mission DONE: rows_driven=3, blocked rows: none, revoked exits: 0`. Smooth
+driving, all three exits fired at the right place, no world-edge run, and
+REACQUIRE latched normally at both turns. Two numbers worth keeping:
+
+- **Exit meter duty ~0.87, not 0.5.** Each exit banked its 0.4 m in ~0.5 m of
+  driving (2–3.5 s). Inverting `net = 1.5*duty - 0.5` gives ~0.87, so the real
+  sim row-end signal is much better than the 50% worst case — plenty of margin
+  above the ~1/3 the asymmetric leak needs. No further loosening warranted.
+- **The flank gate is what prevents mid-row false exits, confirmed with
+  numbers.** Mid-row samples regularly showed `wide=1` at `near w=0.80–0.97`,
+  i.e. AT OR ABOVE `exit_width_threshold`. The standout, t=209.96:
+  `wide=1 openrows=0 near w=0.97 edges=1.00/0.38` — width 0.97 **mid-row**,
+  which a width-only rule would have fired on even at a 0.9 bar. The right
+  edge at 0.38 rejected it. That is the one-sided opening case the flank rule
+  exists for, now observed rather than argued. `openrows` stayed 0 for every
+  such frame.
+
+⚠ Margin note: mid-row widths run close to the threshold, so
+`exit_width_threshold` is NOT the thing holding the line — the edges are.
+Don't relax `exit_flank_min_clear_fraction` without re-checking mid-row
+`edges=` values; the revocation backstop never had to fire this run and should
+stay that way.
+
+**If a future run's exit will not fire**, read `near w=` / `edges=` and lower
+`exit_flank_min_clear_fraction` (edges under 0.8) or `exit_width_threshold`
+(width under 0.8) — do NOT reach for `exit_leak_ratio` first.
 
 ### User decisions this session (do not re-propose)
 - **No odometry row-length fallback**, and **no re-reading "lost view past the
@@ -240,6 +263,8 @@ back-out is sim-validated.
 
 ### Field behavior (real robot, 2026-07)
 - In-row navigation: works. Headland turns: work.
+- Full 3-row mission SIM-VALIDATED 2026-07-28 on the small maize world with
+  the current defaults (§0). Not yet re-validated in real corn.
 - End-of-TRAVERSE nose-too-close fix: `traverse_distance` param (below), NOT
   yet field-re-tested.
 - `agbot_camera.urdf.xacro` still carries an UNCOMMITTED working-tree diff
@@ -430,14 +455,8 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    failure is the fingerprint of the mux being bypassed, since twist_mux
    arbitrates by priority, not publish rate. Then also cap the node's publish
    rate (~20 Hz) so inference speed stops leaking into control behavior.
-2. **Re-run the sim mission** (`3fd99ad`): the exit meter should now climb
-   through the patchy row-end mask instead of stalling near 0.13 and draining,
-   and REACQUIRE should latch within ~0.2 m of entering the new row instead of
-   creeping for ~25 s (verifiable at the low-camera turn 1→2, which already
-   worked). If the exit still will not fire, read `near w=` / `edges=` and
-   lower `exit_flank_min_clear_fraction` or `exit_width_threshold` — not
-   `exit_leak_ratio`.
-3. **Field-validate the exit path** on the GPU robot:
+2. **Field-validate the exit path** on the GPU robot (sim is now green — see
+   §0 SIM-VALIDATED — so this is the next real unknown):
    - mid-row gap → HUD `openrows=0` even when a `w=` reads ≥0.8, and the
      `open x/0.40 m` bar drains instead of filling;
    - true row end → the bar fills smoothly and fires, and the turn happens
@@ -447,7 +466,7 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    Tune from the HUD: `exit_confirm_distance` up if gaps still confirm,
    `exit_flank_min_clear_fraction` down (or `exit_flank_edge_margin` up) if a
    real open field fails to fire.
-4. **Calibrate scan rows per camera mount** (lab, ~10 min each): tape at
+3. **Calibrate scan rows per camera mount** (lab, ~10 min each): tape at
    1/2/3 m ahead, one frame per mount, read off the pixel rows, convert to
    fractions. Put the exit rows in `exit_scan_row_fractions` (steering rows
    stay put). The current `0.65/0.78/0.92` were heuristic and were never
