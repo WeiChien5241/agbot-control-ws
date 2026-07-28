@@ -260,6 +260,25 @@ class MissionFSM:
         self._last_yaw = yaw
         return abs(self._swept)
 
+    def resume_after_override(self):
+        """Re-enter autonomy after a human drove the robot manually.
+
+        While an operator has control the caller stops updating the FSM, so
+        the robot may have moved metres by the time it resumes. Every
+        distance-debounced accumulator works on the DELTA between consecutive
+        samples, so without clearing them the first frame back would credit
+        that whole manual excursion at once -- enough to satisfy
+        exit_confirm_distance and fire a spurious exit the instant the
+        operator lets go. Clearing the references makes the next frame credit
+        zero and start measuring afresh; the row-entry pose itself is kept, so
+        arming distance survives (the robot is still in the same row).
+        """
+        self._detector.reset()
+        self.rear_exit_detector.reset()
+        self._revoke_last_distance = None
+        self._reacquire_last = None
+        self._controller.reset()
+
     def backout_progress(self, odom_pose):
         """(meters reversed so far or None, target meters) while in
         STATE_BACKOUT; used by the ROS node's back-out telemetry log."""

@@ -9,12 +9,21 @@ which are independently unit-tested.
 Architecture: the camera subscriber only stashes the latest frame
 (single-slot, overwrite-not-queue, guarded by a Condition). A separate
 inference thread waits for a new frame, runs the model + control law, and
-publishes cmd_vel right after each successful inference -- decoupled from
-camera framerate, so a slow model never lets the subscriber's callback queue
-back up. A 10 Hz keep-alive timer republishes the last computed command
-between inferences (the Jackal base brakes if cmd_vel goes silent for a few
+stores the resulting command -- decoupled from camera framerate, so a slow
+model never lets the subscriber's callback queue back up.
+
+A timer at cmd_publish_rate (20 Hz) is the SINGLE publisher: it emits the
+last computed command (the Jackal base brakes if cmd_vel goes silent for a few
 hundred ms, so a slow model must not starve it) and publishes zero Twist
 instead once no successful inference has completed within max_data_age_sec.
+The inference thread deliberately does NOT publish: one publisher means the
+outgoing rate is fixed rather than scaling with inference speed, and the
+operator-override gate has exactly one place to act.
+
+Operator override: any message on operator_override_topic (the joystick's
+teleop output, which only publishes while the deadman is held) makes the node
+publish NOTHING until the joystick has been quiet for override_hold_off_sec.
+See operator_override.py for why this exists on top of twist_mux.
 """
 
 import math
@@ -33,6 +42,7 @@ from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_cen
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
 from agbot_vision_nav.mission_fsm import STATE_BACKOUT, STATE_FOLLOW_ROW, MissionFSM
+from agbot_vision_nav.operator_override import OperatorOverride
 from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
 from agbot_vision_nav.timing_stats import PipelineTimingStats
@@ -223,6 +233,51 @@ class VisionNavNode(object):
             rospy.Subscriber(odom_topic, Odometry, self._odom_cb, queue_size=1)
 
         self._cmd_vel_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
+        self._cmd_vel_topic = rospy.resolve_name(cmd_vel_topic)
+        # Publishing anywhere other than /cmd_vel bypasses twist_mux, and the
+        # joystick then cannot override the node by priority -- the suspected
+        # cause of the field takeover failure. Say so loudly at startup rather
+        # than discovering it in a cornfield.
+        if self._cmd_vel_topic != "/cmd_vel":
+            rospy.logwarn(
+                "cmd_vel_topic is '%s', NOT /cmd_vel. If this is the base "
+                "controller topic it BYPASSES twist_mux and the joystick will "
+                "not be able to override this node by priority. The in-node "
+                "operator override is then the ONLY takeover path.",
+                self._cmd_vel_topic,
+            )
+        else:
+            rospy.loginfo(
+                "Publishing on %s (twist_mux 'external' input, priority 1; "
+                "joystick is priority 9 and outranks it)",
+                self._cmd_vel_topic,
+            )
+
+        # Operator takeover: any message on the teleop output means a human is
+        # holding the deadman and driving. See operator_override.py.
+        self._override_topic = rospy.get_param(
+            "~operator_override_topic", "/bluetooth_teleop/cmd_vel"
+        )
+        self._override = OperatorOverride(
+            hold_off_sec=rospy.get_param("~override_hold_off_sec", 2.0),
+            enabled=rospy.get_param("~operator_override_enabled", True),
+        )
+        self._override_was_active = False
+        if self._override.enabled:
+            rospy.Subscriber(
+                self._override_topic, Twist, self._override_cb, queue_size=1
+            )
+            rospy.loginfo(
+                "Operator override armed on %s (autonomy resumes %.1f s after "
+                "the joystick goes quiet)",
+                self._override_topic,
+                self._override.hold_off_sec,
+            )
+        else:
+            rospy.logwarn(
+                "Operator override DISABLED -- the only takeover path is "
+                "twist_mux priority (or killing the node)."
+            )
         self._debug_pub = None
         if self._publish_debug_image:
             self._debug_pub = rospy.Publisher(debug_image_topic, Image, queue_size=1)
@@ -263,7 +318,12 @@ class VisionNavNode(object):
         self._inference_thread.daemon = True
         self._inference_thread.start()
 
-        rospy.Timer(rospy.Duration(1.0 / 10.0), self._watchdog_cb)
+        # SINGLE publisher. Everything else only stores the latest command,
+        # so the outgoing rate is fixed instead of scaling with inference
+        # speed (~35 Hz on the GPU robot when the inference thread also
+        # published), and there is exactly one place the override gates.
+        cmd_publish_rate = rospy.get_param("~cmd_publish_rate", 20.0)
+        rospy.Timer(rospy.Duration(1.0 / cmd_publish_rate), self._watchdog_cb)
 
         rospy.loginfo("vision_nav_node ready, listening on %s", camera_topic)
 
@@ -335,6 +395,11 @@ class VisionNavNode(object):
             and self._fsm is not None
             and self._fsm.state == STATE_BACKOUT
         )
+
+    def _override_cb(self, _msg):
+        # Any message here means teleop_twist_joy is publishing, which it only
+        # does while the deadman is held: a human is driving right now.
+        self._override.notify(rospy.get_time())
 
     def _watchdog_cb(self, event):
         with self._last_success_lock:
@@ -416,8 +481,42 @@ class VisionNavNode(object):
                 flank_margin_frac=self._flank_margin_frac,
             )
 
+        # Operator override. Checked on the inference thread (not the publish
+        # timer) so the FSM is only ever touched from one thread.
+        override_active = self._override.active(rospy.get_time())
+        if override_active != self._override_was_active:
+            self._override_was_active = override_active
+            if override_active:
+                rospy.logwarn(
+                    "OPERATOR OVERRIDE: joystick input on %s -- autonomy "
+                    "standing down, publishing nothing on %s",
+                    self._override_topic,
+                    self._cmd_vel_topic,
+                )
+            else:
+                rospy.logwarn(
+                    "OPERATOR OVERRIDE released (%.1f s quiet) -- autonomy "
+                    "resuming",
+                    self._override.hold_off_sec,
+                )
+                # The robot may have been driven metres by hand. Clear every
+                # distance-delta reference so the first frame back credits
+                # zero instead of banking the whole manual excursion.
+                if self._fsm is not None:
+                    self._fsm.resume_after_override()
+                else:
+                    self._controller.reset()
+
         state_name = None
-        if self._fsm is not None:
+        if override_active:
+            # Keep inferring so the debug image stays live, but command
+            # nothing and do not advance the mission: operator-driven motion
+            # must not feed the FSM's odometry accumulators.
+            linear_x, angular_z = 0.0, 0.0
+            state_name = "OVERRIDE" if self._fsm is None else (
+                self._fsm.state + " (OVERRIDE)"
+            )
+        elif self._fsm is not None:
             with self._odom_lock:
                 odom_pose = self._odom_pose
             if is_rear:
@@ -489,7 +588,9 @@ class VisionNavNode(object):
             linear_x, angular_z = self._controller.compute(
                 result.offset_norm, result.slope_term, result.valid
             )
-        self._publish_twist(linear_x, angular_z)
+        # NOT published here. The timer is the single publisher, so the
+        # outgoing rate is fixed instead of scaling with inference speed, and
+        # the operator-override gate cannot be bypassed by a second path.
 
         now = rospy.Time.now()
         with self._last_success_lock:
@@ -584,6 +685,13 @@ class VisionNavNode(object):
         )
 
     def _publish_twist(self, linear_x, angular_z):
+        # Hard gate: while a human has control the node publishes NOTHING --
+        # not even zeros. Silence lets twist_mux's 0.5 s `external` timeout
+        # expire, and it is the only thing that still helps if the mux turns
+        # out to be bypassed and two publishers are racing on the controller
+        # topic (the field failure mode, which was rate-dependent).
+        if self._override.active(rospy.get_time()):
+            return
         twist = Twist()
         twist.linear.x = linear_x
         twist.angular.z = angular_z

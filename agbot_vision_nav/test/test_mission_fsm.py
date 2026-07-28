@@ -929,3 +929,48 @@ def test_reacquire_steering_can_be_disabled():
     x, y, yaw = pose
     _, ang, _, _ = update(fsm, corridor_result(shift=20), (x + 0.02, y, yaw), WIDTH)
     assert ang == 0.0
+
+
+# ------------------------------------------------------ operator override --
+def test_resume_after_override_does_not_bank_the_manual_excursion():
+    """While a human drives, the caller stops updating the FSM, so the robot
+    can move metres. Every distance debounce works on deltas between samples,
+    so without clearing them the first frame back would credit that whole
+    excursion at once and fire a spurious exit the instant the operator lets
+    go of the stick."""
+    fsm = make_fsm(num_rows=3)
+    corridor = corridor_result()
+    open_r = open_result()
+
+    # drive in-row far enough to arm the exit detector
+    for i in range(1, 31):
+        update(fsm, corridor, (0.1 * i, 0.0, 0.0), WIDTH)
+    assert fsm.state == STATE_FOLLOW_ROW
+
+    # operator takes over and drives 5 m by hand, then releases
+    fsm.resume_after_override()
+
+    # first frames back see open field at a pose 5 m further on
+    _, _, state, _ = update(fsm, open_r, (8.0, 0.0, 0.0), WIDTH)
+    assert state == STATE_FOLLOW_ROW           # the 5 m jump credited nothing
+    assert fsm._detector.last_status.open_distance == 0.0
+    # and it still exits normally once it genuinely drives through open field
+    for i in range(1, 10):
+        _, _, state, _ = update(fsm, open_r, (8.0 + 0.1 * i, 0.0, 0.0), WIDTH)
+        if state != STATE_FOLLOW_ROW:
+            break
+    assert state == STATE_EXIT_CLEAR
+
+
+def test_resume_after_override_keeps_the_detector_armed():
+    """The robot never left the row, so the arming distance must survive --
+    clearing the row-entry pose would disarm the exit for another 2 m."""
+    fsm = make_fsm(num_rows=3)
+    corridor = corridor_result()
+    for i in range(1, 31):
+        update(fsm, corridor, (0.1 * i, 0.0, 0.0), WIDTH)
+    assert fsm._detector.last_status.open_armed
+
+    fsm.resume_after_override()
+    update(fsm, corridor, (3.1, 0.0, 0.0), WIDTH)
+    assert fsm._detector.last_status.open_armed
