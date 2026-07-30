@@ -118,7 +118,7 @@ class MissionFSM:
         first_turn_direction="left",
         row_spacing=0.75,
         traverse_distance=0.6,
-        headland_clearance=1.0,
+        headland_clearance=1.5,
         turn_rate=0.4,
         yaw_tolerance_deg=5.0,
         reacquire_speed=0.08,

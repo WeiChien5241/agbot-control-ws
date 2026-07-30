@@ -74,11 +74,14 @@
   <arg name="min_in_row_distance"  default="2.0" />  <!-- m of in-row travel before exit detection arms -->
 
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
-  <arg name="headland_clearance"      default="0.75" /> <!-- m forward before turning, measured from
+  <arg name="headland_clearance"      default="1.5" /> <!-- m forward before turning, measured from
                                                              where the exit was FIRST SEEN (not where it
                                                              confirmed, else the confirm distance adds on
-                                                             top); 0.5 clipped corn in the field, raise
-                                                             toward 1.0 if turns still hit -->
+                                                             top). Walked up by field testing: 0.5 clipped
+                                                             the last plants (2026-07-15); at 0.75 the GPU
+                                                             robot still started its turn too early and
+                                                             would have hit corn (2026-07-29). 1.5 is the
+                                                             current field setting. -->
   <arg name="exit_clear_min_distance" default="0.2" /> <!-- m always driven after the exit confirms -->
   <arg name="exit_width_threshold"    default="0.8" /> <!-- normalized corridor width = "open field" -->
   <arg name="exit_flank_edge_margin"  default="0.05" /><!-- width of the outer strip checked at EACH
