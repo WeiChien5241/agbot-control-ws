@@ -47,10 +47,27 @@ ScanRowResult = namedtuple(
 )
 ScanRowResult.__new__.__defaults__ = (None, None)
 
+# obstacle_fraction: fraction of OBSTACLE pixels in the lower half of the mask,
+# the same slice traversable_fraction is measured over. It answers "is something
+# actually in front of me?", which is what the row-exit detector's BLOCKED gate
+# needs. traversable_fraction cannot answer that: a blocker fills the lower half
+# as the robot closes on it, so the traversable reading falls to 0.00 exactly
+# when the obstacle is nearest and the detection most certain (sim 2026-07-30:
+# the blocked timer banked 0.6 s at frac=0.03, then drained to zero and
+# deadlocked at frac=0.00). Defaults to None so hand-built CenterlineResults in
+# the unit tests keep working; the detector treats None as 0.0.
 CenterlineResult = namedtuple(
     "CenterlineResult",
-    ["offset_norm", "slope_term", "valid", "traversable_fraction", "scan_rows"],
+    [
+        "offset_norm",
+        "slope_term",
+        "valid",
+        "traversable_fraction",
+        "scan_rows",
+        "obstacle_fraction",
+    ],
 )
+CenterlineResult.__new__.__defaults__ = (None,)
 
 
 def _scan_row_boundaries(row, cx):
@@ -170,6 +187,7 @@ def estimate_centerline(
 
     lower_half = mask[height // 2 :, :]
     traversable_fraction = float(np.mean(lower_half == CLASS_TRAVERSABLE))
+    obstacle_fraction = float(np.mean(lower_half == CLASS_OBSTACLE))
 
     valid = weight_total > 0 and traversable_fraction >= min_traversable_fraction
 
@@ -199,4 +217,5 @@ def estimate_centerline(
         valid=valid,
         traversable_fraction=traversable_fraction,
         scan_rows=scan_rows,
+        obstacle_fraction=obstacle_fraction,
     )

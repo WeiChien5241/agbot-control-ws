@@ -5,6 +5,7 @@ from agbot_vision_nav.centerline_estimator import (
     CLASS_OBSTACLE,
     CLASS_SKY,
     CLASS_TRAVERSABLE,
+    CenterlineResult,
     estimate_centerline,
 )
 
@@ -100,6 +101,35 @@ def test_all_obstacle_is_invalid():
     mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
     result = estimate_centerline(mask)
     assert not result.valid
+
+
+def test_obstacle_fraction_is_measured_over_the_lower_half():
+    """obstacle_fraction gates the row-exit detector's BLOCKED signature, so it
+    must read the same lower-half slice as traversable_fraction and stay high
+    when a blocker fills the view -- which is exactly when traversable_fraction
+    goes to zero."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:HEIGHT // 2, :] = CLASS_SKY   # upper half ignored by both fractions
+    result = estimate_centerline(mask)
+    assert result.obstacle_fraction == 1.0
+    assert result.traversable_fraction == 0.0
+
+    # Half the lower half obstacle, half traversable.
+    mask = np.full((HEIGHT, WIDTH), CLASS_TRAVERSABLE, dtype=np.uint8)
+    mask[HEIGHT // 2 :, : WIDTH // 2] = CLASS_OBSTACLE
+    result = estimate_centerline(mask)
+    assert result.obstacle_fraction == pytest.approx(0.5)
+    assert result.traversable_fraction == pytest.approx(0.5)
+
+
+def test_obstacle_fraction_defaults_to_none_for_hand_built_results():
+    """Tests and the FSM construct CenterlineResults directly; the new field
+    must be optional or every one of those call sites breaks."""
+    result = CenterlineResult(
+        offset_norm=0.0, slope_term=0.0, valid=True,
+        traversable_fraction=0.5, scan_rows=[],
+    )
+    assert result.obstacle_fraction is None
 
 
 def test_mismatched_lengths_raise():
