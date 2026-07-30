@@ -265,6 +265,7 @@ class VisionNavNode(object):
 
         rospy.Timer(rospy.Duration(1.0 / 10.0), self._watchdog_cb)
 
+        self._log_config()
         rospy.loginfo("vision_nav_node ready, listening on %s", camera_topic)
 
     @staticmethod
@@ -587,6 +588,91 @@ class VisionNavNode(object):
             "Y" if s.open_armed else "N",
             "Y" if s.blocked_armed else "N",
         )
+
+    def _log_config(self):
+        """One-shot startup dump of the tuning actually in effect.
+
+        Read back from the node's own private namespace rather than from the
+        constructor arguments, so this reports what the node RECEIVED -- the
+        merge of config/params.yaml, the launch-file defaults, and any
+        command-line override -- instead of restating what we think we passed.
+
+        Worth the console space for two reasons. A field log read back a week
+        later otherwise has no record of how the robot was tuned for that run.
+        And a value that silently did not take effect becomes visible here at
+        launch, which is the failure mode this repo keeps hitting: launch-arg
+        <param> tags override config/params.yaml for every duplicated knob, so
+        editing the yaml alone does nothing (2026-07-30: headland_clearance
+        edited to 1.5 in the yaml, robot ran at the launch default 0.75).
+        """
+        try:
+            p = rospy.get_param("~")
+        except Exception:            # noqa: BLE001 - diagnostics must never
+            rospy.logwarn(           # take the node down
+                "could not read the private parameter namespace; "
+                "skipping the config dump"
+            )
+            return
+
+        def g(key, default="?"):
+            return p.get(key, default)
+
+        rospy.loginfo("---- vision_nav config in effect ----")
+        rospy.loginfo(
+            "speed:    cruise=%s ang_max=%s d_ang_max=%s | mpc dt=%s N=%s "
+            "| invalid_stop=%s data_age=%s s",
+            g("linear_x_cruise"), g("angular_z_max"), g("delta_angular_z_max"),
+            g("mpc_dt"), g("mpc_horizon"),
+            g("invalid_frame_stop_count"), g("max_data_age_sec"),
+        )
+        exit_rows = self._exit_scan_row_fractions or "shared with steering"
+        rospy.loginfo(
+            "scanrows: steering=%s | exit=%s",
+            self._scan_row_fractions, exit_rows,
+        )
+
+        if not self._mission_enabled:
+            rospy.loginfo(
+                "mission:  DISABLED (plain row-following; no exit detection, "
+                "no headland turns)"
+            )
+            rospy.loginfo("-------------------------------------")
+            return
+
+        rospy.loginfo(
+            "mission:  rows=%s first_turn=%s | rear_camera=%s backout=%s",
+            g("num_rows"), g("first_turn_direction"),
+            self._rear_camera_enabled, self._fsm.backout_enabled,
+        )
+        rospy.loginfo(
+            "exit:     width>=%s flank=%s/%s | confirm=%s m leak=%s "
+            "min_frames=%s rows_req=%s | arms after %s m",
+            g("exit_width_threshold"), g("exit_flank_edge_margin"),
+            g("exit_flank_min_clear_fraction"), g("exit_confirm_distance"),
+            g("exit_leak_ratio"), g("exit_detect_min_frames"),
+            g("exit_open_rows_required"), g("min_in_row_distance"),
+        )
+        rospy.loginfo(
+            "blocked:  confirm=%s s leak=%s obstacle>=%s | arms after %s m",
+            g("blocked_confirm_seconds"), g("blocked_leak_ratio"),
+            g("blocked_min_obstacle_fraction"), g("blocked_arming_distance"),
+        )
+        rospy.loginfo(
+            "headland: clearance=%s m (min %s) speed=%s | traverse=%s "
+            "row_spacing=%s | turn=%s rad/s tol=%s deg",
+            g("headland_clearance"), g("exit_clear_min_distance"),
+            g("exit_clear_speed"), g("traverse_distance"), g("row_spacing"),
+            g("turn_rate"), g("yaw_tolerance_deg"),
+        )
+        rospy.loginfo(
+            "recovery: reacquire speed=%s confirm=%s m max=%s m steering=%s "
+            "| revoke=%s within %s m after %s m of corn",
+            g("reacquire_speed"), g("reacquire_confirm_distance"),
+            g("reacquire_max_distance"), g("reacquire_steering_enabled"),
+            g("exit_revoke_enabled"), g("exit_revoke_distance"),
+            g("exit_revoke_fail_distance"),
+        )
+        rospy.loginfo("-------------------------------------")
 
     def _publish_twist(self, linear_x, angular_z):
         twist = Twist()
