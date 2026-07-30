@@ -1,14 +1,41 @@
-# Defaults for vision_nav_node. model_path has no entry here -- it must be
-# set explicitly via the model_path launch arg, since the .pt file lives
-# outside any catkin package; picking a fragile relative path here would
-# fail silently/wrongly if it moved.
+# ============================================================================
+# THIS FILE IS THE SOURCE OF TRUTH FOR vision_nav_node's TUNING.
+#
+# Edit a value here and it takes effect. The launch file's <arg>s default to
+# EMPTY and their <param> tags are conditional, so a launch arg overrides this
+# file only when you actually pass one:
+#
+#     roslaunch agbot_vision_nav vision_nav.launch headland_clearance:=1.5
+#
+# That is the contract: this file = how the robot is tuned; the roslaunch
+# command line = a per-run override for field iteration. When a tuning run
+# settles on a value, write it here and stop passing it.
+#
+# It did NOT always work this way. Until 2026-07-30 every knob was declared in
+# BOTH places and the launch file's <param> silently overwrote this file for
+# all 44 duplicated keys -- editing here did nothing, which cost real time
+# (headland_clearance set to 1.5 here while the robot ran the launch default
+# 0.75; traverse_distance read 0.65 here while every run used 0.6).
+#
+# To see what a launch will actually resolve to, without starting anything:
+#     roslaunch --dump-params agbot_vision_nav vision_nav.launch [args...]
+# The node also logs its whole resolved config at startup.
+#
+# THREE EXCEPTIONS, still owned by the launch file:
+#   - model_path: no entry here on purpose. The .pt lives outside any catkin
+#     package, so a relative path here would fail silently if it moved.
+#   - camera_topic / camera_topic_is_compressed / rear_camera_topic /
+#     rear_camera_topic_is_compressed: the launch file COMPUTES these from
+#     sim:=true|false, which a static file cannot do. The values below are the
+#     real-robot defaults and document intent, but the launch file wins.
+#     Use sim:=true rather than editing them.
+# ============================================================================
 
-# Real-robot defaults shown below. For Gazebo, override camera_topic and set
-# camera_topic_is_compressed: false via launch args, since Gazebo's camera
-# plugin typically publishes raw sensor_msgs/Image rather than CompressedImage.
 model_device: auto      # auto = CUDA when available, else CPU; or force
                         # cpu/cuda. The node logs the actual device at
                         # startup -- verify it says 'cuda' on the GPU robot.
+
+# vvv launch-computed from sim:=true|false; the launch file wins (see header)
 camera_topic: /usb_cam/image_raw/compressed
 camera_topic_is_compressed: true
 cmd_vel_topic: /cmd_vel
@@ -88,21 +115,29 @@ num_rows: 3                # corridors to drive; 0 = keep going until no rows le
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)
 row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
-traverse_distance: 0.65    # m of sideways travel after TURN_1. Deliberately
+traverse_distance: 0.6     # m of sideways travel after TURN_1. Deliberately
                            # SHORTER than row_spacing: at 0.75 the nose got
                            # too close to the next row's corn just before
                            # TURN_2 (field near-miss, 2026-07); REACQUIRE +
                            # the MPC close the remaining lateral offset.
+                           # NOTE: this said 0.65 while the launch file's 0.6
+                           # silently won, so every run to date -- including
+                           # the 2026-07-30 back-out validation -- was at 0.6.
+                           # Set to 0.6 here so it matches what has actually
+                           # been tested. 0.6 vs 0.65 is still an open field
+                           # question (HANDOFF3 next-step 5); decide it with a
+                           # run, not by editing this line.
 exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
                            # post-exit leg is where overshoot hurts most)
-headland_clearance: 1.5    # m of EXIT_CLEAR forward travel before turning,
+headland_clearance: 1.0    # m of EXIT_CLEAR forward travel before turning,
                            # measured from where the exit was FIRST SEEN (the
                            # start of the confirmation streak), not from where
                            # it confirmed -- otherwise exit_confirm_distance
                            # would be added on top and the robot would overrun
-                           # by 1.15 m. 0.5 clipped the last plants in field
-                           # testing (real corn, 2026-07-15); raise toward 1.0
-                           # if the turn still hits corn.
+                           # by 1.15 m. Walked up by testing: 0.5 clipped the
+                           # last plants (real corn, 2026-07-15); 0.75 still
+                           # turned too early on the GPU robot (2026-07-29);
+                           # 1.0 validated in the sim back-out run 2026-07-30.
 exit_clear_min_distance: 0.2  # m always driven after the exit confirms, even
                            # when back-dating has already consumed all of
                            # headland_clearance.

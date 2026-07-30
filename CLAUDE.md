@@ -153,6 +153,27 @@ Speed tuning happens on the real robot (RTX 4080), not in the laptop sim
 `angular_z_max`, `delta_angular_z_max`, and `mpc_alpha` proportionally with
 speed. Defaults stay at the sim-validated 0.15 m/s envelope.
 
+**Where to change a parameter**: `agbot_vision_nav/config/params.yaml`. Edit a
+value there and it takes effect. Launch `<arg>`s default to EMPTY and their
+`<param>` tags are conditional, so a launch arg overrides the file only when you
+actually pass one — use that for per-run field iteration, then write the settled
+value back into `params.yaml`. Four keys are exceptions, computed by the launch
+file from `sim:=true|false` and therefore not editable in the yaml:
+`camera_topic`, `camera_topic_is_compressed`, `rear_camera_topic`,
+`rear_camera_topic_is_compressed` (plus `model_path`, which has no yaml entry).
+
+⚠ Before 2026-07-30 this was the opposite: every knob was declared in BOTH
+files and the launch `<param>` silently won for all 44 duplicated keys, so
+editing `params.yaml` did nothing. If you see a value that "isn't taking",
+check what actually resolved:
+
+```bash
+roslaunch --dump-params agbot_vision_nav vision_nav.launch [args...]
+```
+
+The node also logs its full resolved config once at startup, right before
+`vision_nav_node ready` — that line is the fastest way to confirm a knob.
+
 Multi-row mission mode (headland turns between rows; requires `/odometry/filtered`):
 ```bash
 roslaunch agbot_vision_nav vision_nav.launch \

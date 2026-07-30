@@ -165,7 +165,7 @@ class VisionNavNode(object):
                 first_turn_direction=rospy.get_param("~first_turn_direction", "left"),
                 row_spacing=rospy.get_param("~row_spacing", 0.75),
                 traverse_distance=rospy.get_param("~traverse_distance", 0.6),
-                headland_clearance=rospy.get_param("~headland_clearance", 1.5),
+                headland_clearance=rospy.get_param("~headland_clearance", 1.0),
                 turn_rate=rospy.get_param("~turn_rate", 0.4),
                 yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 5.0),
                 reacquire_speed=rospy.get_param("~reacquire_speed", 0.08),

@@ -7,7 +7,7 @@
   <!-- Inference device: auto = CUDA when available, else CPU. The node logs
        the device the model actually landed on at startup; check that log
        line on the GPU robot before trusting any speed numbers. -->
-  <arg name="model_device" default="auto"/>
+  <arg name="model_device" default=""/>
 
   <!-- Environment switch. Defaults target the REAL ROBOT (compressed usb_cam
        topic); pass sim:=true for Gazebo (raw /camera/image_raw). Explicit
@@ -17,7 +17,7 @@
        default="$(eval '/camera/image_raw' if arg('sim') else '/usb_cam/image_raw/compressed')" />
   <arg name="camera_topic_is_compressed"
        default="$(eval 'false' if arg('sim') else 'true')" />
-  <arg name="cmd_vel_topic"             default="/cmd_vel" />
+  <arg name="cmd_vel_topic"             default="" />
 
   <!-- MPC primary tuning knobs (override at launch for quick iteration;
        all other MPC params come from config/params.yaml).
@@ -31,13 +31,13 @@
          4. mpc_q_offset:=5.0          re-center less aggressively
          5. CPU-only robot: additionally mpc_dt:=0.5 so the internal model
             and the rate limit match the real ~2 Hz control period. -->
-  <arg name="mpc_q_offset"  default="10.0" />   <!-- lateral error weight -->
-  <arg name="mpc_q_heading" default="1.0"  />   <!-- heading error weight -->
-  <arg name="mpc_alpha"     default="0.10" />   <!-- lateral coupling constant (scales with speed) -->
-  <arg name="mpc_beta"      default="0.10" />   <!-- control effectiveness constant -->
-  <arg name="mpc_r_control" default="0.1"  />   <!-- control effort penalty -->
-  <arg name="mpc_r_delta"   default="0.5"  />   <!-- smoothness / jerk suppression -->
-  <arg name="mpc_dt"        default="0.1"  />   <!-- MPC step (s): set to the REAL control
+  <arg name="mpc_q_offset"  default="" />   <!-- lateral error weight -->
+  <arg name="mpc_q_heading" default=""  />   <!-- heading error weight -->
+  <arg name="mpc_alpha"     default="" />   <!-- lateral coupling constant (scales with speed) -->
+  <arg name="mpc_beta"      default="" />   <!-- control effectiveness constant -->
+  <arg name="mpc_r_control" default=""  />   <!-- control effort penalty -->
+  <arg name="mpc_r_delta"   default=""  />   <!-- smoothness / jerk suppression -->
+  <arg name="mpc_dt"        default=""  />   <!-- MPC step (s): set to the REAL control
                                                      period (1/inference rate); 0.5 on a
                                                      CPU-only robot at ~2 Hz. Scales
                                                      alpha/beta/delta_angular_z_max
@@ -47,84 +47,85 @@
   <!-- Watchdog: newest inference older than this -> zero Twist. 0.5 suits a
        GPU (10+ Hz); raise to ~1.5-3.0 on a CPU-only robot (~2 Hz inference)
        or the robot stutters. Trade-off: also the max blind-coast time. -->
-  <arg name="max_data_age_sec" default="0.5" />
+  <arg name="max_data_age_sec" default="" />
 
   <!-- Speed/steering envelope (exposed for tuning runs; defaults match params.yaml).
        When raising linear_x_cruise, scale angular_z_max, delta_angular_z_max,
        and mpc_alpha proportionally to preserve path curvature. -->
-  <arg name="linear_x_cruise"     default="0.15" />  <!-- forward speed (m/s) -->
-  <arg name="angular_z_max"       default="0.175" /> <!-- steering clamp (rad/s); 0.3 wobbled/hit
+  <arg name="linear_x_cruise"     default="" />  <!-- forward speed (m/s) -->
+  <arg name="angular_z_max"       default="" /> <!-- steering clamp (rad/s); 0.3 wobbled/hit
                                                           corn in the field, 0.15 was stable -->
-  <arg name="delta_angular_z_max" default="0.2"  />  <!-- max command change per step -->
+  <arg name="delta_angular_z_max" default=""  />  <!-- max command change per step -->
 
 
 
   <!-- Multi-row mission (headland turns). Off by default: plain row-following.
        Enable in Gazebo with:  mission_enabled:=true num_rows:=3 -->
-  <arg name="mission_enabled" default="false" />
-  <arg name="num_rows"        default="3" />    <!-- 0 = until no rows left -->
-  <arg name="first_turn_direction" default="left" />  <!-- left|right; alternates after (boustrophedon) -->
-  <arg name="odom_topic"           default="/odometry/filtered" />
-  <arg name="row_spacing"          default="0.75" /> <!-- m between row centerlines -->
-  <arg name="traverse_distance"    default="0.6" />  <!-- m of the sideways leg after TURN_1;
+  <arg name="mission_enabled" default="" />
+  <arg name="num_rows"        default="" />    <!-- 0 = until no rows left -->
+  <arg name="first_turn_direction" default="" />  <!-- left|right; alternates after (boustrophedon) -->
+  <arg name="odom_topic"           default="" />
+  <arg name="row_spacing"          default="" /> <!-- m between row centerlines -->
+  <arg name="traverse_distance"    default="" />  <!-- m of the sideways leg after TURN_1;
                                                           intentionally SHORTER than row_spacing so
                                                           the robot turns before reaching the next
                                                           row's corn (field near-miss at 0.75);
                                                           REACQUIRE closes the remaining alignment -->
-  <arg name="min_in_row_distance"  default="2.0" />  <!-- m of in-row travel before exit detection arms -->
+  <arg name="min_in_row_distance"  default="" />  <!-- m of in-row travel before exit detection arms -->
 
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
-  <arg name="headland_clearance"      default="1.5" /> <!-- m forward before turning, measured from
+  <arg name="headland_clearance"      default="" /> <!-- m forward before turning, measured from
                                                              where the exit was FIRST SEEN (not where it
                                                              confirmed, else the confirm distance adds on
                                                              top). Walked up by field testing: 0.5 clipped
                                                              the last plants (2026-07-15); at 0.75 the GPU
                                                              robot still started its turn too early and
-                                                             would have hit corn (2026-07-29). 1.5 is the
-                                                             current field setting. -->
-  <arg name="exit_clear_min_distance" default="0.2" /> <!-- m always driven after the exit confirms -->
-  <arg name="exit_width_threshold"    default="0.8" /> <!-- normalized corridor width = "open field" -->
-  <arg name="exit_flank_edge_margin"  default="0.05" /><!-- width of the outer strip checked at EACH
+                                                             would have hit corn (2026-07-29). 1.0 is the
+                                                             sim-validated value (back-out run,
+                                                             2026-07-30). -->
+  <arg name="exit_clear_min_distance" default="" /> <!-- m always driven after the exit confirms -->
+  <arg name="exit_width_threshold"    default="" /> <!-- normalized corridor width = "open field" -->
+  <arg name="exit_flank_edge_margin"  default="" /><!-- width of the outer strip checked at EACH
                                                             side; OPEN needs both strips mostly clear
                                                             of corn. Effectively a ~0.90 width bar PLUS
                                                             "both sides clear", which is what rejects a
                                                             one-sided gap. >= 1.0 disables (width-only) -->
-  <arg name="exit_flank_min_clear_fraction" default="0.8" /><!-- fraction of each strip that must be
+  <arg name="exit_flank_min_clear_fraction" default="" /><!-- fraction of each strip that must be
                                                             traversable; < 1.0 so one stray pixel near a
                                                             border cannot veto a real exit -->
-  <arg name="exit_open_rows_required" default="1" />   <!-- scan rows (any) that must be wide -->
-  <arg name="exit_clear_speed"        default="0.10" /><!-- m/s during the post-exit leg -->
+  <arg name="exit_open_rows_required" default="" />   <!-- scan rows (any) that must be wide -->
+  <arg name="exit_clear_speed"        default="" /><!-- m/s during the post-exit leg -->
 
   <!-- Debounce in PHYSICAL units, never frames: 5 frames is 2.5 s at 2 Hz but
        0.2 s at 25 Hz, which is how a mid-row gap fired EXIT_CLEAR instantly on
        the GPU robot (2026-07-24). Defaults reproduce the field-proven CPU-robot
        timings at any inference rate. Both accumulators are leaky. -->
-  <arg name="exit_confirm_distance"   default="0.4" /> <!-- m of sustained OPEN before firing -->
-  <arg name="exit_detect_min_frames"  default="2" />   <!-- floor: no single frame may fire it -->
-  <arg name="exit_leak_ratio"         default="0.5" /> <!-- how fast the OPEN meter drains vs
+  <arg name="exit_confirm_distance"   default="" /> <!-- m of sustained OPEN before firing -->
+  <arg name="exit_detect_min_frames"  default="" />   <!-- floor: no single frame may fire it -->
+  <arg name="exit_leak_ratio"         default="" /> <!-- how fast the OPEN meter drains vs
                                                             fills. 1.0 (symmetric) means a signature
                                                             true half the frames nets ZERO and can
                                                             never fire, which is what a marginal but
                                                             real exit looks like. 1.0 restores the
                                                             old behavior. -->
-  <arg name="blocked_leak_ratio"      default="1.0" /> <!-- BLOCKED stays symmetric -->
-  <arg name="blocked_confirm_seconds" default="4.0" /> <!-- s of sustained BLOCKED before backing out;
+  <arg name="blocked_leak_ratio"      default="" /> <!-- BLOCKED stays symmetric -->
+  <arg name="blocked_confirm_seconds" default="" /> <!-- s of sustained BLOCKED before backing out;
                                                             SECONDS because a blocked view stops the
                                                             robot, so meters would never accumulate -->
 
   <!-- EXIT_CLEAR revocation: a false exit costs a wobble, not a collision.
        Judged on the NEAREST scan row only - the far rows legitimately see the
        corn block across the headland during a genuine exit. -->
-  <arg name="exit_revoke_enabled"       default="true" />
-  <arg name="exit_revoke_distance"      default="0.5" />  <!-- m window after confirming -->
-  <arg name="exit_revoke_fail_distance" default="0.25" /> <!-- m of corn beside the near row => revert -->
+  <arg name="exit_revoke_enabled"       default="" />
+  <arg name="exit_revoke_distance"      default="" />  <!-- m window after confirming -->
+  <arg name="exit_revoke_fail_distance" default="" /> <!-- m of corn beside the near row => revert -->
 
   <!-- Optional dedicated scan rows for the exit detector; empty = share the
        steering rows. Lets the exit rows move UP for a low camera mount without
        touching field-proven steering. YAML list syntax, e.g. "[0.55, 0.7, 0.8]" -->
   <arg name="exit_scan_row_fractions" default="[]" />
   <arg name="exit_scan_row_weights"   default="[]" />
-  <arg name="blocked_min_obstacle_fraction" default="0.2" />
+  <arg name="blocked_min_obstacle_fraction" default="" />
        <!-- BLOCKED also requires this much OBSTACLE in the lower half: a sanity
             check that something is really there, as opposed to a garbage mask or
             a dead camera. Measured on the OBSTACLE class, NEVER on traversable
@@ -144,64 +145,104 @@
   <!-- REACQUIRE: a row is recognized by CORN ON BOTH SIDES of the near scan
        row, not by corridor width. The old "width < 0.6" rule was a
        camera-height constant and could never be met on the low camera. -->
-  <arg name="reacquire_confirm_distance" default="0.12" /><!-- m of in-row view to latch -->
-  <arg name="reacquire_steering_enabled" default="true" /><!-- steer while creeping -->
+  <arg name="reacquire_confirm_distance" default="" /><!-- m of in-row view to latch -->
+  <arg name="reacquire_steering_enabled" default="" /><!-- steer while creeping -->
 
-  <arg name="rear_camera_enabled" default="false" />
+  <arg name="rear_camera_enabled" default="" />
   <arg name="rear_camera_topic"
        default="$(eval '/camera_rear/image_raw' if arg('sim') else '/usb_cam_rear/image_raw/compressed')" />
   <arg name="rear_camera_topic_is_compressed"
        default="$(eval 'false' if arg('sim') else 'true')" />
-  <arg name="backout_speed"        default="0.10" /> <!-- m/s reverse speed while backing out -->
+  <arg name="backout_speed"        default="" /> <!-- m/s reverse speed while backing out -->
 
   <node name="vision_nav_node" pkg="agbot_vision_nav" type="vision_nav_node.py" output="screen">
     <rosparam file="$(find agbot_vision_nav)/config/params.yaml" command="load" />
     <param name="model_path"               value="$(arg model_path)" />
-    <param name="model_device"             value="$(arg model_device)" />
+    <param name="model_device"             value="$(arg model_device)"
+           if="$(eval arg('model_device') != '')" />
     <param name="camera_topic"             value="$(arg camera_topic)" />
     <param name="camera_topic_is_compressed" value="$(arg camera_topic_is_compressed)" />
-    <param name="cmd_vel_topic"            value="$(arg cmd_vel_topic)" />
-    <param name="mpc_q_offset"             value="$(arg mpc_q_offset)" />
-    <param name="mpc_q_heading"            value="$(arg mpc_q_heading)" />
-    <param name="mpc_alpha"                value="$(arg mpc_alpha)" />
-    <param name="mpc_beta"                 value="$(arg mpc_beta)" />
-    <param name="mpc_r_control"            value="$(arg mpc_r_control)" />
-    <param name="mpc_r_delta"              value="$(arg mpc_r_delta)" />
-    <param name="mpc_dt"                   value="$(arg mpc_dt)" />
-    <param name="max_data_age_sec"         value="$(arg max_data_age_sec)" />
-    <param name="linear_x_cruise"          value="$(arg linear_x_cruise)" />
-    <param name="angular_z_max"            value="$(arg angular_z_max)" />
-    <param name="delta_angular_z_max"      value="$(arg delta_angular_z_max)" />
-    <param name="mission_enabled"          value="$(arg mission_enabled)" />
-    <param name="num_rows"                 value="$(arg num_rows)" />
-    <param name="first_turn_direction"     value="$(arg first_turn_direction)" />
-    <param name="odom_topic"               value="$(arg odom_topic)" />
-    <param name="row_spacing"              value="$(arg row_spacing)" />
-    <param name="traverse_distance"        value="$(arg traverse_distance)" />
-    <param name="min_in_row_distance"      value="$(arg min_in_row_distance)" />
-    <param name="headland_clearance"       value="$(arg headland_clearance)" />
-    <param name="exit_width_threshold"     value="$(arg exit_width_threshold)" />
-    <param name="exit_flank_edge_margin"   value="$(arg exit_flank_edge_margin)" />
-    <param name="exit_open_rows_required"  value="$(arg exit_open_rows_required)" />
-    <param name="exit_clear_speed"         value="$(arg exit_clear_speed)" />
-    <param name="exit_clear_min_distance"  value="$(arg exit_clear_min_distance)" />
-    <param name="exit_flank_min_clear_fraction" value="$(arg exit_flank_min_clear_fraction)" />
-    <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)" />
-    <param name="exit_detect_min_frames"   value="$(arg exit_detect_min_frames)" />
-    <param name="blocked_confirm_seconds"  value="$(arg blocked_confirm_seconds)" />
-    <param name="exit_leak_ratio"          value="$(arg exit_leak_ratio)" />
-    <param name="blocked_leak_ratio"       value="$(arg blocked_leak_ratio)" />
-    <param name="reacquire_confirm_distance" value="$(arg reacquire_confirm_distance)" />
-    <param name="reacquire_steering_enabled" value="$(arg reacquire_steering_enabled)" />
-    <param name="exit_revoke_enabled"      value="$(arg exit_revoke_enabled)" />
-    <param name="exit_revoke_distance"     value="$(arg exit_revoke_distance)" />
-    <param name="exit_revoke_fail_distance" value="$(arg exit_revoke_fail_distance)" />
+    <param name="cmd_vel_topic"            value="$(arg cmd_vel_topic)"
+           if="$(eval arg('cmd_vel_topic') != '')" />
+    <param name="mpc_q_offset"             value="$(arg mpc_q_offset)"
+           if="$(eval arg('mpc_q_offset') != '')" />
+    <param name="mpc_q_heading"            value="$(arg mpc_q_heading)"
+           if="$(eval arg('mpc_q_heading') != '')" />
+    <param name="mpc_alpha"                value="$(arg mpc_alpha)"
+           if="$(eval arg('mpc_alpha') != '')" />
+    <param name="mpc_beta"                 value="$(arg mpc_beta)"
+           if="$(eval arg('mpc_beta') != '')" />
+    <param name="mpc_r_control"            value="$(arg mpc_r_control)"
+           if="$(eval arg('mpc_r_control') != '')" />
+    <param name="mpc_r_delta"              value="$(arg mpc_r_delta)"
+           if="$(eval arg('mpc_r_delta') != '')" />
+    <param name="mpc_dt"                   value="$(arg mpc_dt)"
+           if="$(eval arg('mpc_dt') != '')" />
+    <param name="max_data_age_sec"         value="$(arg max_data_age_sec)"
+           if="$(eval arg('max_data_age_sec') != '')" />
+    <param name="linear_x_cruise"          value="$(arg linear_x_cruise)"
+           if="$(eval arg('linear_x_cruise') != '')" />
+    <param name="angular_z_max"            value="$(arg angular_z_max)"
+           if="$(eval arg('angular_z_max') != '')" />
+    <param name="delta_angular_z_max"      value="$(arg delta_angular_z_max)"
+           if="$(eval arg('delta_angular_z_max') != '')" />
+    <param name="mission_enabled"          value="$(arg mission_enabled)"
+           if="$(eval arg('mission_enabled') != '')" />
+    <param name="num_rows"                 value="$(arg num_rows)"
+           if="$(eval arg('num_rows') != '')" />
+    <param name="first_turn_direction"     value="$(arg first_turn_direction)"
+           if="$(eval arg('first_turn_direction') != '')" />
+    <param name="odom_topic"               value="$(arg odom_topic)"
+           if="$(eval arg('odom_topic') != '')" />
+    <param name="row_spacing"              value="$(arg row_spacing)"
+           if="$(eval arg('row_spacing') != '')" />
+    <param name="traverse_distance"        value="$(arg traverse_distance)"
+           if="$(eval arg('traverse_distance') != '')" />
+    <param name="min_in_row_distance"      value="$(arg min_in_row_distance)"
+           if="$(eval arg('min_in_row_distance') != '')" />
+    <param name="headland_clearance"       value="$(arg headland_clearance)"
+           if="$(eval arg('headland_clearance') != '')" />
+    <param name="exit_width_threshold"     value="$(arg exit_width_threshold)"
+           if="$(eval arg('exit_width_threshold') != '')" />
+    <param name="exit_flank_edge_margin"   value="$(arg exit_flank_edge_margin)"
+           if="$(eval arg('exit_flank_edge_margin') != '')" />
+    <param name="exit_open_rows_required"  value="$(arg exit_open_rows_required)"
+           if="$(eval arg('exit_open_rows_required') != '')" />
+    <param name="exit_clear_speed"         value="$(arg exit_clear_speed)"
+           if="$(eval arg('exit_clear_speed') != '')" />
+    <param name="exit_clear_min_distance"  value="$(arg exit_clear_min_distance)"
+           if="$(eval arg('exit_clear_min_distance') != '')" />
+    <param name="exit_flank_min_clear_fraction" value="$(arg exit_flank_min_clear_fraction)"
+           if="$(eval arg('exit_flank_min_clear_fraction') != '')" />
+    <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)"
+           if="$(eval arg('exit_confirm_distance') != '')" />
+    <param name="exit_detect_min_frames"   value="$(arg exit_detect_min_frames)"
+           if="$(eval arg('exit_detect_min_frames') != '')" />
+    <param name="blocked_confirm_seconds"  value="$(arg blocked_confirm_seconds)"
+           if="$(eval arg('blocked_confirm_seconds') != '')" />
+    <param name="exit_leak_ratio"          value="$(arg exit_leak_ratio)"
+           if="$(eval arg('exit_leak_ratio') != '')" />
+    <param name="blocked_leak_ratio"       value="$(arg blocked_leak_ratio)"
+           if="$(eval arg('blocked_leak_ratio') != '')" />
+    <param name="reacquire_confirm_distance" value="$(arg reacquire_confirm_distance)"
+           if="$(eval arg('reacquire_confirm_distance') != '')" />
+    <param name="reacquire_steering_enabled" value="$(arg reacquire_steering_enabled)"
+           if="$(eval arg('reacquire_steering_enabled') != '')" />
+    <param name="exit_revoke_enabled"      value="$(arg exit_revoke_enabled)"
+           if="$(eval arg('exit_revoke_enabled') != '')" />
+    <param name="exit_revoke_distance"     value="$(arg exit_revoke_distance)"
+           if="$(eval arg('exit_revoke_distance') != '')" />
+    <param name="exit_revoke_fail_distance" value="$(arg exit_revoke_fail_distance)"
+           if="$(eval arg('exit_revoke_fail_distance') != '')" />
     <rosparam param="exit_scan_row_fractions" subst_value="true">$(arg exit_scan_row_fractions)</rosparam>
     <rosparam param="exit_scan_row_weights"   subst_value="true">$(arg exit_scan_row_weights)</rosparam>
-    <param name="blocked_min_obstacle_fraction" value="$(arg blocked_min_obstacle_fraction)" />
-    <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)" />
+    <param name="blocked_min_obstacle_fraction" value="$(arg blocked_min_obstacle_fraction)"
+           if="$(eval arg('blocked_min_obstacle_fraction') != '')" />
+    <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)"
+           if="$(eval arg('rear_camera_enabled') != '')" />
     <param name="rear_camera_topic"        value="$(arg rear_camera_topic)" />
     <param name="rear_camera_topic_is_compressed" value="$(arg rear_camera_topic_is_compressed)" />
-    <param name="backout_speed"            value="$(arg backout_speed)" />
+    <param name="backout_speed"            value="$(arg backout_speed)"
+           if="$(eval arg('backout_speed') != '')" />
   </node>
 </launch>
