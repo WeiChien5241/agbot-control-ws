@@ -8,15 +8,16 @@
 
     Layout (all offsets relative to mid_mount):
 
-      camera_mount_link  — 20×5×20 cm stand
-                           front face flush with x=0, body extends to x=-0.20 m
-                           centre at xyz="-0.10  0  0.10"
+      camera_mount_link  — 20×5×20 cm stand, kept for the TALL mount option
+                           (currently unused; both cameras are deck-mounted)
 
-      camera_link        — forward sensor origin at xyz="0  0  0.225"
-                           (camera bottom = 0.20 m = top of stand)
+      camera_link        — forward sensor on the front deck at
+                           xyz="0.19  0  0.025"
 
-      camera_rear_link   — rear sensor at xyz="-0.05 0 0.225", yawed 180°
-                           (back-to-back with the forward camera on the stand)
+      camera_rear_link   — rear sensor MIRRORED about the robot centre at
+                           xyz="-0.19  0  0.025", yawed 180°. Same height as
+                           the front camera, same inset from its deck edge, so
+                           the reverse view matches the forward view.
 
       *_optical_frame    — CV convention (z forward, x right, y down)
                            used as the image header frame_id
@@ -66,7 +67,7 @@
   <joint name="camera_mount_joint" type="fixed">
     <parent link="mid_mount"/>
     <child  link="camera_mount_link"/>
-    <origin xyz="-0.1 0 0.10" rpy="0 0 0"/>
+    <origin xyz="-0.025 0 0.10" rpy="0 0 0"/>
   </joint>
 
   <gazebo reference="camera_mount_link">
@@ -161,23 +162,27 @@
     </gazebo>
   </xacro:macro>
 
-  <!-- ─── Forward camera ──────────────────────────────────────── -->
-  <!-- camera centre: x=0, y=0 (robot centre), z=cam_z above mid_mount.
-       Camera bottom (cam_z - cam_height/2 = 0.20 m) sits on stand top. -->
-  <xacro:agbot_cam name="camera" xyz="0 0 ${cam_z}" rpy="0 0 0"/>
-
-  <!-- Alternative low/front mount (occlusion test): camera on the front
-       deck, lens just behind the +0.210 m front edge of the chassis
-       (parent stays mid_mount). z=0.025 puts the 0.05 m-tall camera
-       body's bottom on the deck plane. To test, comment the line above
-       and uncomment the line below; consider also commenting the stand
-       (camera_mount_link + camera_mount_joint) since it stays behind.
+  <!-- ─── Forward camera (LOW deck mount — the standard now) ──── -->
+  <!-- On the front deck, lens just inside the +0.210 m front edge of the
+       chassis (parent stays mid_mount). z=0.025 puts the 0.05 m-tall camera
+       body's bottom on the deck plane. The low mount is preferred over the
+       tall stand: it sees the row boundaries closer in and matches the
+       physical GPU robot. -->
   <xacro:agbot_cam name="camera" xyz="0.19 0 0.025" rpy="0 0 0"/>
-  -->
+
+  <!-- Tall stand mount, kept as a record of the original geometry. If it is
+       ever re-enabled, move the rear camera back to the stand as well
+       (xyz="-0.05 0 ${cam_z}") so the two stay mirrored. -->
+  <!-- <xacro:agbot_cam name="camera" xyz="0 0 ${cam_z}" rpy="0 0 0"/> -->
 
   <!-- ─── Rear camera (blocked-row back-out) ──────────────────── -->
-  <!-- Back-to-back with the forward camera on the stand, yawed 180°.
+  <!-- MIRROR of the forward camera about the robot centre: same z, same
+       0.02 m inset from its deck edge, yawed 180°. The back-out steers from
+       this camera reusing the MPC with UNCHANGED signs (image mirror ×
+       reversed motion cancel), which assumes the reverse view is the
+       geometric twin of the forward view — a different height or inset would
+       break that assumption and mistune the reverse leg.
        Publishes /camera_rear/image_raw, frame camera_rear_optical_frame. -->
-  <xacro:agbot_cam name="camera_rear" xyz="-0.05 0 ${cam_z}" rpy="0 0 3.14159265"/>
+  <xacro:agbot_cam name="camera_rear" xyz="-0.19 0 0.025" rpy="0 0 3.14159265"/>
 
 </robot>
