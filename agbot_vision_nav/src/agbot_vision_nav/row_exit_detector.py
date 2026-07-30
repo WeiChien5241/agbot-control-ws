@@ -54,6 +54,18 @@ Guards against false positives:
   The BLOCKED signature arms much earlier (`blocked_arming_distance`) so an
   obstacle shortly after row entry is still caught -- it cannot false-fire
   at entry because it requires zero visible corridor at every scan row.
+- The BLOCKED sanity gate measures OBSTACLE, not traversable ground
+  (`blocked_min_obstacle_fraction`). The gate exists to reject a garbage mask or
+  a dead camera, but it used to ask "is any ground still visible?"
+  (`blocked_min_traversable_fraction`) -- which is backwards. A blocker fills the
+  lower half of the frame as the robot closes on it, so that reading falls to
+  zero precisely when the obstacle is nearest and the detection most certain.
+  Sim 2026-07-30, box mid-row: the timer banked 0.6 s at frac=0.03, then frac hit
+  0.00, the symmetric leak drained the evidence back to zero, and the robot sat
+  stopped in front of the box forever without ever backing out. The threshold had
+  already been walked 0.15 -> 0.08 -> 0.02 chasing this; the correct reading is
+  genuinely 0.00, so no value would have worked. Asking "is there obstacle ahead?"
+  instead is both correct and stable as the robot approaches.
 """
 
 import time
@@ -95,8 +107,15 @@ ExitDetectorStatus = namedtuple(
         # there is no way to pick the knob to turn.
         "near_row_width",        # normalized corridor width, or None
         "near_row_edges",        # (left_clear_frac, right_clear_frac) or None
+        # The quantity the BLOCKED gate actually tests. traversable_fraction is
+        # kept alongside it because the pair is what makes an approach readable:
+        # trav falling to 0.00 while obst climbs to 1.00 is a healthy blocker,
+        # both at 0.00 is a garbage mask. Reporting only one of them is how the
+        # 2026-07-30 deadlock took a whole run to interpret.
+        "obstacle_fraction",
     ],
 )
+ExitDetectorStatus.__new__.__defaults__ = (None,)
 
 
 def normalized_corridor_widths(centerline_result, image_width):
@@ -197,7 +216,7 @@ class RowExitDetector:
         exit_width_threshold=0.8,
         exit_confirm_distance=0.4,
         min_in_row_distance=2.0,
-        blocked_min_traversable_fraction=0.02,
+        blocked_min_obstacle_fraction=0.2,
         blocked_arming_distance=0.3,
         exit_open_rows_required=1,
         blocked_confirm_seconds=4.0,
@@ -213,7 +232,14 @@ class RowExitDetector:
         # 0.15 m/s = 0.375 m) on a robot of ANY inference rate.
         self.exit_confirm_distance = exit_confirm_distance
         self.min_in_row_distance = min_in_row_distance
-        self.blocked_min_traversable_fraction = blocked_min_traversable_fraction
+        # BLOCKED also requires this much OBSTACLE in the lower half of the mask
+        # -- a sanity check that something is really there, rather than the mask
+        # being garbage or the camera dead/pointed at sky. It must be measured on
+        # the OBSTACLE class, never on the traversable one: a blocker fills the
+        # lower half as the robot closes on it, so traversable_fraction reads
+        # 0.00 exactly when the obstacle is nearest (sim 2026-07-30 -- see the
+        # module docstring). 0.0 disables the gate.
+        self.blocked_min_obstacle_fraction = blocked_min_obstacle_fraction
         self.blocked_arming_distance = blocked_arming_distance
         self.exit_open_rows_required = exit_open_rows_required
         # Seconds of sustained BLOCKED evidence before firing. Default 4.0 s
@@ -355,10 +381,16 @@ class RowExitDetector:
             if w is not None and w >= self.exit_width_threshold and fc
         )
         open_signature = open_rows >= max(1, self.exit_open_rows_required)
+        # BLOCKED: no corridor at ANY scan row, plus enough OBSTACLE in the lower
+        # half to say something is actually there. Do NOT re-add a
+        # traversable-fraction term here: it falls to 0.00 as the blocker fills
+        # the view, so ANDing it in makes the signature disqualify itself at
+        # exactly the moment it is most certain, and the leaky timer drains back
+        # to zero (the 2026-07-30 sim deadlock).
         blocked_signature = (
             len(valid_widths) == 0
-            and centerline_result.traversable_fraction
-            >= self.blocked_min_traversable_fraction
+            and (centerline_result.obstacle_fraction or 0.0)
+            >= self.blocked_min_obstacle_fraction
         )
 
         if open_signature and open_armed:
@@ -440,4 +472,5 @@ class RowExitDetector:
             near_row_flank_clear=near_clear,
             near_row_width=near_width,
             near_row_edges=near_edges,
+            obstacle_fraction=centerline_result.obstacle_fraction,
         )

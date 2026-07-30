@@ -133,8 +133,8 @@ class VisionNavNode(object):
                     "~exit_confirm_distance", 0.4
                 ),
                 min_in_row_distance=rospy.get_param("~min_in_row_distance", 2.0),
-                blocked_min_traversable_fraction=rospy.get_param(
-                    "~blocked_min_traversable_fraction", 0.02
+                blocked_min_obstacle_fraction=rospy.get_param(
+                    "~blocked_min_obstacle_fraction", 0.2
                 ),
                 blocked_arming_distance=rospy.get_param(
                     "~blocked_arming_distance", 0.3
@@ -563,9 +563,13 @@ class VisionNavNode(object):
         # them, "width just under exit_width_threshold" and "edges just under
         # exit_flank_min_clear_fraction" both render as openrows=0 and there is
         # no way to tell which knob to turn.
+        # trav=/obst= are the same story for BLOCKED: obst= is what the gate
+        # tests, and the PAIR is what makes an approach readable -- trav falling
+        # to 0.00 while obst climbs is a healthy blocker; both at 0.00 is a
+        # garbage mask and the gate is right to hold.
         return prefix + (
             "exit: blk %.1f/%.1f s open %.2f/%.2f m rows=%d wide=%d openrows=%d "
-            "near w=%s edges=%s frac=%.2f armed o:%s b:%s"
+            "near w=%s edges=%s trav=%.2f obst=%s armed o:%s b:%s"
         ) % (
             s.blocked_seconds,
             self._detector.blocked_confirm_seconds,
@@ -579,6 +583,7 @@ class VisionNavNode(object):
             if s.near_row_edges is None
             else "%.2f/%.2f" % s.near_row_edges,
             s.traversable_fraction,
+            "-" if s.obstacle_fraction is None else "%.2f" % s.obstacle_fraction,
             "Y" if s.open_armed else "N",
             "Y" if s.blocked_armed else "N",
         )

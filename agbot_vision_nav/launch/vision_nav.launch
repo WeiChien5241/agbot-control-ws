@@ -121,13 +121,19 @@
        touching field-proven steering. YAML list syntax, e.g. "[0.55, 0.7, 0.8]" -->
   <arg name="exit_scan_row_fractions" default="[]" />
   <arg name="exit_scan_row_weights"   default="[]" />
-  <arg name="blocked_min_traversable_fraction" default="0.02" />
-       <!-- BLOCKED also requires this much of the lower half traversable;
-            only rejects a truly black/zero view (lens fully pressed into
-            foliage). Sim-measured: a large blocker filling the camera leaves
-            only frac=0.04, so 0.15 and even 0.08 deadlocked the back-out.
-            The 8-frame debounce is the real guard against transient
-            occlusion. Set 0.0 to disable the gate entirely. -->
+  <arg name="blocked_min_obstacle_fraction" default="0.2" />
+       <!-- BLOCKED also requires this much OBSTACLE in the lower half: a sanity
+            check that something is really there, as opposed to a garbage mask or
+            a dead camera. Measured on the OBSTACLE class, NEVER on traversable
+            ground, because a blocker fills the view as the robot closes on it,
+            so the traversable reading falls to 0.00 exactly when the obstacle is
+            nearest and the detection most certain. The old
+            blocked_min_traversable_fraction was walked 0.15 -> 0.08 -> 0.02
+            chasing that and still deadlocked the back-out (sim 2026-07-30:
+            timer banked 0.6 s at frac=0.03, drained at frac=0.00, robot sat in
+            front of the box). BLOCKED already requires zero corridor at EVERY
+            scan row, so this bar stays low; the 4 s debounce is the real guard
+            against transient occlusion. Set 0.0 to disable the gate entirely. -->
 
   <!-- Rear camera for the blocked-row back-out (mission mode only). Enable in
        Gazebo with: rear_camera_enabled:=true. For a future real USB camera,
@@ -189,7 +195,7 @@
     <param name="exit_revoke_fail_distance" value="$(arg exit_revoke_fail_distance)" />
     <rosparam param="exit_scan_row_fractions" subst_value="true">$(arg exit_scan_row_fractions)</rosparam>
     <rosparam param="exit_scan_row_weights"   subst_value="true">$(arg exit_scan_row_weights)</rosparam>
-    <param name="blocked_min_traversable_fraction" value="$(arg blocked_min_traversable_fraction)" />
+    <param name="blocked_min_obstacle_fraction" value="$(arg blocked_min_obstacle_fraction)" />
     <param name="rear_camera_enabled"      value="$(arg rear_camera_enabled)" />
     <param name="rear_camera_topic"        value="$(arg rear_camera_topic)" />
     <param name="rear_camera_topic_is_compressed" value="$(arg rear_camera_topic_is_compressed)" />

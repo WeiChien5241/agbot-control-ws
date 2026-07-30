@@ -345,14 +345,91 @@ def test_blocked_fires_at_close_range_low_ground_fraction():
     # Regression (sim, 2026-07-21, twice): the robot stopped in front of a
     # mid-row blocker and the back-out never fired. Up close the obstacle
     # dominates the frame -- the sim HUD showed frac=0.04, under both the
-    # 0.15 and 0.08 gates. The default gate must accept this view.
+    # 0.15 and 0.08 traversable gates. The default gate must accept this view.
     mask = make_close_blocker_mask()
     result = estimate_centerline(mask)
     assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
     assert 0.02 <= result.traversable_fraction < 0.08
 
-    det = RowExitDetector(blocked_confirm_seconds=2.0)  # default gate 0.02
+    det = RowExitDetector(blocked_confirm_seconds=2.0)
     assert parked(det).seconds(mask, 2.0) == EXIT_ROW_END_BLOCKED
+
+
+def test_blocked_fires_when_obstacle_fills_the_view():
+    """The 2026-07-30 sim deadlock: the robot drove up to a mid-row box until
+    NO ground was left in the lower half at all, and the back-out never fired.
+
+    The old gate asked for traversable ground (>= 0.02) as proof that the view
+    was real rather than garbage. But a blocker at close range leaves exactly
+    zero ground, so the signature disqualified itself at the moment it was most
+    certain -- the timer banked 0.6 s at frac=0.03, then drained back to zero at
+    frac=0.00 and stayed there. No value of a traversable-based gate can pass
+    this frame; that is why it now measures OBSTACLE instead.
+    """
+    mask = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    mask[:20, :] = CLASS_SKY
+    result = estimate_centerline(mask)
+    assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
+    assert result.traversable_fraction == 0.0   # the reading that used to veto
+    assert result.obstacle_fraction == 1.0
+
+    det = RowExitDetector(blocked_confirm_seconds=2.0)
+    assert parked(det).seconds(mask, 2.0) == EXIT_ROW_END_BLOCKED
+
+
+def test_blocked_evidence_survives_ground_fraction_reaching_zero():
+    """Replays the observed approach: the robot closes on the blocker and the
+    traversable fraction collapses 0.03 -> 0.00 partway through the debounce.
+
+    Under the old gate the banked seconds drained away at that point (leak ratio
+    1.0, symmetric) and could never refill. The evidence must instead keep
+    accumulating straight through the transition.
+    """
+    det = RowExitDetector(blocked_confirm_seconds=4.0)
+    d = parked(det)
+
+    # Phase 1: a sliver of ground still visible (the frac=0.03 frames).
+    assert d.seconds(make_close_blocker_mask(), 2.0) == EXIT_NONE
+    banked = det.last_status.blocked_seconds
+    assert banked >= 2.0
+
+    # Phase 2: the blocker now fills the frame completely. The old gate flipped
+    # the signature false here; the banked evidence must not drain.
+    full = np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    full[:20, :] = CLASS_SKY
+    assert d.seconds(full, 1.0) == EXIT_NONE
+    assert det.last_status.blocked_seconds > banked
+
+    assert d.seconds(full, 1.0) == EXIT_ROW_END_BLOCKED
+
+
+def test_blocked_held_off_when_nothing_is_actually_there():
+    """The gate's real job: a mask with no corridor AND no obstacle is a dead
+    camera or a garbage frame, not a blocker. It must not trigger a back-out."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_SKY, dtype=np.uint8)
+    result = estimate_centerline(mask)
+    assert all(w is None for w in normalized_corridor_widths(result, WIDTH))
+    assert result.obstacle_fraction == 0.0
+
+    det = RowExitDetector(blocked_confirm_seconds=2.0)
+    assert parked(det).seconds(mask, 10.0) == EXIT_NONE
+
+
+def test_blocked_obstacle_gate_can_be_disabled():
+    """0.0 restores "no corridor anywhere is enough", the escape hatch the old
+    knob had -- for a blocker that segments as sky rather than obstacle."""
+    mask = np.full((HEIGHT, WIDTH), CLASS_SKY, dtype=np.uint8)
+    det = RowExitDetector(
+        blocked_confirm_seconds=2.0, blocked_min_obstacle_fraction=0.0
+    )
+    assert parked(det).seconds(mask, 2.0) == EXIT_ROW_END_BLOCKED
+
+
+def test_removed_traversable_gate_raises():
+    """Removed names must fail loudly rather than be silently ignored -- the
+    same convention as exit_detect_frames / reacquire_max_width."""
+    with pytest.raises(TypeError):
+        RowExitDetector(blocked_min_traversable_fraction=0.02)
 
 
 def test_blocked_debounce_is_leaky_not_reset():

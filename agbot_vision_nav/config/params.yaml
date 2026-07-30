@@ -198,14 +198,21 @@ blocked_confirm_seconds: 4.0  # s of sustained BLOCKED evidence before backing
                            # goes invalid), so a distance counter would never
                            # fill and the back-out would deadlock.
 min_in_row_distance: 2.0   # m of in-row travel before OPEN exit detection arms
-blocked_min_traversable_fraction: 0.02  # BLOCKED also needs this much of the
-                                        # lower half traversable; only rejects
-                                        # a truly black/zero view. A large sim
-                                        # blocker filling the camera leaves
-                                        # frac=0.04, so 0.15/0.08 both dead-
-                                        # locked the back-out. The 8-frame
-                                        # debounce is the real occlusion
-                                        # guard; 0.0 disables this gate.
+blocked_min_obstacle_fraction: 0.2  # BLOCKED also needs this much OBSTACLE in
+                                    # the lower half -- a sanity check that
+                                    # something is really there, vs a garbage
+                                    # mask or a dead camera. Measured on the
+                                    # OBSTACLE class, NEVER on traversable: a
+                                    # blocker fills the view as the robot closes
+                                    # in, so the traversable reading falls to
+                                    # 0.00 exactly when the obstacle is nearest.
+                                    # The old blocked_min_traversable_fraction
+                                    # was walked 0.15 -> 0.08 -> 0.02 chasing
+                                    # that and still deadlocked the back-out in
+                                    # sim (2026-07-30). Blocked already requires
+                                    # zero corridor at EVERY scan row, so this
+                                    # bar stays low; the 4 s debounce is the real
+                                    # occlusion guard. 0.0 disables the gate.
 blocked_arming_distance: 0.3  # m of in-row travel before BLOCKED detection arms
                               # (much earlier than open, so obstacles right
                               # after row entry still trigger the back-out)
