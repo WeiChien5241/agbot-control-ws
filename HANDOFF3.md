@@ -1,7 +1,98 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-28.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-30.
 Field status: in-row nav + headland turns WORK on the real robot.
+Sim status: blocked-row BACK-OUT now works end to end.
+
+---
+
+## 0a. SESSION 2026-07-30 — read this first
+
+**Field result: the row-exit rebuild WORKED.** The GPU robot re-ran the route
+that previously produced a mid-row false `EXIT_CLEAR` and had **no false
+detections**. Next-step #2 from the previous session is CLOSED. One defect
+remained: after a real exit the robot began its headland turn too early and
+would have hit corn without an operator stop → `headland_clearance` 0.75 → 1.0.
+
+**Sim result: the blocked-row BACK-OUT now works end to end** (previous
+next-step #4, never before validated). Getting there required a real fix:
+
+### The blocked-row deadlock (fixed, commits `191274c` + `4bf7a6f`)
+
+Box placed mid-row-2, `num_rows:=2`, rear camera on. The robot saw the box,
+stopped, and **never backed out**. Log:
+
+```
+t=258.2  blk 0.6/4.0 s  rows=0  frac=0.03   <- banking evidence
+t=263.4  blk 0.0/4.0 s  rows=0  frac=0.00   <- drained to zero
+t=268.5+ blk 0.0/4.0 s  rows=0  frac=0.00   <- deadlocked
+```
+
+`blocked_signature` required `traversable_fraction >= 0.02` as proof the view
+was real rather than garbage. **But a blocker at close range leaves zero visible
+ground** — the signature disqualified itself at the exact moment it was most
+certain, and the symmetric leak drained the banked seconds back to zero.
+
+⚠ **This threshold had already been walked 0.15 → 0.08 → 0.02 chasing the same
+symptom (see §2 back-out iteration 1). No value can work** — the correct reading
+in front of a real blocker is genuinely 0.00. The quantity was wrong, not the
+number.
+
+**Fix:** `blocked_min_traversable_fraction` → **`blocked_min_obstacle_fraction`**
+(0.2), measured on the OBSTACLE class over the same lower-half slice. It rises as
+the robot approaches instead of falling, and still rejects a dead camera or an
+all-sky frame. `centerline_estimator` now reports `obstacle_fraction` (defaulted
+None, same pattern as the flank fields). The old kwarg raises `TypeError`.
+The detector line prints `trav=` and `obst=` together — the pair distinguishes a
+healthy blocker (trav falls, obst climbs) from a garbage frame (both zero).
+Tripwires: `test_blocked_fires_when_obstacle_fills_the_view`,
+`test_blocked_evidence_survives_ground_fraction_reaching_zero`,
+`test_blocked_held_off_when_nothing_is_actually_there`.
+
+### Config: params.yaml is now the source of truth (commit `9d54d59`)
+
+⚠ **Gotcha 3 is GONE — the behaviour is inverted from what older notes say.**
+44 knobs were declared in both `config/params.yaml` and the launch file, and the
+launch `<param>` (loaded after `<rosparam file>`) silently won every time.
+Editing the yaml did nothing. It bit twice: `headland_clearance` set to 1.5 in
+the yaml while the robot ran 0.75, and `traverse_distance` reading 0.65 while
+**every run to date used 0.6**.
+
+Launch `<arg>`s now default to EMPTY with conditional `<param>` tags, so
+**`params.yaml` holds the tuning and a launch arg overrides it only when
+actually passed**. Verified a pure no-op by diffing `roslaunch --dump-params`
+across the default/sim/mission configurations. Five keys stay launch-owned:
+`model_path` and the four camera-topic args computed from `sim:=true|false`.
+
+⚠ `traverse_distance` is pinned to **0.6** in the yaml — the value everything
+was actually tested at. 0.6 vs 0.65 remains the open field question it was.
+
+### Node logs its resolved config at startup (commit `ceb053e`)
+
+One block before `vision_nav_node ready`, read back from the private parameter
+namespace, so it shows the real merge of yaml + launch + command line. Read it
+to confirm a knob took effect; it caught the `traverse_distance` mismatch on its
+first run.
+
+### Rear camera mirrored to the low mount (commit, agbot_bringup)
+
+The front camera had moved to the front deck (`z=0.025`) while the rear stayed
+on the 0.225 m stand. Now `front x=+0.19, rear x=-0.19`, same height, exact
+mirror. **Load-bearing:** the back-out steers from the rear camera reusing the
+MPC with UNCHANGED signs, which assumes the reverse view is the geometric twin
+of the forward view. The tall mount is kept commented as a record.
+
+**113 tests pass.**
+
+### Still open after this session
+- `traverse_distance` 0.6 vs 0.65 — decide with a run.
+- The `open 0.44/0.40 m armed o:Y` line one frame after entering row 2
+  (2026-07-30 log). Almost certainly a stale `last_status` printed before the
+  row-entry reset, since it did not fire and re-armed normally — but if
+  `update()` can run with a post-reset distance while the accumulator still
+  holds the previous row's evidence, that is a latent false-exit path.
+- Joystick takeover (below) — still unreproduced.
+- GPS RTK for trailer→row transit: plan written up in `GPS_plan.md`.
 
 Session 2026-07-24 brought up the NVIDIA-GPU robot and found a mid-row
 false-EXIT_CLEAR bug (low camera + fast inference). Session 2026-07-28 found
@@ -33,7 +124,7 @@ exactly the sim-validated configuration.
 | `971ff55` | Sim validation record — **this is the known-good tree** |
 | `291e0db`, `a9ace39` | Joystick override + single-publisher — **REVERTED** by `1500fa5` |
 
-**106 tests pass.** `cd agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -v`
+**113 tests pass.** `cd agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -v`
 
 ---
 
@@ -331,7 +422,8 @@ back-out is sim-validated.
 
 ### Sim back-out validation (2026-07-21, four iterations — all committed)
 1. Blocked never fired at a big box: ground-fraction gate too strict up close.
-   `blocked_min_traversable_fraction` 0.15 → 0.08 → **0.02** (HUD showed
+   `blocked_min_traversable_fraction` 0.15 → 0.08 → **0.02** (since REPLACED
+   outright by `blocked_min_obstacle_fraction` — see §0a; HUD showed
    frac=0.04 in front of the box; 0.0 disables it). Blocked debounce made
    LEAKY (noise frames decrement, not reset, the counter).
 2. Reverse leg overshot past the row entrance: BACKOUT unwound the full
@@ -372,7 +464,8 @@ back-out is sim-validated.
   (width-only). Helpers: `flank_clear_flags()`, `nearest_row_flank_clear()`,
   `open_streak_start` (feeds the FSM's back-dating).
 - BLOCKED: zero corridors at ALL scan rows + `traversable_fraction` ≥
-  `blocked_min_traversable_fraction` (0.02), accumulated over
+  `blocked_min_obstacle_fraction` (0.2) — measured on the OBSTACLE class,
+  NEVER on traversable ground (see §0a), accumulated over
   `blocked_confirm_seconds` (4.0) of **elapsed time** with a LEAKY counter
   (`blocked_leak_ratio` 1.0 = symmetric), armed after
   `blocked_arming_distance` (0.3 m). Seconds, not meters — the
@@ -483,8 +576,8 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 | `src/agbot_vision_nav/debug_viz.py` | HUD overlay: state, per-row `w=`, `timing_line`, `detector_line` (renders whatever string the node builds — no change needed for new fields). |
 | `scripts/vision_nav_node.py` | Only rospy file. Frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging; optional second `estimate_centerline` pass for `exit_scan_row_fractions`; detector line at 1 Hz while the meter moves, with `near w=`/`edges=`; `EXIT REVOKED` warnings. |
 | `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
-| `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. ⚠ launch-arg defaults override params.yaml (§6). |
-| `test/` | **106 tests**: controller 17, centerline 9, viz 3, detector 35, fsm 35, timing 7. |
+| `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. params.yaml is the source of truth since 2026-07-30 (§0a). |
+| `test/` | **113 tests**: controller 17, centerline 11, viz 3, detector 40, fsm 35, timing 7. |
 
 ### `agbot_bringup/`
 | File | Purpose |
@@ -511,7 +604,9 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    it responds while held / resumes on release / ever loses the heartbeat. No
    code is deployed for this — the attempted fix was reverted so the run goes
    out on the sim-validated configuration.
-2. **Field-validate the exit path** on the GPU robot (sim is now green — see
+2. ✅ **DONE 2026-07-29 — no false exits on the previously-failing route.**
+   (Original text kept for the tuning guidance.) **Field-validate the exit
+   path** on the GPU robot (sim is now green — see
    §0 SIM-VALIDATED — so this is the next real unknown):
    - mid-row gap → HUD `openrows=0` even when a `w=` reads ≥0.8, and the
      `open x/0.40 m` bar drains instead of filling;
@@ -529,7 +624,9 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    re-derived for the low mount — on the low camera the bottom row images
    ground so close that it is wide (~0.7) BOTH in-row and at an exit, which is
    what made it a weak discriminator in the first place.
-4. **Full back-out mission end-to-end in sim** (confirms the 2026-07-22
+4. ✅ **DONE 2026-07-30 — back-out runs end to end** (after the
+   `blocked_min_obstacle_fraction` fix, §0a). **Full back-out mission
+   end-to-end in sim** (confirms the 2026-07-22
    blocked-count fix): blocked row 1 → back out → S-turn → reacquire → finish
    3 rows → `Mission DONE: rows_driven=3, blocked rows: row 1 blocked at X m`.
    Also the no-rear case and a BACKOUT nudge test.
@@ -566,10 +663,13 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    `test_exit_revoked_when_near_row_stays_corn_flanked`.
 2. **Never key the exit on far scan rows** — the hard-won one. Don't restore
    commit `54e8ef8`'s detector logic. (The flank gate is per-row, not far-row.)
-3. **Launch-arg defaults override params.yaml** for every duplicated knob
-   (`<param>` after `<rosparam file>` wins). Applies to `exit_flank_edge_margin`
-   (0.05 in both), `traverse_distance` (launch 0.6 wins over the user's
-   params.yaml 0.65 — pass `traverse_distance:=0.65` to actually get it), etc.
+3. ~~**Launch-arg defaults override params.yaml**~~ **FIXED 2026-07-30 —
+   this is now the OPPOSITE.** `config/params.yaml` is the source of truth;
+   launch `<arg>`s default to empty with conditional `<param>` tags, so a launch
+   arg wins only when actually passed. Edit the yaml and it takes effect.
+   Exceptions: `model_path` and the four camera-topic args computed from `sim`.
+   Confirm any knob with `roslaunch --dump-params ...` or the node's startup
+   config log. See §0a.
 4. **`agbot_camera.urdf.xacro` working-tree diff is the user's** — ask before
    committing/reverting. Physical robot camera height is separate from this sim
    URDF.
