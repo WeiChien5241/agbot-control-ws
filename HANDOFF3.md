@@ -1,8 +1,135 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-07-30.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-03.
 Field status: in-row nav + headland turns WORK on the real robot.
 Sim status: blocked-row BACK-OUT now works end to end.
+Hardware status: GPU robot cpr-j100-0864 now runs the WDR camera FRONT (low
+mount) + a Logitech Brio REAR, and is updated to `0936f3b`.
+
+---
+
+## 0b. SESSION 2026-08-03 — camera config + robot deployment
+
+No algorithm changed today. This was the hardware decision, the launch plumbing
+it needed, and getting `9d54d59`/`191274c`/`4bf7a6f` onto the GPU robot, which
+had been sitting on `3563fd9` since 2026-07-28.
+
+### The camera decision is SETTLED (commit `0936f3b`)
+
+After field testing: **original 5MP WDR camera on the LOW FRONT mount** drives
+row-following; **the Logitech Brio moves to the REAR** for the blocked-row
+back-out. The front-Brio experiment is over — its slot stays in
+`cameras.launch` but is disabled.
+
+That means the front camera source is back to the real-robot default, so the
+run command LOSES its `camera_topic:=` override and GAINS the rear flag:
+
+```bash
+# before (front Brio)
+roslaunch agbot_vision_nav vision_nav.launch \
+  camera_topic:=/brio_front/image_raw/compressed mission_enabled:=true num_rows:=3
+# now
+roslaunch agbot_vision_nav cameras.launch brio_rear:=true          # terminal 1
+roslaunch agbot_vision_nav vision_nav.launch \
+  mission_enabled:=true num_rows:=3 rear_camera_enabled:=true      # terminal 2
+```
+
+### The rear topic name must match on BOTH sides — the silent-failure trap
+
+`cameras.launch` names the rear node `brio_rear`, so it publishes
+`/brio_rear/image_raw/compressed`. `vision_nav.launch:153` previously computed
+the real-robot `rear_camera_topic` default as `/usb_cam_rear/image_raw/compressed`
+(the name in the original commented-out block). **Both were edited to
+`/brio_rear`.**
+
+⚠ This pair is load-bearing and fails SILENTLY: a mismatch subscribes to a
+topic nobody publishes, nothing errors, and the gap only surfaces at the first
+blocked row — when the robot is stopped in front of an obstacle and the rear
+frames it needs to reverse never arrive. Rear frames are consumed ONLY in
+STATE_BACKOUT, so a dead rear camera is invisible for an entire otherwise-normal
+mission. **Always `rostopic hz` the rear topic before a run**, not after.
+
+Same trap caught a typo: the rear `<node>` had `naem=` instead of `name=`, which
+aborts the whole launch file (a `<node>` requires `name`).
+
+### Not applied — two known rough edges in `0936f3b`
+
+Both were proposed and consciously left; fix them the next time this file is
+touched:
+
+1. **`brio_rear` still defaults to `false`** — every run needs `brio_rear:=true`
+   or the rear camera silently never comes up. Flipping the default to `true`
+   matches the settled config.
+2. **`brio_front_device` and `brio_rear_device` name the SAME serial**
+   (`2512LVC36YS8`); the second Brio (`2511LVF11WK8`) sits on a commented line,
+   deliberately kept as a record of the other unit we own. Harmless while
+   `brio_front` is false, but `brio_front:=true` on this robot would put two
+   `usb_cam` nodes on one `/dev` node — the second dies with a device-busy /
+   select-timeout error that reads like a USB bandwidth problem.
+
+### Empty rosbags: the topic name, not the command
+
+`rosbag record -O bag.bag /camera/image_raw/compressed` on the ROBOT produced a
+valid but empty bag. `/camera/image_raw` is the GAZEBO topic; the real robot
+publishes `/usb_cam/image_raw/compressed`. **`rosbag record` neither errors nor
+warns on a topic that does not exist** — it subscribes and waits. Check with
+`rostopic list | grep image_raw` first, and `rosbag info` after (an empty bag is
+~4 KB). Two other silent-empty causes worth ruling out: a `.bag.active` file
+left by a non-Ctrl-C kill (`rosbag reindex` it), and a shell whose
+`ROS_MASTER_URI` does not point at the robot.
+
+### Offline update flow to cpr-j100-0864 (no internet on the robot)
+
+`origin` on the robot points at a stale bundle FILE, so `git pull` falsely
+reports "already up to date" and `git status` claims the branch is "ahead of
+origin/main by N commits". Both are artifacts — ignore them. Real flow:
+
+```bash
+# laptop
+git bundle create ~/agbot-$(date +%Y%m%d).bundle main
+# robot, after copying the bundle over
+cd ~/agbot_control_ws/src
+git diff agbot_vision_nav/launch/cameras.launch   # LOOK before discarding
+git bundle verify ~/agbot-20260803.bundle
+git stash push -m "robot-local cameras.launch pre-20260803"
+git fetch ~/agbot-20260803.bundle main:refs/remotes/bundle/main
+git merge --ff-only bundle/main
+cd ~/agbot_control_ws && catkin build && source devel/setup.bash
+```
+
+The robot used to carry `cameras.launch` as a permanent local diff (its own
+by-id paths), which made every update a stash dance. **The camera config now
+lives in the repo** and the robot's tree is clean; keep it that way. Per-robot
+serials stay overridable as launch args, so a second robot passes
+`brio_rear_device:=...` rather than editing the file.
+
+### Deployment verified on the robot
+
+`roslaunch --dump-params` on cpr-j100-0864 after the merge confirmed all three
+things this update was for:
+
+- `blocked_min_obstacle_fraction: 0.2` — the back-out deadlock fix is live (the
+  old `blocked_min_traversable_fraction` name is absent, as intended)
+- `traverse_distance: 0.6`, `headland_clearance: 1.0` — reading from
+  `params.yaml`, so the source-of-truth fix took
+- `rear_camera_enabled: True`, `rear_camera_topic: /brio_rear/image_raw/compressed`
+
+⚠ That dump also showed `cmd_vel_topic: /vision_nav_check` — a deliberate
+dry-run diversion passed on the command line, NOT the `params.yaml` value
+(`/cmd_vel`). The robot cannot move in that configuration. Drop the arg for a
+driving run; see §3/§6 on why `cmd_vel_topic` must stay `/cmd_vel`.
+
+**A parameter dump only proves what LOADED.** Three runtime checks it cannot
+cover, all of which fail quietly:
+`Model loaded on device: cuda:0` at startup (a `cpu` fallback costs ~10x),
+`rostopic hz` on BOTH camera topics, and `rostopic hz /odometry/filtered` (no
+odometry ⇒ the exit detector never arms ⇒ the robot never leaves FOLLOW_ROW).
+
+### Still open after this session
+- The full mission has NOT been re-run in real corn on the new camera pair.
+  The low front mount is not new to this robot, but the rear Brio has never
+  driven a back-out outside sim.
+- Everything in §0a's "Still open" list, unchanged.
 
 ---
 
@@ -398,6 +525,10 @@ back-out is sim-validated.
 ## 2. CURRENT STATE
 
 ### Robots (multiple; camera height is per-robot and matters)
+- **GPU robot cpr-j100-0864 (current deployment target):** as of 2026-08-03 on
+  commit `0936f3b`, running the WDR camera on the LOW FRONT mount plus a rear
+  Logitech Brio (§0b). Updated offline by git bundle; its tree is clean, so
+  `git merge --ff-only bundle/main` is the whole update.
 - **New GPU robot (this session, 2026-07-24):** fast inference (user reports
   much faster than the CPU robot). Runs a **LOW-mounted camera** — normal
   near-row corridor width ~0.7 (vs ~0.5 tall). The low mount is what caused
@@ -577,6 +708,7 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 | `scripts/vision_nav_node.py` | Only rospy file. Frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging; optional second `estimate_centerline` pass for `exit_scan_row_fractions`; detector line at 1 Hz while the meter moves, with `near w=`/`edges=`; `EXIT REVOKED` warnings. |
 | `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
 | `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. params.yaml is the source of truth since 2026-07-30 (§0a). |
+| `launch/cameras.launch` | Real-robot camera bringup: WDR front (`/usb_cam`, yuyv) + rear Brio (`/brio_rear`, mjpeg) + a disabled front-Brio slot. Devices pinned by `/dev/v4l/by-id/` serials. The rear node name MUST match `vision_nav.launch`'s `rear_camera_topic` — see §0b. |
 | `test/` | **113 tests**: controller 17, centerline 11, viz 3, detector 40, fsm 35, timing 7. |
 
 ### `agbot_bringup/`
@@ -597,6 +729,13 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 
 ## 5. NEXT STEPS (priority order)
 
+0. **First real-corn run on the new camera pair** (WDR front low + rear Brio,
+   §0b). Drop `cmd_vel_topic:=/vision_nav_check` so the robot actually drives,
+   confirm `Model loaded on device: cuda:0`, and `rostopic hz` both cameras and
+   `/odometry/filtered` before rolling. The rear Brio has never driven a
+   back-out outside sim. While in there, apply the two `cameras.launch` items
+   left undone in `0936f3b` (`brio_rear` default → true; give
+   `brio_front_device` the OTHER serial).
 1. **Re-test the joystick takeover in the field, user driving personally**
    (§0 DEFERRED — it worked on the bench and could not be reproduced, so this
    is now a measurement, not a fix). Watch `rostopic hz /bluetooth_teleop/joy`
@@ -684,6 +823,15 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 8. **This dev sandbox is ROS2 Humble, not ROS1** — catkin/roslaunch/rostopic
    run on the user's WSL2 ROS1 Noetic machine (same filesystem). Unit tests DO
    run in the sandbox. Model runs in `~/agbot_venv`.
+9b. **The rear camera fails SILENTLY.** Rear frames are consumed only in
+   STATE_BACKOUT, so a wrong topic name, a `brio_rear:=true` you forgot, or an
+   unplugged Brio costs nothing until the robot is stopped in front of an
+   obstacle and cannot reverse. `rostopic hz` the rear topic BEFORE every
+   mission run. The node name in `cameras.launch` and `rear_camera_topic` in
+   `vision_nav.launch` must agree (`/brio_rear/image_raw/compressed`). See §0b.
+9c. **`rosbag record` does not warn on a nonexistent topic** — it subscribes and
+   waits, leaving a valid ~4 KB empty bag. Real-robot front camera is
+   `/usb_cam/image_raw/compressed`; `/camera/image_raw` is Gazebo only.
 9. scipy needed at import. GAZEBO_MODEL_PATH needs virtual_maize_field/models.
    `gh` at `~/.local/bin/gh`. **Never `git add .`** (weights/tmp/pptx stay out).
    High dropped-frame % in the timing log is BY DESIGN.
@@ -697,6 +845,14 @@ cd ~/agbot_control_ws && catkin build && source devel/setup.bash
 
 # Simulation world
 roslaunch agbot_bringup agbot_gazebo.launch
+
+# REAL ROBOT (cpr-j100-0864): cameras first, then the node
+roslaunch agbot_vision_nav cameras.launch brio_rear:=true
+rostopic hz /usb_cam/image_raw/compressed /brio_rear/image_raw/compressed
+rostopic hz /odometry/filtered
+roslaunch agbot_vision_nav vision_nav.launch \
+  mission_enabled:=true num_rows:=3 rear_camera_enabled:=true
+#   add cmd_vel_topic:=/vision_nav_check for a DRY RUN (robot will not move)
 
 # Mission with back-out
 roslaunch agbot_vision_nav vision_nav.launch sim:=true \
