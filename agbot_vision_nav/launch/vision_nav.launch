@@ -150,7 +150,7 @@
 
   <arg name="rear_camera_enabled" default="" />
   <arg name="rear_camera_topic"
-       default="$(eval '/camera_rear/image_raw' if arg('sim') else '/usb_cam_rear/image_raw/compressed')" />
+       default="$(eval '/camera_rear/image_raw' if arg('sim') else '/brio_rear/image_raw/compressed')" />
   <arg name="rear_camera_topic_is_compressed"
        default="$(eval 'false' if arg('sim') else 'true')" />
   <arg name="backout_speed"        default="" /> <!-- m/s reverse speed while backing out -->
