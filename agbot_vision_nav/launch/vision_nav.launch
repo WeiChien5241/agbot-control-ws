@@ -49,6 +49,13 @@
        or the robot stutters. Trade-off: also the max blind-coast time. -->
   <arg name="max_data_age_sec" default="" />
 
+  <!-- Directory for the per-run metrics CSV (one row per processed frame).
+       Defaults from params.yaml (~/agbot_logs). Report with
+       scripts/analyze_run.py. Pass metrics_csv_dir:=none to skip recording a
+       run (an empty string cannot work here: an empty arg means "use the
+       yaml"). -->
+  <arg name="metrics_csv_dir" default="" />
+
   <!-- Speed/steering envelope (exposed for tuning runs; defaults match params.yaml).
        When raising linear_x_cruise, scale angular_z_max, delta_angular_z_max,
        and mpc_alpha proportionally to preserve path curvature. -->
@@ -180,6 +187,8 @@
            if="$(eval arg('mpc_dt') != '')" />
     <param name="max_data_age_sec"         value="$(arg max_data_age_sec)"
            if="$(eval arg('max_data_age_sec') != '')" />
+    <param name="metrics_csv_dir"          value="$(arg metrics_csv_dir)"
+           if="$(eval arg('metrics_csv_dir') != '')" />
     <param name="linear_x_cruise"          value="$(arg linear_x_cruise)"
            if="$(eval arg('linear_x_cruise') != '')" />
     <param name="angular_z_max"            value="$(arg angular_z_max)"

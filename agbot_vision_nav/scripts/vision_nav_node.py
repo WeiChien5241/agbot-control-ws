@@ -32,6 +32,14 @@ from sensor_msgs.msg import CompressedImage, Image
 from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
+from agbot_vision_nav.metrics_logger import (
+    RunMetricsLogger,
+    format_summary,
+    join_list,
+    make_run_path,
+    read_csv,
+    summarize,
+)
 from agbot_vision_nav.mission_fsm import STATE_BACKOUT, STATE_FOLLOW_ROW, MissionFSM
 from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
@@ -210,7 +218,26 @@ class VisionNavNode(object):
         self._latest_rear_frame_seq = 0
         self._mission_done_logged = False
         self._revoked_logged = 0
+        self._blocked_logged = 0
+        self._watchdog_stale = False
         self._timing = PipelineTimingStats()
+
+        # Per-run CSV metrics. ON by default: a run you forgot to instrument
+        # is a run you cannot report on, and there is no second chance at a
+        # field pass. Set ~metrics_csv_dir to "" to disable.
+        self._metrics = None
+        # "none" as well as "": the launch file's conditional-<param> pattern
+        # skips a <param> whose arg is empty, so an empty string can only ever
+        # come from params.yaml. "none" is what makes the launch ARG able to
+        # turn this off for a single run.
+        metrics_dir = rospy.get_param("~metrics_csv_dir", "~/agbot_logs")
+        if metrics_dir and str(metrics_dir).strip().lower() != "none":
+            self._metrics = RunMetricsLogger(make_run_path(metrics_dir))
+            for message in self._metrics.errors:
+                rospy.logwarn("metrics CSV disabled: %s", message)
+            if not self._metrics.errors:
+                rospy.loginfo("metrics CSV: %s", self._metrics.path)
+            rospy.on_shutdown(self._on_shutdown)
 
         self._last_success_lock = threading.Lock()
         self._last_success_time = None
@@ -346,7 +373,15 @@ class VisionNavNode(object):
         age = (rospy.Time.now() - last_success_time).to_sec()
         if age > self._max_data_age_sec:
             self._publish_twist(0.0, 0.0)
+            # Edge-triggered: this fires at 10 Hz for as long as the stall
+            # lasts, and one stall must leave one mark in the CSV rather than
+            # a flood that buries every other event.
+            if not self._watchdog_stale:
+                self._watchdog_stale = True
+                if self._metrics is not None:
+                    self._metrics.mark_event("WATCHDOG_ZERO")
         else:
+            self._watchdog_stale = False
             # Keep-alive: the base controller brakes if cmd_vel goes silent,
             # so hold the last command until the next inference lands.
             self._publish_twist(linear_x, angular_z)
@@ -392,6 +427,8 @@ class VisionNavNode(object):
             mask = self._model.predict(frame)
         except Exception as exc:
             rospy.logerr_throttle(5.0, "Model inference failed: %s", exc)
+            if self._metrics is not None:
+                self._metrics.mark_event("INFERENCE_FAILED")
             return
         inference_s = time.monotonic() - t_inf_start
 
@@ -468,6 +505,15 @@ class VisionNavNode(object):
                     row,
                     -1.0 if dist is None else dist,
                 )
+                if self._metrics is not None:
+                    self._metrics.mark_event("EXIT_REVOKED")
+            # Same watch-the-list-length pattern for blocked rows, so the CSV
+            # marks the frame the back-out was committed on -- alongside the
+            # obst=/trav= readings that justified it.
+            while self._blocked_logged < len(self._fsm.blocked_events):
+                self._blocked_logged += 1
+                if self._metrics is not None:
+                    self._metrics.mark_event("BLOCKED")
             if done and not self._mission_done_logged:
                 self._mission_done_logged = True
                 blocked = self._fsm.blocked_events
@@ -486,6 +532,8 @@ class VisionNavNode(object):
                     summary,
                     len(self._fsm.revoked_exits),
                 )
+                if self._metrics is not None:
+                    self._metrics.mark_event("MISSION_DONE")
         else:
             linear_x, angular_z = self._controller.compute(
                 result.offset_norm, result.slope_term, result.valid
@@ -507,6 +555,13 @@ class VisionNavNode(object):
             publish_time=publish_time,
         )
         rospy.loginfo_throttle(5.0, "timing: %s", self._timing.format_summary())
+
+        if self._metrics is not None:
+            self._log_metrics_row(
+                result, linear_x, angular_z, state_name, is_rear,
+                stamp, publish_time, inference_s, pickup_time, recv_time,
+                odom_pose if self._fsm is not None else None,
+            )
 
         detector_line = self._detector_line()
         if detector_line is not None:
@@ -534,6 +589,91 @@ class VisionNavNode(object):
                 frame, mask, result, linear_x, angular_z, state_name,
                 self._timing.hud_line(), detector_line,
             )
+
+    def _log_metrics_row(self, result, linear_x, angular_z, state_name,
+                         is_rear, stamp, publish_time, inference_s,
+                         pickup_time, recv_time, odom_pose):
+        """One CSV row for this frame.
+
+        Everything here is already a local in _process_frame -- this method
+        exists only to keep the assembly out of the control path's line of
+        sight. It must never raise; RunMetricsLogger swallows its own errors,
+        and the getattr() defaults below cover a hand-built or rear-path
+        result that lacks the optional fields.
+        """
+        scan_rows = result.scan_rows or ()
+        row = {
+            "t_ros": publish_time,
+            "t_wall": time.time(),
+            "frame_stamp": stamp,
+            "valid": result.valid,
+            "offset_norm": result.offset_norm,
+            "slope_term": result.slope_term,
+            "traversable_fraction": result.traversable_fraction,
+            "obstacle_fraction": getattr(result, "obstacle_fraction", None),
+            "scan_offsets": join_list([r.offset_norm for r in scan_rows]),
+            "scan_x_left": join_list([r.x_left for r in scan_rows]),
+            "scan_x_right": join_list([r.x_right for r in scan_rows]),
+            "linear_x": linear_x,
+            "angular_z": angular_z,
+            "camera": "rear" if is_rear else "front",
+            "state": state_name or "",
+            "inference_s": inference_s,
+            "e2e_latency_s": (publish_time - stamp) if stamp is not None else None,
+            "wait_age_s": max(0.0, pickup_time - recv_time),
+            "frames_received": self._timing.frames_received,
+            "frames_processed": self._timing.frames_processed,
+        }
+        if odom_pose is not None:
+            row["odom_x"], row["odom_y"], row["odom_yaw"] = odom_pose
+        if self._fsm is not None:
+            row["rows_driven"] = self._fsm.rows_driven
+        # Detector status is what tells you WHY a run behaved as it did, so it
+        # rides on every row rather than only on the ones where it changed.
+        status = self._detector.last_status if self._detector is not None else None
+        if status is not None:
+            row.update({
+                "distance_in_row": status.distance_in_row,
+                "near_row_width": status.near_row_width,
+                "open_distance": status.open_distance,
+                "blocked_seconds": status.blocked_seconds,
+                "corridor_rows": status.corridor_rows,
+                "wide_rows": status.wide_rows,
+                "open_rows": status.open_rows,
+                "open_armed": status.open_armed,
+                "blocked_armed": status.blocked_armed,
+            })
+            if status.near_row_edges is not None:
+                row["near_row_edge_l"] = status.near_row_edges[0]
+                row["near_row_edge_r"] = status.near_row_edges[1]
+        self._metrics.log(**row)
+
+    def _on_shutdown(self):
+        """Close the CSV and log the run's headline numbers.
+
+        Read back from the file rather than kept in memory: it both proves the
+        file is intact and means the console log of a run always carries its
+        own summary, even when nobody opens the CSV.
+        """
+        if self._metrics is None:
+            return
+        path = self._metrics.path
+        rows_written = self._metrics.rows_written
+        self._metrics.close()
+        for message in self._metrics.errors:
+            rospy.logwarn("metrics CSV: %s", message)
+        if rows_written == 0:
+            return
+        try:
+            summary = format_summary(summarize(read_csv(path)))
+        except Exception as exc:                      # noqa: BLE001
+            rospy.logwarn("could not summarize %s: %s", path, exc)
+            return
+        rospy.loginfo("---- run summary (%d frames) ----", rows_written)
+        for line in summary.splitlines():
+            rospy.loginfo("%s", line)
+        rospy.loginfo("full per-frame data: %s", path)
+        rospy.loginfo("---------------------------------")
 
     def _detector_line(self):
         """HUD/log line showing the mission state and, where one applies,
@@ -629,6 +769,10 @@ class VisionNavNode(object):
         rospy.loginfo(
             "scanrows: steering=%s | exit=%s",
             self._scan_row_fractions, exit_rows,
+        )
+        rospy.loginfo(
+            "metrics:  %s",
+            self._metrics.path if self._metrics is not None else "DISABLED",
         )
 
         if not self._mission_enabled:

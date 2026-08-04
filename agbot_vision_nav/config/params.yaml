@@ -42,6 +42,18 @@ cmd_vel_topic: /cmd_vel
 debug_image_topic: "~debug/image"
 publish_debug_image: true
 
+# Per-run performance metrics: one CSV per run, one row per processed frame,
+# written to this directory as vision_nav_<timestamp>.csv. Report it with
+#   python3 scripts/analyze_run.py ~/agbot_logs/vision_nav_*.csv
+# ON by default deliberately: the console log is throttled to ~1 frame in 10
+# (2 Hz robot) or 1 in 120 (GPU robot), so an RMS or p95 cannot be recovered
+# from it afterwards, and a field pass does not come round twice. Set to ""
+# here (or pass metrics_csv_dir:=none on the command line) to disable.
+# ⚠ The tracking error it records (offset_norm) is normalized IMAGE space,
+# not meters, and it shifts with camera mount height -- never compare a
+# number from the tall rig against one from the low rig.
+metrics_csv_dir: ~/agbot_logs
+
 # Scanline-midpoint centerline estimation (see centerline_estimator.py).
 # These rows drive STEERING. They were chosen empirically on the TALL camera
 # mount; a lower mount images the same ground distances at different heights,
