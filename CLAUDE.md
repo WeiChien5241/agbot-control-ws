@@ -110,13 +110,19 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 - `src/agbot_vision_nav/controller.py` — `MPCRowController`: SLSQP receding-horizon MPC (N=8) over state `[offset_norm, slope_term]` in normalized image space. Requires `scipy`. Sign convention: centerline left of image-centre → positive `angular.z` (left turn, REP-103).
 - `src/agbot_vision_nav/row_exit_detector.py` — detects end-of-row from the mask (corridor widening to open field, or blocked-ahead wall). Open fires when at least `exit_open_rows_required` (1) scan rows — ANY of them — are wide. Do NOT require specific (e.g. farthest) rows: beyond the field the segmentation of distant ground is garbage, so the far rows can stay invalid forever (field-tested: a farthest-rows requirement never fired and the robot drove off the world edge). Per-signature debounce (`exit_detect_frames` 5 open, `blocked_detect_frames` 8 blocked — leaves brushing the lens must not trigger a back-out) and per-signature arming: open after `min_in_row_distance` m, blocked already after `blocked_arming_distance` m (0.3) so mid-row obstacles near the entrance are still caught.
 - `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left), EXIT_CLEAR runs at `exit_clear_speed` (0.10, slower than cruise — the post-exit leg is where overshoot hurts). Sim-validated: first Gazebo mission run (small maize world, 3 rows) succeeded with the default thresholds. Blocked-row branch (BACKOUT → BACKOUT_CLEAR → BACKOUT_TURN_1 → BACKOUT_TRAVERSE → BACKOUT_TURN_2 → REACQUIRE): on a blocked-ahead signal the robot reverses out the end it entered (rear-camera-steered, odometry-bounded), S-turns into the next row (traveled in the SAME direction; the boustrophedon flip is suppressed once), records `blocked_events` reported at mission DONE. Rear steering reuses the MPC controller with UNCHANGED signs (image mirror + reversed motion cancel). The back-out is gated on `rear_camera_enabled`: without the rear camera the BACKOUT states are unreachable and a blocked signal stops the robot and ends the mission (reported).
+- `src/agbot_vision_nav/metrics_logger.py` — per-run CSV performance metrics: one row per processed frame (tracking error, control, detector status, odometry, timing) plus `summarize()`. ON by default (`metrics_csv_dir: ~/agbot_logs`); `metrics_csv_dir:=none` skips a run. Report with `scripts/analyze_run.py <csv>...`. ⚠ `offset_norm` is normalized IMAGE space, **not meters**, and shifts with camera mount height (~0.5 tall vs ~0.7 low) — never compare across rigs; quote the FOLLOW_ROW row (TURN/TRAVERSE are odometry open loop).
 - `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view` (mask wash, scan rows, midpoints, per-row corridor width `w=`, mission state HUD).
 - `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog, optional odometry subscriber. Mission mode is gated behind `~mission_enabled` (default **false** → plain row-following, identical to pre-mission behavior).
 
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 135 passed
+```
+
+Performance report from a run (no ROS; CSVs are written automatically):
+```bash
+python3 agbot_vision_nav/scripts/analyze_run.py ~/agbot_logs/vision_nav_*.csv
 ```
 
 ## Commands

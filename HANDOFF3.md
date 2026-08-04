@@ -1,10 +1,88 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-03.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-04.
 Field status: in-row nav + headland turns WORK on the real robot.
 Sim status: blocked-row BACK-OUT now works end to end.
 Hardware status: GPU robot cpr-j100-0864 now runs the WDR camera FRONT (low
 mount) + a Logitech Brio REAR, and is updated to `0936f3b`.
+
+---
+
+## 0c. SESSION 2026-08-04 — per-run performance metrics
+
+No algorithm changed. A grad student asked for performance numbers from
+testing — distance from the centerline, tracking error, failure modes — and the
+pipeline had no way to produce them.
+
+### Why the console log could not answer it
+
+Every quantity needed is already computed on every frame in `_process_frame`.
+None of it was written down. The console only ever sees a throttled prose
+summary: `timing:` every 5 s, the detector line at 1 Hz while a meter moves.
+That is **one frame in ten on the 2 Hz CPU robot and roughly one in 120 on the
+GPU robot at ~24 Hz**. An RMS or a p95 from a 5 %-duty sample is not a
+measurement — and this exact throttling already made a partially-firing exit
+signature read as no signature at all (§0 item 8). Mining `rosout` is the wrong
+instrument; the fix is a file.
+
+### What was added
+
+- **`src/agbot_vision_nav/metrics_logger.py`** — rospy-free. `COLUMNS` is the
+  one schema definition; `RunMetricsLogger` writes one row per processed frame
+  and **never raises** (it runs on the inference thread — an instrument that can
+  kill the node it measures is worse than none). Flushes every 20 rows *and* on
+  every event row, because field runs end by losing power as often as by Ctrl-C.
+  `summarize()` defines the statistics once, so the node's shutdown log and the
+  offline report cannot disagree.
+- **`scripts/vision_nav_node.py`** — one `log()` call after the existing
+  `record_inference()`, plus event marks: `INFERENCE_FAILED`, `EXIT_REVOKED`,
+  `BLOCKED`, `MISSION_DONE`, `WATCHDOG_ZERO`. The watchdog mark is
+  **edge-triggered** — it fires at 10 Hz while stale, so a level-triggered mark
+  would flood the file and bury every other event. On shutdown the node reads
+  its own CSV back and logs the summary, so a console log always carries its
+  headline numbers.
+- **`scripts/analyze_run.py`** — no ROS, stdlib only. Tracking error per
+  mission state, control effort, chatter, perception health, timing, and a
+  failure table where each event carries the perception state that caused it.
+  Multiple CSVs print side by side.
+- **22 new tests; 113 → 135 pass.**
+
+### Running it
+
+ON by default (`metrics_csv_dir: ~/agbot_logs` in `params.yaml`) — a run you
+forgot to instrument is a run you cannot report on, and a field pass does not
+come round twice. The startup config block prints the CSV path.
+
+```bash
+# skip recording one run (an empty launch arg means "use the yaml", so the
+# off-switch is the literal string "none")
+roslaunch agbot_vision_nav vision_nav.launch metrics_csv_dir:=none ...
+
+python3 agbot_vision_nav/scripts/analyze_run.py ~/agbot_logs/vision_nav_*.csv
+```
+
+### ⚠ The units caveat — carry this into any writeup
+
+`offset_norm` is **normalized IMAGE space, not meters**. It is the right
+control-loop error (it is what the MPC minimises) but it is *not* "the robot was
+8 cm off the row centerline", and it **shifts with camera mount height** (~0.5
+tall vs ~0.7 low at the near scan row). Never compare a number from one rig
+against a number from another; always state which robot and mount produced it.
+Quote the **FOLLOW_ROW** row of the per-state table — TURN/TRAVERSE are odometry
+open loop and their offsets describe the headland, not the controller.
+
+A figure in real meters needs either Gazebo ground truth against the row
+geometry in `agbot_bringup/config/agbot_maize_small.yaml`, or a per-mount
+pixel→meter scale from the tape calibration in next-step #3. Neither was
+invented here.
+
+### Still open after this session
+- **Not yet run on a robot or in sim** — the module and report are unit-tested
+  and were exercised end-to-end on a synthetic CSV, but no real run has produced
+  a file yet. First sim mission is the test: row count should track
+  `frames_processed`, `state` should walk the FSM, and Ctrl-C should print the
+  summary.
+- Everything in §0b's and §0a's "Still open" lists, unchanged.
 
 ---
 
