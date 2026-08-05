@@ -107,7 +107,7 @@ run command LOSES its `camera_topic:=` override and GAINS the rear flag:
 roslaunch agbot_vision_nav vision_nav.launch \
   camera_topic:=/brio_front/image_raw/compressed mission_enabled:=true num_rows:=3
 # now
-roslaunch agbot_vision_nav cameras.launch brio_rear:=true          # terminal 1
+roslaunch agbot_vision_nav cameras.launch                         # terminal 1
 roslaunch agbot_vision_nav vision_nav.launch \
   mission_enabled:=true num_rows:=3 rear_camera_enabled:=true      # terminal 2
 ```
@@ -130,20 +130,26 @@ mission. **Always `rostopic hz` the rear topic before a run**, not after.
 Same trap caught a typo: the rear `<node>` had `naem=` instead of `name=`, which
 aborts the whole launch file (a `<node>` requires `name`).
 
-### Not applied — two known rough edges in `0936f3b`
+### Two rough edges in `0936f3b` — one fixed, one accepted
 
-Both were proposed and consciously left; fix them the next time this file is
-touched:
-
-1. **`brio_rear` still defaults to `false`** — every run needs `brio_rear:=true`
-   or the rear camera silently never comes up. Flipping the default to `true`
-   matches the settled config.
-2. **`brio_front_device` and `brio_rear_device` name the SAME serial**
+1. ✅ **FIXED 2026-08-04 (`963f3a1`): `brio_rear` now defaults to `true`.** It
+   used to default to `false`, so every run needed `brio_rear:=true` or the
+   rear camera silently never came up — one more way to lose a back-out to a
+   forgotten flag. The default now matches the settled config, and
+   `brio_rear:=true` on the command line is redundant (harmless if you keep
+   typing it).
+2. **ACCEPTED, not fixed: `brio_front_device` and `brio_rear_device` name the
+   SAME serial**
    (`2512LVC36YS8`); the second Brio (`2511LVF11WK8`) sits on a commented line,
    deliberately kept as a record of the other unit we own. Harmless while
    `brio_front` is false, but `brio_front:=true` on this robot would put two
    `usb_cam` nodes on one `/dev` node — the second dies with a device-busy /
    select-timeout error that reads like a USB bandwidth problem.
+   **Left as-is on purpose (2026-08-04, user's call): the front Brio is retired,
+   so nothing in current testing passes `brio_front:=true` and the duplicate
+   serial cannot be reached.** If you ever do enable the front Brio, give it
+   `2511LVF11WK8` — either on the commented line or as a `brio_front_device:=`
+   launch arg — before wondering why it fails.
 
 ### Empty rosbags: the topic name, not the command
 
@@ -811,9 +817,13 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    §0b). Drop `cmd_vel_topic:=/vision_nav_check` so the robot actually drives,
    confirm `Model loaded on device: cuda:0`, and `rostopic hz` both cameras and
    `/odometry/filtered` before rolling. The rear Brio has never driven a
-   back-out outside sim. While in there, apply the two `cameras.launch` items
-   left undone in `0936f3b` (`brio_rear` default → true; give
-   `brio_front_device` the OTHER serial).
+   back-out outside sim. The `cameras.launch` items from `0936f3b` are settled:
+   `brio_rear` now defaults to true (`963f3a1`), and the duplicate
+   `brio_front_device` serial is accepted as-is (the front Brio is retired, so
+   it is unreachable — §0b).
+   This run also produces the first real metrics CSV (§0c): check the
+   `metrics:` path in the startup config block before rolling, and read the
+   run summary printed on Ctrl-C.
 1. **Re-test the joystick takeover in the field, user driving personally**
    (§0 DEFERRED — it worked on the bench and could not be reproduced, so this
    is now a measurement, not a fix). Watch `rostopic hz /bluetooth_teleop/joy`
@@ -902,9 +912,12 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
    run on the user's WSL2 ROS1 Noetic machine (same filesystem). Unit tests DO
    run in the sandbox. Model runs in `~/agbot_venv`.
 9b. **The rear camera fails SILENTLY.** Rear frames are consumed only in
-   STATE_BACKOUT, so a wrong topic name, a `brio_rear:=true` you forgot, or an
-   unplugged Brio costs nothing until the robot is stopped in front of an
-   obstacle and cannot reverse. `rostopic hz` the rear topic BEFORE every
+   STATE_BACKOUT, so a wrong topic name, an unplugged Brio, or a
+   `brio_rear:=false` costs nothing until the robot is stopped in front of an
+   obstacle and cannot reverse. (`brio_rear` defaults to `true` since
+   `963f3a1`, which removes the forgotten-flag version of this — the camera
+   can still be unplugged, dead, or on the wrong topic.) `rostopic hz` the
+   rear topic BEFORE every
    mission run. The node name in `cameras.launch` and `rear_camera_topic` in
    `vision_nav.launch` must agree (`/brio_rear/image_raw/compressed`). See §0b.
 9c. **`rosbag record` does not warn on a nonexistent topic** — it subscribes and
@@ -925,7 +938,7 @@ cd ~/agbot_control_ws && catkin build && source devel/setup.bash
 roslaunch agbot_bringup agbot_gazebo.launch
 
 # REAL ROBOT (cpr-j100-0864): cameras first, then the node
-roslaunch agbot_vision_nav cameras.launch brio_rear:=true
+roslaunch agbot_vision_nav cameras.launch          # brio_rear defaults to true
 rostopic hz /usb_cam/image_raw/compressed /brio_rear/image_raw/compressed
 rostopic hz /odometry/filtered
 roslaunch agbot_vision_nav vision_nav.launch \

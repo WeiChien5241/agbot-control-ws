@@ -60,8 +60,18 @@
 
   <!-- Device paths: by-id links from the robot (2026-07-14). Both cameras
        carry their serial in the by-id name, so these are stable across
-       reboots and USB ports. The rear Brio's serial is unknown until it is
-       plugged in — read it with `ls -l /dev/v4l/by-id/` and fill it in. -->
+       reboots and USB ports.
+
+       ⚠ brio_front_device and brio_rear_device deliberately name the SAME
+       serial (2512LVC36YS8) — that is the one Brio actually on this robot,
+       and it is the REAR one. The front Brio is retired (brio_front defaults
+       to false), so the duplicate is unreachable in every configuration we
+       run. It only bites if you pass brio_front:=true: two usb_cam nodes then
+       open one /dev node and the second dies with a device-busy /
+       select-timeout error that reads like a USB bandwidth problem. If you do
+       enable the front Brio, give it the OTHER unit's serial first — the
+       commented line below, or brio_front_device:=... on the command line. -->
+
   <arg name="front_device"      default="/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0" />
   <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
   <!-- <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" /> -->
