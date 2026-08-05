@@ -56,7 +56,7 @@
   <!-- Per-camera enable switches -->
   <arg name="front"      default="true" />
   <arg name="brio_front" default="false" />
-  <arg name="brio_rear"  default="false" />
+  <arg name="brio_rear"  default="true" />
 
   <!-- Device paths: by-id links from the robot (2026-07-14). Both cameras
        carry their serial in the by-id name, so these are stable across
