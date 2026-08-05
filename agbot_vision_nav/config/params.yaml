@@ -54,6 +54,27 @@ publish_debug_image: true
 # number from the tall rig against one from the low rig.
 metrics_csv_dir: ~/agbot_logs
 
+# Autonomy metric: distance travelled per human intervention (MDBI), the
+# number field-robot papers report. An intervention is a JOYSTICK TAKEOVER --
+# the operator holding the deadman on the teleop pad, which is what actually
+# takes the robot away from the controller (the twist mux gives teleop
+# priority). Nothing has to be pressed or remembered during a run.
+# Joystick activity within intervention_gap_seconds of the previous activity
+# is the SAME intervention, so one messy rescue -- nudge, release, nudge --
+# scores 1 and not 5. Set intervention_joy_topic to "none" to stop counting.
+# Requires odom_topic (below) for the distance half; both are subscribed on
+# every run, mission mode or not.
+intervention_joy_topic: /bluetooth_teleop/joy
+intervention_deadman_buttons: [4, 5]  # L1 / R1 on the stock Jackal PS4 pad.
+                                      # [] falls back to stick deflection --
+                                      # worse: an off-centre idle stick reads
+                                      # as a takeover.
+intervention_axis_deadzone: 0.15      # only used by that fallback
+intervention_gap_seconds: 3.0         # quiet gap that separates two events
+intervention_hold_seconds: 0.5        # how long one joy message keeps the run
+                                      # marked teleop (joy drivers publish on
+                                      # change, so a held deadman goes quiet)
+
 # Scanline-midpoint centerline estimation (see centerline_estimator.py).
 # These rows drive STEERING. They were chosen empirically on the TALL camera
 # mount; a lower mount images the same ground distances at different heights,
@@ -118,11 +139,15 @@ delta_angular_z_max: 0.2     # max angular_z change per 0.1 s reference step
 invalid_frame_stop_count: 5  # consecutive invalid frames before publishing zero Twist
 max_data_age_sec: 0.5        # watchdog: zero Twist if no inference in this window
 
+# Odometry. Subscribed on EVERY run, not just missions: the mission FSM is one
+# consumer, the run's distance travelled is the other, and distance is the
+# denominator of the autonomy metric above.
+odom_topic: /odometry/filtered   # Jackal EKF odom (wheel + IMU)
+
 # Multi-row mission (headland turns; see mission_fsm.py / row_exit_detector.py).
 # mission_enabled: false keeps plain row-following, identical to before --
 # safe default while MPC params are still being tuned.
 mission_enabled: false
-odom_topic: /odometry/filtered   # Jackal EKF odom (wheel + IMU)
 num_rows: 3                # corridors to drive; 0 = keep going until no rows left
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)

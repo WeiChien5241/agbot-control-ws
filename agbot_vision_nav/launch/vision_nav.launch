@@ -56,6 +56,13 @@
        yaml"). -->
   <arg name="metrics_csv_dir" default="" />
 
+  <!-- Autonomy metric: an intervention is a joystick takeover (deadman held
+       on the teleop pad). Counted on every run and reported at shutdown as
+       meters per intervention. intervention_joy_topic:=none to stop counting;
+       point it at /joy if the pad is not on bluetooth_teleop. -->
+  <arg name="intervention_joy_topic" default="" />
+  <arg name="intervention_gap_seconds" default="" />
+
   <!-- Speed/steering envelope (exposed for tuning runs; defaults match params.yaml).
        When raising linear_x_cruise, scale angular_z_max, delta_angular_z_max,
        and mpc_alpha proportionally to preserve path curvature. -->
@@ -189,6 +196,10 @@
            if="$(eval arg('max_data_age_sec') != '')" />
     <param name="metrics_csv_dir"          value="$(arg metrics_csv_dir)"
            if="$(eval arg('metrics_csv_dir') != '')" />
+    <param name="intervention_joy_topic"   value="$(arg intervention_joy_topic)"
+           if="$(eval arg('intervention_joy_topic') != '')" />
+    <param name="intervention_gap_seconds" value="$(arg intervention_gap_seconds)"
+           if="$(eval arg('intervention_gap_seconds') != '')" />
     <param name="linear_x_cruise"          value="$(arg linear_x_cruise)"
            if="$(eval arg('linear_x_cruise') != '')" />
     <param name="angular_z_max"            value="$(arg angular_z_max)"

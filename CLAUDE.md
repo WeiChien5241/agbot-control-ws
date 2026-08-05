@@ -111,19 +111,37 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 - `src/agbot_vision_nav/row_exit_detector.py` — detects end-of-row from the mask (corridor widening to open field, or blocked-ahead wall). Open fires when at least `exit_open_rows_required` (1) scan rows — ANY of them — are wide. Do NOT require specific (e.g. farthest) rows: beyond the field the segmentation of distant ground is garbage, so the far rows can stay invalid forever (field-tested: a farthest-rows requirement never fired and the robot drove off the world edge). Per-signature debounce (`exit_detect_frames` 5 open, `blocked_detect_frames` 8 blocked — leaves brushing the lens must not trigger a back-out) and per-signature arming: open after `min_in_row_distance` m, blocked already after `blocked_arming_distance` m (0.3) so mid-row obstacles near the entrance are still caught.
 - `src/agbot_vision_nav/mission_fsm.py` — multi-row mission state machine (FOLLOW_ROW → EXIT_CLEAR → TURN_1 → TRAVERSE → TURN_2 → REACQUIRE): odometry-closed-loop 90° headland turns, boustrophedon direction alternation, `num_rows` termination (0 = until no rows left), EXIT_CLEAR runs at `exit_clear_speed` (0.10, slower than cruise — the post-exit leg is where overshoot hurts). Sim-validated: first Gazebo mission run (small maize world, 3 rows) succeeded with the default thresholds. Blocked-row branch (BACKOUT → BACKOUT_CLEAR → BACKOUT_TURN_1 → BACKOUT_TRAVERSE → BACKOUT_TURN_2 → REACQUIRE): on a blocked-ahead signal the robot reverses out the end it entered (rear-camera-steered, odometry-bounded), S-turns into the next row (traveled in the SAME direction; the boustrophedon flip is suppressed once), records `blocked_events` reported at mission DONE. Rear steering reuses the MPC controller with UNCHANGED signs (image mirror + reversed motion cancel). The back-out is gated on `rear_camera_enabled`: without the rear camera the BACKOUT states are unreachable and a blocked signal stops the robot and ends the mission (reported).
 - `src/agbot_vision_nav/metrics_logger.py` — per-run CSV performance metrics: one row per processed frame (tracking error, control, detector status, odometry, timing) plus `summarize()`. ON by default (`metrics_csv_dir: ~/agbot_logs`); `metrics_csv_dir:=none` skips a run. Report with `scripts/analyze_run.py <csv>...`. ⚠ `offset_norm` is normalized IMAGE space, **not meters**, and shifts with camera mount height (~0.5 tall vs ~0.7 low) — never compare across rigs; quote the FOLLOW_ROW row (TURN/TRAVERSE are odometry open loop).
+- `src/agbot_vision_nav/intervention_detector.py` — the autonomy metric's definition of a human intervention: a **joystick takeover** (deadman held on `/bluetooth_teleop/joy`, buttons 4/5). Activity within `intervention_gap_seconds` (3.0) of the previous activity is the SAME intervention, so one messy rescue scores 1 and not 5. Nothing has to be pressed or remembered during a run. `intervention_joy_topic:=none` disables. The node writes a `teleop` column on every CSV row and an `INTERVENTION` event; `summarize()` turns those plus odometry into **meters per intervention (MDBI)**, the number field papers report — teleop-driven meters are subtracted, never credited to the controller. `/odometry/filtered` is now subscribed on **every** run (not just missions), because distance is the denominator.
 - `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view` (mask wash, scan rows, midpoints, per-row corridor width `w=`, mission state HUD).
 - `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog, optional odometry subscriber. Mission mode is gated behind `~mission_enabled` (default **false** → plain row-following, identical to pre-mission behavior).
 
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 135 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 154 passed
 ```
 
 Performance report from a run (no ROS; CSVs are written automatically):
 ```bash
 python3 agbot_vision_nav/scripts/analyze_run.py ~/agbot_logs/vision_nav_*.csv
 ```
+The report's **Autonomy** section is the paper-comparable one: distance
+travelled, autonomous distance, interventions, and meters per intervention.
+Unlike `offset_norm` it is in meters and mount-independent. A run with zero
+interventions has no mean — only a `>=` lower bound; pool runs (sum distances,
+sum interventions) before quoting a figure.
+
+Distance travelled (and interventions) straight from a rosbag — ROS1 only,
+works on bags recorded before the metrics logger existed and on hand-driven
+runs:
+```bash
+rosbag record /odometry/filtered /bluetooth_teleop/joy   # + whatever else
+python3 agbot_vision_nav/scripts/bag_distance.py ~/bags/field_*.bag
+```
+It reports path length from the pose (EKF jitter below `--min-step` dropped)
+and cross-checks it against integrated wheel speed `∫|twist.linear.x| dt`;
+the two disagreeing by >10% means wheel slip or a jumpy EKF, and the script
+says so. Neither is ground truth — say which one you quote.
 
 ## Commands
 

@@ -247,6 +247,86 @@ def test_summary_without_odometry_reports_no_distance():
     assert summarize(rows({"offset_norm": 0.1}))["distance_m"] is None
 
 
+# -- autonomy: distance per intervention ----------------------------------
+
+
+def autonomy_rows(*specs):
+    """Rows along the x axis, one meter apart, with an optional teleop flag."""
+    out = []
+    for i, spec in enumerate(specs):
+        row = {"odom_x": float(i), "odom_y": 0.0, "t_ros": 10.0 + i}
+        row.update(spec)
+        out.append(row)
+    return rows(*out)
+
+
+def test_distance_per_intervention_divides_autonomous_meters():
+    s = summarize(
+        autonomy_rows(
+            {}, {}, {"event": "INTERVENTION"}, {}, {}, {}, {}, {}, {}, {},
+        )
+    )
+    a = s["autonomy"]
+    assert a["interventions"] == 1
+    assert a["autonomous_distance_m"] == pytest.approx(9.0)
+    assert a["distance_per_intervention_m"] == pytest.approx(9.0)
+
+
+def test_teleop_meters_are_not_credited_to_the_controller():
+    """A human driving the robot 3 m must not inflate its autonomy score."""
+    s = summarize(
+        autonomy_rows(
+            {}, {},
+            {"event": "INTERVENTION", "teleop": 1.0},
+            {"teleop": 1.0},
+            {"teleop": 1.0},
+            {},                      # first autonomous row after the rescue
+            {}, {},
+        )
+    )
+    a = s["autonomy"]
+    assert s["distance_m"] == pytest.approx(7.0)      # total path is unchanged
+    # Every segment with a teleop row at EITHER end is dropped (1->2 as well
+    # as 2->3, 3->4, 4->5): a segment the human was already driving by the end
+    # of is not autonomous, and the metric should under-claim, never over.
+    assert a["autonomous_distance_m"] == pytest.approx(3.0)
+    assert a["teleop_seconds"] == pytest.approx(2.0)
+
+
+def test_two_interventions_halve_the_score():
+    s = summarize(
+        autonomy_rows(
+            {}, {}, {"event": "INTERVENTION"}, {}, {},
+            {"event": "INTERVENTION"}, {}, {}, {}, {}, {},
+        )
+    )
+    assert s["autonomy"]["interventions"] == 2
+    assert s["autonomy"]["distance_per_intervention_m"] == pytest.approx(5.0)
+
+
+def test_a_clean_run_reports_a_bound_not_a_mean():
+    """Zero interventions has no mean -- inf or /1 would misreport it."""
+    s = summarize(autonomy_rows({}, {}, {}, {}))
+    a = s["autonomy"]
+    assert a["interventions"] == 0
+    assert a["distance_per_intervention_m"] is None
+    assert ">= 3.0 m per intervention" in format_summary(s)
+
+
+def test_autonomy_without_odometry_reports_the_count_only():
+    s = summarize(rows({"event": "INTERVENTION"}, {"offset_norm": 0.1}))
+    a = s["autonomy"]
+    assert a["interventions"] == 1
+    assert a["autonomous_distance_m"] is None
+    assert a["distance_per_intervention_m"] is None
+    assert "no odometry" in format_summary(s)
+
+
+def test_format_summary_reports_meters_per_intervention():
+    s = summarize(autonomy_rows({}, {}, {"event": "INTERVENTION"}, {}, {}))
+    assert "4.0 m per intervention" in format_summary(s)
+
+
 def test_summary_of_an_empty_run_is_safe():
     s = summarize([])
     assert s["rows"] == 0

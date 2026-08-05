@@ -27,11 +27,15 @@ import rospy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import CompressedImage, Image
+from sensor_msgs.msg import CompressedImage, Image, Joy
 
 from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
+from agbot_vision_nav.intervention_detector import (
+    DEFAULT_DEADMAN_BUTTONS,
+    InterventionDetector,
+)
 from agbot_vision_nav.metrics_logger import (
     RunMetricsLogger,
     format_summary,
@@ -245,9 +249,30 @@ class VisionNavNode(object):
 
         self._odom_lock = threading.Lock()
         self._odom_pose = None  # (x, y, yaw)
-        if self._mission_enabled:
-            odom_topic = rospy.get_param("~odom_topic", "/odometry/filtered")
-            rospy.Subscriber(odom_topic, Odometry, self._odom_cb, queue_size=1)
+        # Subscribed on EVERY run, not just missions: the mission FSM is one
+        # consumer, the run's path length is the other, and distance travelled
+        # is the denominator of every autonomy number we report. A plain
+        # row-following run with no odometry column can never be quoted in
+        # meters afterwards, and field runs do not come back.
+        odom_topic = rospy.get_param("~odom_topic", "/odometry/filtered")
+        rospy.Subscriber(odom_topic, Odometry, self._odom_cb, queue_size=1)
+
+        # Human-intervention counter. An intervention is a joystick takeover
+        # (deadman held on the teleop pad) -- see intervention_detector.py for
+        # why that, and why activity is collapsed into windows rather than
+        # counted per button edge. Off with intervention_joy_topic:=none.
+        self._interventions = None
+        joy_topic = rospy.get_param("~intervention_joy_topic", "/bluetooth_teleop/joy")
+        if joy_topic and str(joy_topic).strip().lower() != "none":
+            self._interventions = InterventionDetector(
+                deadman_buttons=rospy.get_param(
+                    "~intervention_deadman_buttons", list(DEFAULT_DEADMAN_BUTTONS)
+                ),
+                axis_deadzone=rospy.get_param("~intervention_axis_deadzone", 0.15),
+                gap_seconds=rospy.get_param("~intervention_gap_seconds", 3.0),
+                hold_seconds=rospy.get_param("~intervention_hold_seconds", 0.5),
+            )
+            rospy.Subscriber(joy_topic, Joy, self._joy_cb, queue_size=10)
 
         self._cmd_vel_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
         self._debug_pub = None
@@ -336,6 +361,17 @@ class VisionNavNode(object):
         yaw = _quaternion_to_yaw(pose.orientation)
         with self._odom_lock:
             self._odom_pose = (pose.position.x, pose.position.y, yaw)
+
+    def _joy_cb(self, msg):
+        """Count joystick takeovers. Runs on the joy subscriber's thread."""
+        now = rospy.Time.now().to_sec()
+        if self._interventions.update(now, msg.buttons, msg.axes):
+            rospy.logwarn(
+                "human intervention #%d (joystick takeover)",
+                self._interventions.count,
+            )
+            if self._metrics is not None:
+                self._metrics.mark_event("INTERVENTION")
 
     def _store_frame(self, frame, stamp):
         recv_time = rospy.Time.now().to_sec()
@@ -560,7 +596,7 @@ class VisionNavNode(object):
             self._log_metrics_row(
                 result, linear_x, angular_z, state_name, is_rear,
                 stamp, publish_time, inference_s, pickup_time, recv_time,
-                odom_pose if self._fsm is not None else None,
+                odom_pose,
             )
 
         detector_line = self._detector_line()
@@ -617,6 +653,14 @@ class VisionNavNode(object):
             "linear_x": linear_x,
             "angular_z": angular_z,
             "camera": "rear" if is_rear else "front",
+            # Marks the frames a human was driving, so the report can subtract
+            # them from the autonomous distance rather than crediting the
+            # controller with the rescue.
+            "teleop": (
+                self._interventions.active(publish_time)
+                if self._interventions is not None
+                else None
+            ),
             "state": state_name or "",
             "inference_s": inference_s,
             "e2e_latency_s": (publish_time - stamp) if stamp is not None else None,

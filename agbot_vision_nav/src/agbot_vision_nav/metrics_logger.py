@@ -62,6 +62,7 @@ COLUMNS = (
     "linear_x",
     "angular_z",
     "camera",                 # "front" | "rear"
+    "teleop",                 # 1 while a human is driving (joystick deadman)
     # -- mission ----------------------------------------------------------
     "state",
     "rows_driven",
@@ -323,6 +324,7 @@ def summarize(rows):
         "event_counts": {},
         "duration_s": None,
         "distance_m": None,
+        "autonomy": None,
     }
     if not rows:
         return summary
@@ -395,11 +397,22 @@ def summarize(rows):
     if len(stamps) >= 2:
         summary["duration_s"] = stamps[-1] - stamps[0]
     summary["distance_m"] = _odometry_distance(rows)
+    summary["autonomy"] = _autonomy(rows, summary)
     return summary
 
 
-def _odometry_distance(rows):
-    """Path length from the odometry columns, or None without odometry."""
+def _is_teleop(row):
+    return row.get("teleop") in (1.0, 1, True)
+
+
+def _odometry_distance(rows, autonomous_only=False):
+    """Path length from the odometry columns, or None without odometry.
+
+    With `autonomous_only`, a segment whose either end was driven by a human
+    is dropped rather than counted -- distance per intervention has to be
+    distance the ROBOT drove, or a long manual repositioning would flatter
+    the number it is supposed to indict.
+    """
     total = 0.0
     prev = None
     seen = False
@@ -408,10 +421,50 @@ def _odometry_distance(rows):
         if x is None or y is None:
             continue
         seen = True
-        if prev is not None:
+        teleop = _is_teleop(row)
+        if prev is not None and not (autonomous_only and (teleop or prev[2])):
             total += math.hypot(x - prev[0], y - prev[1])
-        prev = (x, y)
+        prev = (x, y, teleop)
     return total if seen else None
+
+
+def _autonomy(rows, summary):
+    """Interventions, autonomous distance, and distance per intervention.
+
+    The headline autonomy metric in the field-robot literature: meters the
+    robot drove itself per time a human had to take over. Reported as None
+    when there is no odometry (nothing to divide) and separately flagged when
+    there were zero interventions -- a clean run has no MEAN distance between
+    interventions, it has a lower bound, and printing "inf" or silently
+    dividing by one would misreport both.
+    """
+    interventions = int(summary["event_counts"].get("INTERVENTION", 0))
+    teleop_rows = [r for r in rows if _is_teleop(r)]
+    autonomous_m = _odometry_distance(rows, autonomous_only=True)
+
+    teleop_s = None
+    stamps = [r.get("t_ros") for r in rows if r.get("t_ros") is not None]
+    if stamps and any(r.get("teleop") is not None for r in rows):
+        teleop_s = 0.0
+        prev = None
+        for row in rows:
+            t = row.get("t_ros")
+            if t is None:
+                continue
+            if prev is not None and _is_teleop(row) and _is_teleop(prev[1]):
+                teleop_s += t - prev[0]
+            prev = (t, row)
+
+    out = {
+        "interventions": interventions,
+        "teleop_frames": len(teleop_rows),
+        "teleop_seconds": teleop_s,
+        "autonomous_distance_m": autonomous_m,
+        "distance_per_intervention_m": None,
+    }
+    if autonomous_m is not None and interventions > 0:
+        out["distance_per_intervention_m"] = autonomous_m / interventions
+    return out
 
 
 def format_summary(summary):
@@ -452,6 +505,29 @@ def format_summary(summary):
                 else "?",
             )
         )
+    aut = summary.get("autonomy")
+    if aut is not None:
+        if aut["distance_per_intervention_m"] is not None:
+            lines.append(
+                "autonomy: %.1f m autonomous / %d intervention(s) = %.1f m per "
+                "intervention"
+                % (
+                    aut["autonomous_distance_m"],
+                    aut["interventions"],
+                    aut["distance_per_intervention_m"],
+                )
+            )
+        elif aut["interventions"] == 0 and aut["autonomous_distance_m"] is not None:
+            lines.append(
+                "autonomy: 0 interventions over %.1f m (>= %.1f m per "
+                "intervention)"
+                % (aut["autonomous_distance_m"], aut["autonomous_distance_m"])
+            )
+        else:
+            lines.append(
+                "autonomy: %d intervention(s), no odometry (distance unknown)"
+                % aut["interventions"]
+            )
     if summary["event_counts"]:
         lines.append(
             "events: "

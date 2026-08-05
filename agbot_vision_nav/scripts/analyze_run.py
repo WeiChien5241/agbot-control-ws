@@ -119,6 +119,43 @@ def report(labels, summaries, max_events):
         "  their offsets measure the headland, not the controller."
     )
 
+    section("Autonomy  (distance per intervention)")
+
+    def aut(s, key):
+        return (s.get("autonomy") or {}).get(key)
+
+    rows = [
+        ["distance travelled (m)"] + col(lambda s: fmt(s["distance_m"], "%.1f")),
+        ["autonomous distance (m)"]
+        + col(lambda s: fmt(aut(s, "autonomous_distance_m"), "%.1f")),
+        ["human interventions"]
+        + col(lambda s: fmt(aut(s, "interventions"), "%d")),
+        ["m per intervention (MDBI)"]
+        + col(lambda s: (
+            ">= %.1f" % aut(s, "autonomous_distance_m")
+            if aut(s, "distance_per_intervention_m") is None
+            and aut(s, "interventions") == 0
+            and aut(s, "autonomous_distance_m") is not None
+            else fmt(aut(s, "distance_per_intervention_m"), "%.1f")
+        )),
+        ["teleop time (s)"] + col(lambda s: fmt(aut(s, "teleop_seconds"), "%.0f")),
+        ["duration (s)"] + col(lambda s: fmt(s["duration_s"], "%.0f")),
+    ]
+    print_table(headers, rows)
+    print(
+        "\n  Distance per intervention is the headline autonomy number and the\n"
+        "  one comparable to the literature -- unlike offset_norm it is in\n"
+        "  meters and does not depend on the camera mount. An intervention is\n"
+        "  a joystick takeover (deadman held); activity within a few seconds\n"
+        "  of the previous counts as the SAME intervention, so one messy\n"
+        "  rescue scores 1, not 5. Distance driven under teleop is subtracted\n"
+        "  from the autonomous distance. A run with zero interventions has no\n"
+        "  mean, only the lower bound shown as '>='; pool several runs (sum\n"
+        "  the distances, sum the interventions) before quoting a figure.\n"
+        "  Distance comes from /odometry/filtered -- wheel odometry, so it\n"
+        "  over-reads where the wheels slip."
+    )
+
     section("Control effort")
     rows = [
         ["|angular_z| mean / p95 (rad/s)"]
@@ -184,8 +221,6 @@ def report(labels, summaries, max_events):
         ))
     )
     rows.append(["logged frames"] + col(lambda s: "%d" % s["rows"]))
-    rows.append(["path length (m)"] + col(lambda s: fmt(s["distance_m"], "%.1f")))
-    rows.append(["duration (s)"] + col(lambda s: fmt(s["duration_s"], "%.0f")))
     print_table(headers, rows)
     print("\n  Timing cells are mean / p50 / p95.")
 
