@@ -3,34 +3,13 @@
 
          /usb_cam/image_raw       (+ /compressed)   original WDR camera, FRONT (default on)
          /brio_rear/image_raw     (+ /compressed)   rear Logitech Brio     (default on)
-         /brio_front/image_raw    (+ /compressed)   spare front Brio slot  (default OFF)
-
-       Settled configuration (2026-08-03, after field testing): the original
-       WDR camera on the LOW front mount drives row-following, and the Brio
-       rides on the back for the blocked-row back-out. The front Brio slot is
-       kept but disabled — it was the front camera during the 2026-07 trials.
-
-       The original camera keeps the /usb_cam topics, so vision_nav.launch
-       real-robot defaults and the existing recording workflow are unchanged.
-       The rear Brio publishes /brio_rear, which is what vision_nav.launch
-       defaults rear_camera_topic to on the real robot; enable the back-out
-       with rear_camera_enabled:=true there.
-
-       The .../compressed topics are created automatically by
-       image_transport, e.g.:
-         rosbag record -O bag.bag /usb_cam/image_raw/compressed \
-                                  /brio_rear/image_raw/compressed
+         /brio_front/image_raw    (+ /compressed)   spare front Brio slot  (default OFF) 
 
        IMPORTANT — device paths: /dev/video0, /dev/video2, ... are assigned
        in plug-in order and can swap between boots. Pin each camera with a
        stable symlink. On the robot:
-
          ls -l /dev/v4l/by-id/    # preferred if names differ per camera
          ls -l /dev/v4l/by-path/  # fallback: names by physical USB port
-
-       Always pick the ...-video-index0 link (each camera exposes several
-       /dev/video* nodes; only index0 is the video stream). Edit the
-       defaults below or pass the paths as args.
 
        Usage:
          roslaunch agbot_vision_nav cameras.launch                     # WDR front + rear Brio
@@ -38,16 +17,6 @@
          roslaunch agbot_vision_nav cameras.launch brio_front:=true    # all three (see the
                                                                        # device-path warning below)
 
-       NEW ROBOT / Brio-only (no WDR camera on that machine):
-         1. Find that robot's Brio device link (serial differs per unit):
-              ls -l /dev/v4l/by-id/          # pick the ...-video-index0 link
-         2. Bring up only the Brio:
-              roslaunch agbot_vision_nav cameras.launch front:=false brio_front:=true \
-                brio_front_device:=/dev/v4l/by-id/<that-brio>-video-index0
-         3. Point vision-nav at it (camera source is just a launch arg):
-              roslaunch agbot_vision_nav vision_nav.launch \
-                camera_topic:=/brio_front/image_raw/compressed \
-                camera_topic_is_compressed:=true model_path:=...
          Check for a GPU first with nvidia-smi: with a GPU keep the default
          mpc_dt:=0.1 max_data_age_sec:=0.5; CPU-only (~2 Hz inference) use
          mpc_dt:=0.5 max_data_age_sec:=1.5.
@@ -58,20 +27,7 @@
   <arg name="brio_front" default="false" />
   <arg name="brio_rear"  default="true" />
 
-  <!-- Device paths: by-id links from the robot (2026-07-14). Both cameras
-       carry their serial in the by-id name, so these are stable across
-       reboots and USB ports.
-
-       ⚠ brio_front_device and brio_rear_device deliberately name the SAME
-       serial (2512LVC36YS8) — that is the one Brio actually on this robot,
-       and it is the REAR one. The front Brio is retired (brio_front defaults
-       to false), so the duplicate is unreachable in every configuration we
-       run. It only bites if you pass brio_front:=true: two usb_cam nodes then
-       open one /dev node and the second dies with a device-busy /
-       select-timeout error that reads like a USB bandwidth problem. If you do
-       enable the front Brio, give it the OTHER unit's serial first — the
-       commented line below, or brio_front_device:=... on the command line. -->
-
+  <!-- Device paths: by-id links from the robot -->
   <arg name="front_device"      default="/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0" />
   <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
   <!-- <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" /> -->
