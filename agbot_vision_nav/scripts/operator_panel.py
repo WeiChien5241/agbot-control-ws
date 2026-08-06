@@ -36,7 +36,9 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
+import rosgraph
 import rospy
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
@@ -287,14 +289,47 @@ class OperatorPanel(QWidget):
         event.accept()
 
 
+def ensure_master(timeout=10.0):
+    """Start a roscore if none is running, and return the child (or None).
+
+    The panel is the FIRST thing started in a session, before any roslaunch,
+    so there is usually no master yet -- and rospy.init_node() below blocks
+    indefinitely without one, which looks exactly like the GUI failing to
+    open. On the robot a master is normally already up (the Jackal base
+    bringup runs as a service), in which case this does nothing.
+    """
+    if rosgraph.is_master_online():
+        return None
+    proc = subprocess.Popen(
+        ["roscore"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if rosgraph.is_master_online():
+            return proc
+        time.sleep(0.2)
+    raise RuntimeError("roscore did not come up within %.0f s" % timeout)
+
+
 def main():
+    own_roscore = ensure_master()
     # disable_signals so Ctrl-C reaches Qt rather than rospy's handler, and
     # closeEvent still gets to stop the child launches.
     rospy.init_node("operator_panel", anonymous=True, disable_signals=True)
     app = QApplication(sys.argv)
     panel = OperatorPanel()
     panel.show()
-    sys.exit(app.exec_())
+    try:
+        code = app.exec_()
+    finally:
+        # Only tear down a roscore this panel started; never one that was
+        # already serving the robot when the panel opened.
+        if own_roscore is not None:
+            os.killpg(os.getpgid(own_roscore.pid), signal.SIGINT)
+    sys.exit(code)
 
 
 if __name__ == "__main__":
