@@ -9,8 +9,14 @@ row-entry pose all live in the node, so a mid-run stop meant restarting the
 whole mission from row 1. This panel drives the node's ~pause service
 instead, which freezes the state machine and leaves all of that intact.
 
+It starts everything the run needs, so nothing has to be launched by hand:
+the frame source (real cameras, or Gazebo when the sim box is ticked) and the
+vision-nav node. roslaunch's own output still goes to the terminal this was
+started from -- that is where the startup config block and the detector lines
+appear, and it is worth watching.
+
 What it is NOT: a monitoring tool. The debug image
-(rqt_image_view /vision_nav_node/debug/image) and the console are still where
+(rqt_image_view /vision_nav_node/debug/image) and that console are still where
 you read what the robot is thinking. This panel starts things and stops them.
 
 Design notes:
@@ -141,14 +147,14 @@ class OperatorPanel(QWidget):
 
     # ------------------------------------------------------------- layout --
     def _build_cameras_box(self):
-        box = QGroupBox("1. Cameras")
+        box = QGroupBox("1. Frame source")
         row = QHBoxLayout(box)
         self._cameras_btn = QPushButton("Start cameras")
         self._cameras_btn.clicked.connect(self._toggle_cameras)
         row.addWidget(self._cameras_btn)
-        row.addWidget(
-            QLabel("front WDR + rear Brio (cameras.launch)")
-        )
+        self._cameras_label = QLabel("")
+        self._cameras_label.setWordWrap(True)
+        row.addWidget(self._cameras_label)
         return box
 
     def _build_mission_box(self):
@@ -219,9 +225,15 @@ class OperatorPanel(QWidget):
     def _toggle_cameras(self):
         if self._cameras.running():
             self._cameras.stop()
-            self._log("cameras stopped")
+            self._log("frame source stopped")
             return
-        ok, message = self._cameras.start(cameras_launch_args())
+        # Follows the SIM checkbox: real cameras open USB devices that a
+        # laptop does not have, and in simulation the frames come from the
+        # Gazebo URDF cameras instead. Same flag the node uses to pick its
+        # camera topics, so the two cannot disagree.
+        ok, message = self._cameras.start(
+            cameras_launch_args(sim=self._sim.isChecked())
+        )
         self._log(message)
 
     def _mission_args(self):
@@ -275,8 +287,15 @@ class OperatorPanel(QWidget):
         if rospy.is_shutdown():
             self.close()
             return
+        sim = self._sim.isChecked()
+        noun = "Gazebo" if sim else "cameras"
         self._cameras_btn.setText(
-            "Stop cameras" if self._cameras.running() else "Start cameras"
+            ("Stop %s" if self._cameras.running() else "Start %s") % noun
+        )
+        self._cameras_label.setText(
+            "Gazebo simulation (agbot_gazebo.launch) -- the robot, the maize "
+            "world and its URDF cameras" if sim else
+            "real robot: front WDR + rear Brio (cameras.launch)"
         )
         self._mission_btn.setText(
             "Stop mission" if self._mission.running() else "Start mission"

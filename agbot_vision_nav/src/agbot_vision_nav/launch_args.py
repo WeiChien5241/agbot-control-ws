@@ -23,6 +23,8 @@ command line it replaces.
 PKG = "agbot_vision_nav"
 CAMERAS_LAUNCH = "cameras.launch"
 VISION_NAV_LAUNCH = "vision_nav.launch"
+BRINGUP_PKG = "agbot_bringup"
+GAZEBO_LAUNCH = "agbot_gazebo.launch"
 
 # Fields passed through verbatim when non-blank. Booleans are handled
 # separately because a checkbox has no "blank" state -- it is always either
@@ -40,7 +42,19 @@ BOOLEAN_FIELDS = (
 )
 
 
-def cameras_launch_args():
+def cameras_launch_args(sim=False):
+    """What has to be running before the vision-nav node has frames.
+
+    These are two entirely different things and picking the wrong one is a
+    silent failure: cameras.launch opens USB devices by /dev/v4l/by-id serial
+    and publishes /usb_cam + /brio_rear, which on a laptop matches no hardware;
+    in simulation the frames come from the Gazebo URDF cameras instead
+    (/camera/image_raw + /camera_rear/image_raw), so what has to start is the
+    whole simulator. Keyed off the same `sim` flag that selects the node's
+    camera topics, so the two cannot disagree.
+    """
+    if sim:
+        return [BRINGUP_PKG, GAZEBO_LAUNCH]
     return [PKG, CAMERAS_LAUNCH]
 
 

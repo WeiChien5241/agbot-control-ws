@@ -84,3 +84,13 @@ def test_unknown_field_raises_rather_than_being_dropped():
     quietly use the yaml value the operator was trying to override."""
     with pytest.raises(ValueError):
         mission_launch_args(MODEL, linear_x_cruse="0.2")
+
+
+def test_frame_source_follows_the_sim_flag():
+    """Real cameras open USB devices a laptop does not have; in simulation the
+    frames come from the Gazebo URDF cameras, so what has to start is the
+    simulator. Keyed off the same flag that selects the node's camera topics,
+    so the two cannot disagree."""
+    assert cameras_launch_args() == ["agbot_vision_nav", "cameras.launch"]
+    assert cameras_launch_args(sim=False) == ["agbot_vision_nav", "cameras.launch"]
+    assert cameras_launch_args(sim=True) == ["agbot_bringup", "agbot_gazebo.launch"]
