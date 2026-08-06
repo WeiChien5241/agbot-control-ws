@@ -14,8 +14,7 @@
        Usage:
          roslaunch agbot_vision_nav cameras.launch                     # WDR front + rear Brio
          roslaunch agbot_vision_nav cameras.launch brio_rear:=false    # front only
-         roslaunch agbot_vision_nav cameras.launch brio_front:=true    # all three (see the
-                                                                       # device-path warning below)
+         roslaunch agbot_vision_nav cameras.launch brio_front:=true    # all three
 
          Check for a GPU first with nvidia-smi: with a GPU keep the default
          mpc_dt:=0.1 max_data_age_sec:=0.5; CPU-only (~2 Hz inference) use
@@ -29,9 +28,8 @@
 
   <!-- Device paths: by-id links from the robot -->
   <arg name="front_device"      default="/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0" />
-  <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
-  <!-- <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" /> -->
-  <arg name="brio_rear_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
+  <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" />
+  <arg name="brio_rear_device"  default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
 
   <!-- Shared image settings: keep 640x480@30 so new footage matches the
        existing training data and the vision-nav input resolution. -->
