@@ -22,6 +22,8 @@ Also, this repo assumes that the robot being used has a front and a back camera.
     ls -l /dev/v4l/by-id/          # find the -video-index0 link
     ```
 
+    Always pick the `...-video-index0` link (each camera exposes several `/dev/video*` nodes; only index0 is the video stream).
+
 - Pass as a parameter when launching the camera:
 
     ```jsx
