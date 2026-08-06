@@ -1,10 +1,139 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-04.
-Field status: in-row nav + headland turns WORK on the real robot.
-Sim status: blocked-row BACK-OUT now works end to end.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-06.
+Field status: a full multi-row mission RAN IN REAL CORN 2026-08-05 -- in-row
+nav, exits, headland turns and the rear-camera BACK-OUT, no interventions.
+Read §0d first: it has the five defects that run exposed, four of which are
+diagnosed but deliberately NOT fixed.
 Hardware status: GPU robot cpr-j100-0864 now runs the WDR camera FRONT (low
 mount) + a Logitech Brio REAR, and is updated to `0936f3b`.
+
+---
+
+## 0d. SESSION 2026-08-06 — first real-corn mission, and what it broke
+
+### The field result (2026-08-05, GPU robot cpr-j100-0864)
+
+**The mission worked.** In-row navigation with **no interventions**, exits
+detected, headland turns executed, and the **first real-corn blocked-row
+back-out** — rear-camera-steered, end to end. HANDOFF3 next-step #0 is CLOSED.
+(The block was leaves occluding the lens rather than a real obstacle, but the
+back-out mechanism itself is now field-proven.)
+
+⚠ **No metrics CSV was produced.** The per-run logger from §0c had not reached
+the robot, so none of yesterday's behaviour can be quantified after the fact.
+Confirm the `metrics:` path in the startup config block **before** rolling next
+time — a field pass does not come round twice.
+
+### Five defects, four of them deliberately NOT fixed this session
+
+Only the exit-path fix was implemented today. The other four were investigated
+to root cause and left alone at the user's request. **The diagnoses below are
+the session's other product — do not re-derive them.**
+
+| # | Symptom | Root cause found |
+|---|---|---|
+| 1 | Robot **hugs one side** of the row. Raising `angular_z_max` to 0.25 did not help. | Not control authority (that is what the 0.25 test rules out). Three candidates, none yet distinguished — see below. |
+| 2 | **Clips end-of-row corn on exit**; TURN_2 sometimes ends facing a plant. | ✅ **FIXED** — `EXIT_CLEAR` drove blind (`angular_z` hard-zero). |
+| 3 | **Large plant blocks the path, side gaps remain** → drives into it. | `blocked_signature` (`row_exit_detector.py:386-393`) needs **zero corridor at EVERY scan row**. The near row (0.92, at the bumper) still images ground under the plant, so `corridor_rows >= 1` forever and BLOCKED can never fire. |
+| 4 | **Leaves on the lens** read as an obstacle → 4 s stop → spurious back-out. | Nothing can tell them apart. `CLASS_SKY` is defined at `centerline_estimator.py:22` and **never read anywhere** — the one cheap signal separating "corn wall at 1 m" (sky above it) from "leaf on the glass" (fills the frame). Both fraction fields are measured over the **lower half only** (`:188-190`), so the top of the frame is discarded before anything can reason about it. |
+| 5 | **Mid-row back-out stopped early** (log: `rear exit: open 0.0/4.0 wide=0`). | `mission_fsm.py:460-462` caps the reverse leg at `_backout_target = d_block`, the distance from where FOLLOW_ROW began — a mid-row start makes that the mid-row point, not the row entrance. It is also checked **before** `rear_exit_detector.update()`, so on the terminating tick the rear detector never sees the frame and its HUD reading is stale. ⚠ That `4.0` also implies the rear detector inherited `exit_confirm_distance = 4.0 m` (`mission_fsm.py:149`) instead of the yaml's 0.4, which would make the rear terminator unreachable on any back-out — check the `exit:` config line. |
+
+**On #1, the three candidates** (the next run's metrics CSV is what separates
+them; `analyze_run.py` reports a signed mean, which is the hugging metric):
+- **(a) Border-clipped scan rows.** `_scan_row_boundaries`
+  (`centerline_estimator.py:73-94`) cannot distinguish "hit corn" from "ran out
+  of image", and `x_mid` then averages a real corn boundary with a fictitious
+  one at the frame edge. A fully-clipped row reports **exactly zero error
+  regardless of the true offset** — and the nearest row, which clips most,
+  carries **weight 0.5**. Measured on today's sim CSVs: the near row clips in
+  **22–33 % of FOLLOW_ROW frames**, the far row in 0 %. Worse on the low mount,
+  where corridors are wider.
+- **(b) Single-pixel scan rows.** No smoothing, and the scan halts at the
+  *first* non-traversable pixel, so one leaf truncates the corridor and shifts
+  the midpoint. Real rows are asymmetric (one side leafier, sun vs shade), so
+  the bias is one-directional — which fits "some rows hug, some don't". The
+  flank test was explicitly hardened against exactly this
+  (`centerline_estimator.py:26-35`); **the steering scan never was.**
+- **(c) No integral action.** `MPCRowController` has no disturbance state
+  (`controller.py:87`) and re-reads `x0` raw each frame (`:166`), so the loop is
+  a static gain. Any constant bias — camera yaw misalignment above all — settles
+  at a permanent lateral offset. Today the loop centres the *camera*, not the
+  *robot*.
+
+### What WAS built (commits `e4ba9a8`, this session)
+
+**1. EXIT_CLEAR is now rear-camera-steered.** The front camera has just said
+"open field ahead"; the REAR camera is then looking straight back down the row
+being left, which is the best available reference for the row axis. The leg
+steers from it and turns only when the rear view ALSO reads open field —
+positive evidence the tail has cleared the last plants.
+
+⚠ **THE sign rule, and the one breakable thing here.** BACKOUT keeps the front
+controller's signs because the 180° mirror and the REVERSED motion cancel.
+EXIT_CLEAR drives **FORWARD** off the same mirrored view, so only the mirror
+applies and the state is **NEGATED**. Rule: *negate iff exactly ONE of
+{mirrored view, reversed motion}*. Tripwire:
+`test_exit_clear_rear_steering_sign_is_negated`, which asserts the two legs
+produce opposite `angular_z` from the identical rear view.
+
+⚠ **`headland_clearance` changed role.** It no longer ends EXIT_CLEAR in this
+mode. It remains the terminator of the open-loop leg — which runs with no rear
+camera, **and is the automatic fallback whenever no rear frame arrives during
+the leg at all**. That fallback is load-bearing: the rear camera fails silently
+(gotcha 9b) and a row end is exactly where that would otherwise strand the
+robot.
+
+**Revocation is now open-loop-only.** It needs the front camera, and it cannot
+be rebuilt on the rear view: just after a *genuine* exit the rear near row
+legitimately still has corn on both sides, so a rear revocation would revoke
+every real exit. `exit_clear_max_distance` (2.0 m) replaces it with the inverse,
+positive-evidence test — driving that far without the rear ever opening means
+there was no row end, so the row is un-counted (`revoked_exits`) and FOLLOW_ROW
+resumes. Stronger backstop, slower to act: a false exit now costs a straight
+overshoot at `exit_clear_speed` instead of a turn into corn.
+
+New knobs: `exit_clear_rear_steering` (true), `exit_clear_post_rear_distance`
+(0.2 m — the rear signature fires when the CAMERA is level with the row end, and
+there is still a bumper's worth of robot behind it), `exit_clear_max_distance`
+(2.0 m). The startup config block now prints which terminator is live.
+
+The rear HUD line also gained `openrows` / `near w=` / `edges=`. It printed
+`wide=` alone, which is why the 2026-08-05 back-out log could not distinguish
+"corridor too narrow" from "flanks not clear".
+
+**2. Pause/resume + a PyQt operator panel.** `~pause` (`std_srvs/SetBool`) and a
+latched `~status` string on the node; `scripts/operator_panel.py` drives them
+plus roslaunch for the cameras and the mission.
+
+**Pause is not Ctrl-C.** Ctrl-C destroys the mission — `rows_driven`, the
+boustrophedon turn direction, the detector's arming distance and the row-entry
+pose all live in the node, so a restart begins at row 1. Pause publishes zero
+and **skips the FSM update**, freezing all of it.
+
+⚠ **Resuming must reset the detectors and the MPC.** The BLOCKED timer counts
+in ROS **seconds**, so a 30 s pause would otherwise deposit the whole
+`blocked_confirm_seconds` on the first frame back and fire a back-out nothing
+justified. (`_MAX_DT` caps one step at 2 s, which limits but does not remove
+it.) The watchdog also returns early while paused — its keep-alive would
+otherwise re-publish the last non-zero command at 10 Hz and drive straight
+through the pause.
+
+The panel's launch-argument builder lives in `src/agbot_vision_nav/launch_args.py`
+(rospy-free, unit-tested) for one reason: **a blank field is not passed.** A
+panel that helpfully sent its own default for every knob would re-pin them all
+on every run and silently defeat the params.yaml-is-source-of-truth contract —
+the exact bug §0a spent a session unpicking. `model_path` is the one required
+field; it has no yaml default.
+
+**154 → 170 tests.**
+
+### Still open after this session
+- Defects #1, #3, #4, #5 above — diagnosed, not fixed, by choice.
+- **Neither change has run in sim or in the field yet.** The rear-steered leg
+  needs `rear_camera_enabled:=true` and a working rear topic; check the
+  `exit leg: REAR-STEERED` line in the startup config block before rolling.
+- Everything in §0c's, §0b's and §0a's "Still open" lists, unchanged.
 
 ---
 
