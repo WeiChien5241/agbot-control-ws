@@ -151,7 +151,8 @@ mission_enabled: false
 num_rows: 3                # corridors to drive; 0 = keep going until no rows left
 first_turn_direction: left # headland turn direction for the FIRST transition;
                            # alternates automatically afterwards (boustrophedon)
-row_spacing: 0.75          # m between row centerlines (agbot_corn_rows.world)
+row_spacing: 0.75          # m between row centerlines (virtual_maize_field
+                           # row_width default; matches the small maize world)
 traverse_distance: 0.6     # m of sideways travel after TURN_1. Deliberately
                            # SHORTER than row_spacing: at 0.75 the nose got
                            # too close to the next row's corn just before

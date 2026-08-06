@@ -29,7 +29,7 @@
        package.xml exports; this env tag is a belt-and-suspenders fallback that
        works without a rebuild. -->
   <env name="GAZEBO_MODEL_PATH"
-       value="$(find agbot_bringup)/models:$(find virtual_maize_field)/models:$(optenv GAZEBO_MODEL_PATH)"/>
+       value="$(find virtual_maize_field)/models:$(optenv GAZEBO_MODEL_PATH)"/>
 
   <!-- 1. World: whichever virtual_maize_field world is active in
        ~/.ros/virtual_maize_field/ (swap snapshots with

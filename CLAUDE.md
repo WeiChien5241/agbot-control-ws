@@ -88,8 +88,10 @@ with `scripts/switch_maize_world.sh full|small`:
 - **full**: the original FRE-style world (curved rows, dense heightmap).
   RTF < 0.1 on the laptop; spawn pose x:=3.16 y:=-9.31 z:=0.36 yaw:=1.791.
 
-Maize worlds are preferred over the legacy `agbot_bringup/worlds/agbot_corn_rows.world`
-because segmentation quality is much better on their visuals.
+A legacy lightweight `agbot_corn_rows.world` (plus its `dirt_ground` model) used
+to live in `agbot_bringup/`; it was removed on 2026-08-06 — the maize worlds are
+the only simulation option now, because segmentation quality is much better on
+their visuals. Recover it from git history if it is ever needed again.
 
 **Camera topics** (simulation): front `/camera/image_raw`, rear `/camera_rear/image_raw` (both `sensor_msgs/Image`, raw, 640×480, 30 Hz). The rear camera is only consumed in mission mode with `rear_camera_enabled:=true` (blocked-row back-out). `roslaunch agbot_bringup display.launch.xml` shows the URDF in RViz without Gazebo (camera-placement iteration).
 When launching the vision-nav controller in simulation:

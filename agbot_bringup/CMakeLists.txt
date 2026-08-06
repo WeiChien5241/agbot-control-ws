@@ -5,6 +5,6 @@ find_package(catkin REQUIRED COMPONENTS roslaunch)
 
 catkin_package()
 
-install(DIRECTORY launch urdf rviz scripts worlds
+install(DIRECTORY launch urdf rviz scripts
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
