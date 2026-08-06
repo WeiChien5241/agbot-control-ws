@@ -599,6 +599,16 @@ class VisionNavNode(object):
                 flank_margin_frac=self._flank_margin_frac,
             )
 
+        # Snapshot odometry ONCE, before the mode branch. The metrics row
+        # wants it on every run -- distance travelled is the denominator of
+        # the autonomy number, and that is why odom is subscribed even
+        # without a mission. It used to be read inside the mission branch
+        # only, so a plain row-following run (mission_enabled:=false, the
+        # DEFAULT) with metrics on (also the default) raised UnboundLocalError
+        # here and killed the inference thread on its first frame.
+        with self._odom_lock:
+            odom_pose = self._odom_pose
+
         state_name = None
         if self._is_paused():
             # Perception keeps running (the HUD stays live and the CSV keeps
@@ -610,8 +620,6 @@ class VisionNavNode(object):
             if self._fsm is not None:
                 state_name = self._fsm.state + " (PAUSED)"
         elif self._fsm is not None:
-            with self._odom_lock:
-                odom_pose = self._odom_pose
             if is_rear:
                 linear_x, angular_z, state_name, done = self._fsm.update(
                     _INVALID_RESULT,
