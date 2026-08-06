@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""PyQt operator panel for field testing: launch, pause, resume, stop.
+
+Why this exists. Field testing meant remembering two roslaunch command lines
+and their arguments, and the only way to stop the robot was Ctrl-C on the
+node -- which does not pause a mission, it destroys it. rows_driven, the
+boustrophedon turn direction, the exit detector's arming distance and the
+row-entry pose all live in the node, so a mid-run stop meant restarting the
+whole mission from row 1. This panel drives the node's ~pause service
+instead, which freezes the state machine and leaves all of that intact.
+
+What it is NOT: a monitoring tool. The debug image
+(rqt_image_view /vision_nav_node/debug/image) and the console are still where
+you read what the robot is thinking. This panel starts things and stops them.
+
+Design notes:
+  - roslaunch runs as a CHILD PROCESS, not as an API call. roslaunch's Python
+    API wants to own the process and does not survive being embedded in a Qt
+    event loop; a subprocess is also what lets Stop actually kill the whole
+    process group, node and camera drivers included.
+  - Empty fields are NOT passed. That is the repo's config contract: params
+    that are not overridden come from config/params.yaml. Passing an empty or
+    defaulted value for everything would silently re-pin every knob at panel
+    defaults, which is the exact failure this repo spent a session unpicking
+    in 2026-07-30. Type a value only when you mean to override it.
+  - rospy callbacks do not touch Qt widgets. The status subscriber writes to a
+    plain attribute and a QTimer paints it, because Qt widgets may only be
+    touched from the thread that owns them.
+
+Run it standalone (it does not need to be in the same launch file):
+
+    rosrun agbot_vision_nav operator_panel.py
+"""
+
+import os
+import signal
+import subprocess
+import sys
+
+import rospy
+from std_msgs.msg import String
+from std_srvs.srv import SetBool
+
+from agbot_vision_nav.launch_args import cameras_launch_args, mission_launch_args
+
+from python_qt_binding.QtCore import Qt, QTimer
+from python_qt_binding.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+NODE_NAMESPACE = "/vision_nav_node"
+
+
+class LaunchProcess(object):
+    """One roslaunch child process, killed as a group.
+
+    roslaunch spawns the nodes as children of itself, so killing only the
+    roslaunch PID orphans them -- the camera stays open, the next launch fails
+    with a device-busy error that reads like a USB problem, and the old node
+    keeps publishing cmd_vel. start_new_session puts the whole tree in its own
+    process group so one signal reaches all of it.
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self._proc = None
+
+    def running(self):
+        return self._proc is not None and self._proc.poll() is None
+
+    def start(self, args):
+        if self.running():
+            return False, "%s is already running" % self.name
+        cmd = ["roslaunch"] + args
+        try:
+            self._proc = subprocess.Popen(cmd, start_new_session=True)
+        except OSError as exc:
+            return False, "could not start %s: %s" % (self.name, exc)
+        return True, " ".join(cmd)
+
+    def stop(self):
+        if not self.running():
+            return False
+        # SIGINT, not SIGKILL: roslaunch shuts its nodes down cleanly on
+        # SIGINT, which is what makes the node write its metrics CSV summary
+        # and publish a final zero Twist. SIGKILL would skip both.
+        try:
+            os.killpg(os.getpgid(self._proc.pid), signal.SIGINT)
+            self._proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+        except OSError:
+            pass
+        self._proc = None
+        return True
+
+
+class OperatorPanel(QWidget):
+    def __init__(self):
+        super(OperatorPanel, self).__init__()
+        self.setWindowTitle("AgBot vision-nav operator panel")
+
+        self._cameras = LaunchProcess("cameras")
+        self._mission = LaunchProcess("vision_nav")
+        self._status_text = "(no status yet)"
+        self._paused = False
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self._build_cameras_box())
+        layout.addWidget(self._build_mission_box())
+        layout.addWidget(self._build_control_box())
+
+        self._status_label = QLabel(self._status_text)
+        self._status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._status_label.setWordWrap(True)
+        layout.addWidget(self._status_label)
+
+        self._log_label = QLabel("")
+        self._log_label.setWordWrap(True)
+        layout.addWidget(self._log_label)
+
+        rospy.Subscriber(
+            NODE_NAMESPACE + "/status", String, self._status_cb, queue_size=1
+        )
+        timer = QTimer(self)
+        timer.timeout.connect(self._refresh)
+        timer.start(500)
+        self._timer = timer
+
+    # ------------------------------------------------------------- layout --
+    def _build_cameras_box(self):
+        box = QGroupBox("1. Cameras")
+        row = QHBoxLayout(box)
+        self._cameras_btn = QPushButton("Start cameras")
+        self._cameras_btn.clicked.connect(self._toggle_cameras)
+        row.addWidget(self._cameras_btn)
+        row.addWidget(
+            QLabel("front WDR + rear Brio (cameras.launch)")
+        )
+        return box
+
+    def _build_mission_box(self):
+        box = QGroupBox("2. Mission")
+        form = QFormLayout(box)
+
+        self._model_path = QLineEdit()
+        self._model_path.setPlaceholderText("/absolute/path/to/exported_best.pt")
+        form.addRow("model_path", self._model_path)
+
+        self._sim = QCheckBox("simulation (Gazebo camera topics)")
+        form.addRow("", self._sim)
+
+        self._mission_enabled = QCheckBox("multi-row mission (headland turns)")
+        self._mission_enabled.setChecked(True)
+        form.addRow("", self._mission_enabled)
+
+        self._rear_enabled = QCheckBox("rear camera (back-out + rear-steered exit)")
+        self._rear_enabled.setChecked(True)
+        form.addRow("", self._rear_enabled)
+
+        self._num_rows = QLineEdit()
+        self._num_rows.setPlaceholderText("3   (0 = until no rows left)")
+        form.addRow("num_rows", self._num_rows)
+
+        self._first_turn = QComboBox()
+        # "" first so the default is "don't pass it" -- params.yaml decides.
+        self._first_turn.addItems(["", "left", "right"])
+        form.addRow("first_turn_direction", self._first_turn)
+
+        self._linear_x = QLineEdit()
+        self._linear_x.setPlaceholderText("blank = params.yaml (0.15 m/s)")
+        form.addRow("linear_x_cruise", self._linear_x)
+
+        self._angular_z = QLineEdit()
+        self._angular_z.setPlaceholderText("blank = params.yaml (0.175 rad/s)")
+        form.addRow("angular_z_max", self._angular_z)
+
+        hint = QLabel(
+            "Blank fields are not passed, so config/params.yaml decides them.\n"
+            "Fill one in only to override it for this run."
+        )
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+
+        self._mission_btn = QPushButton("Start mission")
+        self._mission_btn.clicked.connect(self._toggle_mission)
+        form.addRow("", self._mission_btn)
+        return box
+
+    def _build_control_box(self):
+        box = QGroupBox("3. Control")
+        row = QHBoxLayout(box)
+        self._pause_btn = QPushButton("Pause")
+        self._pause_btn.clicked.connect(self._toggle_pause)
+        row.addWidget(self._pause_btn)
+        note = QLabel(
+            "Pause stops the robot but KEEPS the mission state "
+            "(row count, turn direction, position in the row)."
+        )
+        note.setWordWrap(True)
+        row.addWidget(note)
+        return box
+
+    # ------------------------------------------------------------ actions --
+    def _toggle_cameras(self):
+        if self._cameras.running():
+            self._cameras.stop()
+            self._log("cameras stopped")
+            return
+        ok, message = self._cameras.start(cameras_launch_args())
+        self._log(message)
+
+    def _mission_args(self):
+        # The blank-means-do-not-pass rule lives in launch_args.py so it can
+        # be unit-tested without Qt or ROS. See test_launch_args.py.
+        return mission_launch_args(
+            self._model_path.text(),
+            sim=self._sim.isChecked(),
+            mission_enabled=self._mission_enabled.isChecked(),
+            rear_camera_enabled=self._rear_enabled.isChecked(),
+            num_rows=self._num_rows.text(),
+            first_turn_direction=self._first_turn.currentText(),
+            linear_x_cruise=self._linear_x.text(),
+            angular_z_max=self._angular_z.text(),
+        )
+
+    def _toggle_mission(self):
+        if self._mission.running():
+            self._mission.stop()
+            self._log("mission stopped")
+            return
+        try:
+            args = self._mission_args()
+        except ValueError as exc:
+            self._log(str(exc))
+            return
+        ok, message = self._mission.start(args)
+        self._log(message)
+
+    def _toggle_pause(self):
+        target = not self._paused
+        try:
+            rospy.wait_for_service(NODE_NAMESPACE + "/pause", timeout=2.0)
+            proxy = rospy.ServiceProxy(NODE_NAMESPACE + "/pause", SetBool)
+            response = proxy(target)
+            self._log("pause -> %s" % response.message)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            self._log("pause failed (is the node running?): %s" % exc)
+
+    # -------------------------------------------------------------- status --
+    def _status_cb(self, msg):
+        # rospy thread: touch only plain attributes, never widgets.
+        self._status_text = msg.data
+        self._paused = msg.data.startswith("paused")
+
+    def _log(self, text):
+        rospy.loginfo("operator_panel: %s", text)
+        self._log_label.setText(text)
+
+    def _refresh(self):
+        if rospy.is_shutdown():
+            self.close()
+            return
+        self._cameras_btn.setText(
+            "Stop cameras" if self._cameras.running() else "Start cameras"
+        )
+        self._mission_btn.setText(
+            "Stop mission" if self._mission.running() else "Start mission"
+        )
+        self._pause_btn.setText("Resume" if self._paused else "Pause")
+        self._status_label.setText("status: %s" % self._status_text)
+
+    def closeEvent(self, event):
+        # Closing the window must not leave a robot driving itself.
+        self._mission.stop()
+        self._cameras.stop()
+        event.accept()
+
+
+def main():
+    # disable_signals so Ctrl-C reaches Qt rather than rospy's handler, and
+    # closeEvent still gets to stop the child launches.
+    rospy.init_node("operator_panel", anonymous=True, disable_signals=True)
+    app = QApplication(sys.argv)
+    panel = OperatorPanel()
+    panel.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

@@ -28,6 +28,8 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image, Joy
+from std_msgs.msg import String
+from std_srvs.srv import SetBool, SetBoolResponse
 
 from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
@@ -291,6 +293,20 @@ class VisionNavNode(object):
             )
             rospy.Subscriber(joy_topic, Joy, self._joy_cb, queue_size=10)
 
+        # Operator pause. The point is that the mission SURVIVES it: Ctrl-C
+        # and relaunch loses rows_driven, the turn direction, the detector's
+        # arming distance and the row-entry pose, so a mid-run stop used to
+        # mean restarting the mission from scratch. Paused publishes zero and
+        # skips the FSM update entirely, so the state machine is frozen rather
+        # than reset. See _set_paused() for what resuming has to undo.
+        self._paused = False
+        self._pause_lock = threading.Lock()
+        rospy.Service("~pause", SetBool, self._pause_srv)
+        self._status_pub = rospy.Publisher(
+            "~status", String, queue_size=1, latch=True
+        )
+        rospy.Timer(rospy.Duration(0.5), self._publish_status)
+
         self._cmd_vel_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
         self._debug_pub = None
         if self._publish_debug_image:
@@ -429,7 +445,71 @@ class VisionNavNode(object):
             and self._fsm.exit_clear_rear_steering
         )
 
+    def _pause_srv(self, req):
+        changed = self._set_paused(bool(req.data))
+        state = "paused" if req.data else "running"
+        if changed:
+            rospy.logwarn("vision_nav %s by operator request", state)
+        return SetBoolResponse(success=True, message=state)
+
+    def _set_paused(self, paused):
+        """Returns True if this changed anything."""
+        with self._pause_lock:
+            if paused == self._paused:
+                return False
+            self._paused = paused
+        if paused:
+            self._publish_twist(0.0, 0.0)
+        else:
+            # ⚠ Resuming has to undo the pause's effect on everything that
+            # accumulates against a clock or an odometry reference, or the
+            # first frame back banks the whole pause:
+            #   - the BLOCKED timer is in SECONDS of ROS time, so a 30 s pause
+            #     would otherwise deposit the entire blocked_confirm_seconds at
+            #     once and fire a back-out that nothing justified. (_MAX_DT
+            #     caps a single step at 2 s, which limits this but does not
+            #     remove it.)
+            #   - the MPC's rate limiter is relative to the last command it
+            #     issued, which is now stale by however long the pause lasted.
+            if self._detector is not None:
+                self._detector.reset()
+            if self._fsm is not None:
+                self._fsm.rear_exit_detector.reset()
+            self._controller.reset()
+        if self._metrics is not None:
+            self._metrics.mark_event("PAUSE" if paused else "RESUME")
+        self._publish_status(None)
+        return True
+
+    def _is_paused(self):
+        with self._pause_lock:
+            return self._paused
+
+    def _publish_status(self, event):
+        """Latched one-line status for the operator panel."""
+        if self._status_pub is None:
+            return
+        parts = ["paused" if self._is_paused() else "running"]
+        if self._fsm is not None:
+            with self._odom_lock:
+                odom_pose = self._odom_pose
+            parts.append("state=%s" % self._fsm.state)
+            parts.append("rows=%d/%d" % (self._fsm.rows_driven, self._fsm.num_rows))
+            d = self._fsm._distance_in_row(odom_pose)
+            parts.append("in_row=%s m" % ("?" if d is None else "%.2f" % d))
+        else:
+            parts.append("state=FOLLOW_ROW (no mission)")
+        try:
+            self._status_pub.publish(String(data=" | ".join(parts)))
+        except rospy.ROSException:
+            pass
+
     def _watchdog_cb(self, event):
+        if self._is_paused():
+            # The keep-alive below would otherwise re-publish the last
+            # non-zero command at 10 Hz and drive straight through the pause.
+            self._publish_twist(0.0, 0.0)
+            return
         with self._last_success_lock:
             last_success_time = self._last_success_time
             linear_x, angular_z = self._last_cmd
@@ -520,7 +600,16 @@ class VisionNavNode(object):
             )
 
         state_name = None
-        if self._fsm is not None:
+        if self._is_paused():
+            # Perception keeps running (the HUD stays live and the CSV keeps
+            # a record of what the robot was looking at while stopped), but
+            # the FSM is NOT advanced and nothing is commanded. Skipping
+            # update() is the whole point: the mission state, the row count,
+            # the turn direction and the row-entry pose all survive the pause.
+            linear_x, angular_z, done = 0.0, 0.0, False
+            if self._fsm is not None:
+                state_name = self._fsm.state + " (PAUSED)"
+        elif self._fsm is not None:
             with self._odom_lock:
                 odom_pose = self._odom_pose
             if is_rear:

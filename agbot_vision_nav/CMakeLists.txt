@@ -23,6 +23,7 @@ include_directories(
 
 catkin_install_python(PROGRAMS
   scripts/vision_nav_node.py
+  scripts/operator_panel.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
