@@ -27,6 +27,15 @@ def test_minimal_run_passes_only_model_path_and_the_checkboxes():
     assert args_of(argv) == {"model_path": MODEL}
 
 
+def test_blank_model_path_falls_back_to_the_launch_default():
+    """vision_nav.launch defaults model_path to the package's
+    config/exported_best.pt, which is the normal case on the robot. Requiring
+    it here would make the panel harder to use than the command line."""
+    argv = mission_launch_args("")
+    assert args_of(argv) == {}
+    assert argv == ["agbot_vision_nav", "vision_nav.launch"]
+
+
 def test_blank_and_whitespace_fields_are_dropped():
     argv = mission_launch_args(
         MODEL, num_rows="", linear_x_cruise="   ", angular_z_max=None,
@@ -65,15 +74,9 @@ def test_sim_flag():
     assert "sim:=true" not in mission_launch_args(MODEL, sim=False)
 
 
-def test_model_path_is_required():
-    # It is the one knob with no params.yaml entry, so there is nothing to
-    # fall back to and a missing value must be loud rather than silent.
-    with pytest.raises(ValueError):
-        mission_launch_args("")
-    with pytest.raises(ValueError):
-        mission_launch_args("   ")
-    with pytest.raises(ValueError):
-        mission_launch_args(None)
+def test_blank_model_path_variants_are_all_dropped():
+    for blank in ("", "   ", None):
+        assert "model_path" not in args_of(mission_launch_args(blank))
 
 
 def test_unknown_field_raises_rather_than_being_dropped():

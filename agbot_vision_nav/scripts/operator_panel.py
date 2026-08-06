@@ -156,7 +156,9 @@ class OperatorPanel(QWidget):
         form = QFormLayout(box)
 
         self._model_path = QLineEdit()
-        self._model_path.setPlaceholderText("/absolute/path/to/exported_best.pt")
+        self._model_path.setPlaceholderText(
+            "blank = config/exported_best.pt in the package"
+        )
         form.addRow("model_path", self._model_path)
 
         self._sim = QCheckBox("simulation (Gazebo camera topics)")

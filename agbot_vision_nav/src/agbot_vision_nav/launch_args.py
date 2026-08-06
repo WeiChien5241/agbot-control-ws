@@ -12,9 +12,12 @@ which is exactly the failure that made editing params.yaml a no-op before
 2026-07-30, and cost a session to find. The panel must be able to launch a
 run that is tuned entirely by the yaml.
 
-model_path is the deliberate exception: it has no params.yaml entry (the .pt
-lives outside the package, so a relative default would fail silently if it
-moved), so it must always be supplied.
+model_path follows the same rule, and it is worth being precise about why: it
+has no params.yaml entry (the launch file owns it), but it DOES have a launch
+default of $(find agbot_vision_nav)/config/exported_best.pt. So blank means
+"use the weights that ship with the package", which is the normal case on the
+robot -- and requiring it here would make the panel harder to use than the
+command line it replaces.
 """
 
 PKG = "agbot_vision_nav"
@@ -41,30 +44,29 @@ def cameras_launch_args():
     return [PKG, CAMERAS_LAUNCH]
 
 
-def mission_launch_args(model_path, sim=False, **fields):
+def mission_launch_args(model_path="", sim=False, **fields):
     """roslaunch argv for vision_nav.launch.
 
     Args:
-        model_path: absolute path to the .pt. Required -- there is no yaml
-            default to fall back to.
+        model_path: absolute path to the .pt, or blank to use the launch
+            file's default (config/exported_best.pt in the package).
         sim: pass sim:=true (Gazebo camera topics) when set.
         **fields: any of PASSTHROUGH_FIELDS (blank/None => not passed) and
             BOOLEAN_FIELDS (always passed).
 
     Raises:
-        ValueError: model_path missing, or an unknown field name -- a typo
-            would otherwise be dropped silently and the run would quietly use
-            the yaml value the operator was trying to override.
+        ValueError: unknown field name -- a typo would otherwise be dropped
+            silently and the run would quietly use the yaml value the
+            operator was trying to override.
     """
     unknown = set(fields) - set(PASSTHROUGH_FIELDS) - set(BOOLEAN_FIELDS)
     if unknown:
         raise ValueError("unknown launch field(s): %s" % ", ".join(sorted(unknown)))
 
+    args = [PKG, VISION_NAV_LAUNCH]
     model_path = (model_path or "").strip()
-    if not model_path:
-        raise ValueError("model_path is required (it has no params.yaml default)")
-
-    args = [PKG, VISION_NAV_LAUNCH, "model_path:=%s" % model_path]
+    if model_path:
+        args.append("model_path:=%s" % model_path)
     if sim:
         args.append("sim:=true")
     for name in BOOLEAN_FIELDS:
