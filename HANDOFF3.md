@@ -126,6 +126,15 @@ on every run and silently defeat the params.yaml-is-source-of-truth contract —
 the exact bug §0a spent a session unpicking. `model_path` is the one required
 field; it has no yaml default.
 
+**3. Fixed an UnboundLocalError that broke plain row-following** (`6343ae0`),
+found while reviewing the pause branch. `_process_frame` read `odom_pose`
+unconditionally for the metrics row but bound it only inside the mission
+branch, so **a run with `mission_enabled:=false` (the DEFAULT) and metrics on
+(also the default) raised UnboundLocalError on its first frame**. The inference
+thread has no try/except, so it died there and the watchdog zeroed the robot.
+Plain row-following had been broken since the metrics logger landed on
+2026-08-04 — it went unnoticed because every run since has been a mission.
+
 **154 → 170 tests.**
 
 ### Still open after this session
