@@ -6,9 +6,10 @@ driving) and RowExitDetector (end-of-row detection); does not modify either.
 State graph (boustrophedon coverage):
 
   FOLLOW_ROW --open exit--> EXIT_CLEAR --> TURN_1 (90 deg)
-      ^                                        |
-      |                                        v
-  REACQUIRE <-- TURN_2 (90 deg, same dir) <-- TRAVERSE (traverse_distance m)
+      ^                    (rear-steered;         |
+      |                     ends when the REAR    |
+      |                     camera sees the row   v
+  REACQUIRE <-- TURN_2 <-- TRAVERSE   open behind the robot)
 
 Blocked-row back-out branch (rows are too tight to turn around in; the
 robot reverses out the end it entered, steering from the REAR camera):
@@ -37,13 +38,45 @@ robot reverses out the end it entered, steering from the REAR camera):
   unreachable: a blocked signal stops the robot in place and ends the
   mission in DONE, with the blocked row recorded in blocked_events.
 
-- EXIT_CLEAR is REVOCABLE for its first exit_revoke_distance meters: if the
-  nearest scan row is corn-flanked for a continuous exit_revoke_fail_distance,
-  the FSM falls back to FOLLOW_ROW and un-counts the row. That turns a false
-  open exit (the 2026-07-24 field failure, which drove into the corn and
-  committed) from a collision into a steering wobble. Its odometry reference
-  is also back-dated to where the exit was first seen, so the detector's
-  confirmation distance is not added on top of headland_clearance.
+- EXIT_CLEAR has TWO modes, chosen by exit_clear_rear_steering:
+
+  * REAR-STEERED (preferred, needs the rear camera). The front camera has
+    just said "open field ahead"; the REAR camera is now looking straight
+    back down the row being left, which is the best available reference for
+    the row axis. So the headland leg steers from the rear view, and the turn
+    starts only when the REAR camera ALSO sees open field -- positive
+    evidence that the robot's tail has cleared the last plants. Blind
+    odometry clipped the end-of-row corn in the field (2026-08-05) and left
+    the robot mis-aligned, which is also what put its nose into a plant at
+    the following TURN_2.
+    ⚠ SIGN: the BACKOUT rear steering keeps the front controller's signs
+    because the 180-deg image mirror and the REVERSED motion cancel. Here the
+    motion is FORWARD, so only the mirror applies and the state fed to the
+    controller must be NEGATED. The rule: negate iff exactly ONE of
+    {mirrored view, reversed motion} applies.
+    ⚠ headland_clearance does NOT terminate this mode -- the rear camera
+    does. It remains the terminator of the open-loop mode below.
+
+  * OPEN-LOOP (the original, and the automatic fallback whenever no usable
+    rear frame arrives during the leg -- a dead or mis-topiced rear camera
+    must not strand the robot at a row end). Drives straight for
+    headland_clearance, back-dated to where the exit was first seen so the
+    detector's confirmation distance is not added on top (0.4 + 0.75 =
+    1.15 m of overshoot), with exit_clear_min_distance always driven after
+    the exit confirmed.
+
+- A false open exit is caught differently in each mode. Open-loop uses
+  REVOCATION: for the first exit_revoke_distance meters, a nearest scan row
+  that stays corn-flanked for a continuous exit_revoke_fail_distance falls
+  back to FOLLOW_ROW and un-counts the row (the 2026-07-24 field failure
+  drove into the corn because the transition was a one-way commit).
+  Rear-steered mode cannot use it -- the front camera is busy, and the rear
+  view legitimately still shows corn on both sides just after a GENUINE
+  exit, so a rear-based revocation would revoke every real exit. It uses the
+  inverse, positive-evidence test instead: if exit_clear_max_distance is
+  driven and the rear view has still not opened, the robot was never at a row
+  end, and the same fall-back runs. Either way the robot never turns without
+  proof, so a false exit costs a slow straight overshoot, not a collision.
 - All maneuver segments are closed-loop on wheel odometry: turns integrate
   measured yaw until 90 degrees is swept; EXIT_CLEAR / TRAVERSE integrate
   measured displacement. The TRAVERSE leg is traverse_distance (default
@@ -132,6 +165,9 @@ class MissionFSM:
         exit_revoke_distance=0.5,
         exit_revoke_fail_distance=0.25,
         exit_clear_min_distance=0.2,
+        exit_clear_rear_steering=False,
+        exit_clear_post_rear_distance=0.2,
+        exit_clear_max_distance=2.0,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -191,6 +227,20 @@ class MissionFSM:
         # Always drive at least this far after the exit confirms, even when
         # back-dating has already consumed all of headland_clearance.
         self.exit_clear_min_distance = exit_clear_min_distance
+        # Steer the headland leg from the REAR camera and end it on the rear
+        # open-exit signature instead of on headland_clearance. Requires the
+        # rear camera; the ROS node ANDs this with rear_camera_enabled the
+        # same way it does backout_enabled.
+        self.exit_clear_rear_steering = exit_clear_rear_steering
+        # Extra travel after the rear view opens, so the far corner sweeps
+        # clear of the last plant during TURN_1. The rear signature fires when
+        # the camera sees open field, which is when the CAMERA is level with
+        # the row end -- there is still a bumper's worth of robot behind it.
+        self.exit_clear_post_rear_distance = exit_clear_post_rear_distance
+        # Rear-steered mode's false-exit backstop, replacing revocation (which
+        # needs the front camera). Driving this far without the rear view ever
+        # opening means the robot was not at a row end at all.
+        self.exit_clear_max_distance = exit_clear_max_distance
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
@@ -206,6 +256,12 @@ class MissionFSM:
         # reset when EXIT_CLEAR falls back to FOLLOW_ROW.
         self._row_entry_xy = None
         self._exit_clear_offset = 0.0   # m already driven since first sighting
+        # EXIT_CLEAR rear-steering bookkeeping. _rear_open_at is the travel at
+        # which the rear view first read open (None = not yet); _rear_frames
+        # counts usable rear results this leg, and staying at 0 is what
+        # demotes the leg back to the open-loop terminator.
+        self._exit_clear_rear_open_at = None
+        self._exit_clear_rear_frames = 0
         self._revoke_fail = 0.0         # m of continuous near-row corn
         self._revoke_last_distance = None
         self._last_yaw = None      # previous yaw sample, for sweep integration
@@ -226,6 +282,15 @@ class MissionFSM:
         if state == STATE_EXIT_CLEAR:
             self._revoke_fail = 0.0
             self._revoke_last_distance = None
+            self._exit_clear_rear_open_at = None
+            self._exit_clear_rear_frames = 0
+            if self.exit_clear_rear_steering:
+                # Same reasons as BACKOUT: clear the MPC rate-limiter history
+                # before the sign convention flips, and clear the rear
+                # accumulator so this leg does not inherit evidence banked by
+                # a previous back-out or headland.
+                self._controller.reset()
+                self.rear_exit_detector.reset()
         if state == STATE_FOLLOW_ROW:
             self._row_entry_xy = self._entry_xy
             self._controller.reset()
@@ -268,6 +333,16 @@ class MissionFSM:
             self._backout_target if self._backout_target is not None else 0.0,
         )
 
+    def exit_clear_progress(self, odom_pose):
+        """(meters travelled or None, meters at which the rear view opened or
+        None, rear frames seen this leg) while in STATE_EXIT_CLEAR; used by
+        the ROS node's headland telemetry log."""
+        return (
+            self._distance_from_entry(odom_pose),
+            self._exit_clear_rear_open_at,
+            self._exit_clear_rear_frames,
+        )
+
     def _revoke_exit(self, centerline_result, image_width, travelled, odom_pose):
         """Undo a just-fired open exit that the near scan row contradicts.
 
@@ -305,10 +380,19 @@ class MissionFSM:
         if self._revoke_fail < self.exit_revoke_fail_distance:
             return False
 
-        # Fall back to row-following WITHOUT _enter(): that would re-stamp
-        # _row_entry_xy to here and disarm the exit detector for another
-        # min_in_row_distance meters. The row was never left, so its entry
-        # reference must survive.
+        self._withdraw_exit(odom_pose)
+        return True
+
+    def _withdraw_exit(self, odom_pose):
+        """Un-count a fired exit and resume row-following.
+
+        Shared by both false-exit backstops: revocation (open-loop mode) and
+        the exit_clear_max_distance timeout (rear-steered mode).
+
+        Falls back WITHOUT _enter(): that would re-stamp _row_entry_xy to here
+        and disarm the exit detector for another min_in_row_distance meters.
+        The row was never left, so its entry reference must survive.
+        """
         self.rows_driven = max(0, self.rows_driven - 1)
         self.revoked_exits.append(
             (self.rows_driven + 1, self._distance_in_row(odom_pose))
@@ -320,9 +404,76 @@ class MissionFSM:
         self._reacquire_distance = 0.0
         self._reacquire_last = None
         self._exit_clear_offset = 0.0
+        self._exit_clear_rear_open_at = None
+        self._exit_clear_rear_frames = 0
         self._controller.reset()
         self._detector.reset()
-        return True
+
+    def _exit_clear_rear_steered(self, rear_centerline_result, image_width,
+                                 travelled, odom_pose, now):
+        """EXIT_CLEAR driven and terminated by the REAR camera.
+
+        Returns the same (linear_x, angular_z, state, done) tuple as update().
+        """
+        if rear_centerline_result is not None:
+            # Counts frames, not valid results: an invalid mask still proves
+            # the camera is alive, which is the only thing this counter is
+            # asked. Zero here means no rear frames arrived at all.
+            self._exit_clear_rear_frames += 1
+            rear_signal = self.rear_exit_detector.update(
+                rear_centerline_result, image_width, travelled, now=now
+            )
+            if (
+                rear_signal == EXIT_ROW_END_OPEN
+                and self._exit_clear_rear_open_at is None
+            ):
+                self._exit_clear_rear_open_at = travelled
+
+        # The tail is out: drive exit_clear_post_rear_distance more so the
+        # corner sweeps clear of the last plant, then turn.
+        if self._exit_clear_rear_open_at is not None:
+            if travelled >= max(
+                self.exit_clear_min_distance,
+                self._exit_clear_rear_open_at + self.exit_clear_post_rear_distance,
+            ):
+                self._enter(STATE_TURN_1, odom_pose)
+                return 0.0, 0.0, self.state, False
+
+        elif self._exit_clear_rear_frames == 0:
+            # No rear frame has arrived this whole leg -- camera unplugged,
+            # dead, or on the wrong topic (it fails SILENTLY, and only ever
+            # matters at moments like this one). Degrade to the open-loop
+            # terminator rather than stranding the robot at a row end. The
+            # revocation backstop is unavailable here too, so this is the
+            # original pre-2026-08 behaviour exactly.
+            if (
+                travelled >= self.exit_clear_min_distance
+                and travelled + self._exit_clear_offset >= self.headland_clearance
+            ):
+                self._enter(STATE_TURN_1, odom_pose)
+                return 0.0, 0.0, self.state, False
+
+        elif travelled >= self.exit_clear_max_distance:
+            # Rear camera is working and has watched this much headland go by
+            # without the row ever opening behind: there was no row end. This
+            # is rear-steered mode's false-exit backstop, standing in for the
+            # front-camera revocation the leg cannot run.
+            self._withdraw_exit(odom_pose)
+            return 0.0, 0.0, self.state, False
+
+        # ⚠ NEGATED state -- see the module docstring. BACKOUT keeps the front
+        # signs because mirror x reverse cancel; here the motion is forward,
+        # so only the mirror applies. Negating the STATE rather than the
+        # output keeps the controller's _u_prev and its rate-limit constraint
+        # in the same frame as the command actually published.
+        angular_z = 0.0
+        if rear_centerline_result is not None and rear_centerline_result.valid:
+            _, angular_z = self._controller.compute(
+                -rear_centerline_result.offset_norm,
+                -rear_centerline_result.slope_term,
+                True,
+            )
+        return self.exit_clear_speed, angular_z, self.state, False
 
     def _looks_like_row(self, centerline_result, image_width):
         """True when the near scan row has a corridor with corn on BOTH sides.
@@ -360,9 +511,13 @@ class MissionFSM:
             odom_pose: (x, y, yaw) from odometry, or None if unavailable.
             image_width: mask width in pixels.
             rear_centerline_result: CenterlineResult from the rear camera,
-                or None. Only used in STATE_BACKOUT; the sign conventions of
-                the front controller apply unchanged (the 180-deg image
-                mirror and the reversed motion cancel exactly).
+                or None. Used in STATE_BACKOUT, and in STATE_EXIT_CLEAR when
+                exit_clear_rear_steering is on. ⚠ The sign conventions differ
+                between the two: BACKOUT reverses, so the 180-deg image mirror
+                and the reversed motion cancel and the front signs apply
+                unchanged; EXIT_CLEAR drives FORWARD, so only the mirror
+                applies and the state is NEGATED before the controller sees
+                it. Negate iff exactly one of {mirrored view, reversed motion}.
             now: timestamp in seconds for the detector's BLOCKED accumulator
                 (the ROS node passes rospy.get_time()).
             exit_centerline_result: CenterlineResult measured on the exit
@@ -442,6 +597,10 @@ class MissionFSM:
 
         if self.state == STATE_EXIT_CLEAR:
             travelled = self._distance_from_entry(odom_pose)
+            if self.exit_clear_rear_steering:
+                return self._exit_clear_rear_steered(
+                    rear_centerline_result, image_width, travelled, odom_pose, now
+                )
             if self._revoke_exit(exit_centerline_result, image_width, travelled,
                                  odom_pose):
                 return 0.0, 0.0, self.state, False

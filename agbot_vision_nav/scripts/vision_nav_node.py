@@ -44,7 +44,12 @@ from agbot_vision_nav.metrics_logger import (
     read_csv,
     summarize,
 )
-from agbot_vision_nav.mission_fsm import STATE_BACKOUT, STATE_FOLLOW_ROW, MissionFSM
+from agbot_vision_nav.mission_fsm import (
+    STATE_BACKOUT,
+    STATE_EXIT_CLEAR,
+    STATE_FOLLOW_ROW,
+    MissionFSM,
+)
 from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
 from agbot_vision_nav.timing_stats import PipelineTimingStats
@@ -198,6 +203,18 @@ class VisionNavNode(object):
                 ),
                 exit_clear_min_distance=rospy.get_param(
                     "~exit_clear_min_distance", 0.2
+                ),
+                # Rear-steered headland leg. ANDed with the rear camera the
+                # same way backout_enabled is: without a rear camera there is
+                # nothing to steer from, and the FSM falls back to the
+                # open-loop, headland_clearance-terminated leg.
+                exit_clear_rear_steering=self._rear_camera_enabled
+                and rospy.get_param("~exit_clear_rear_steering", True),
+                exit_clear_post_rear_distance=rospy.get_param(
+                    "~exit_clear_post_rear_distance", 0.2
+                ),
+                exit_clear_max_distance=rospy.get_param(
+                    "~exit_clear_max_distance", 2.0
                 ),
             )
 
@@ -390,14 +407,26 @@ class VisionNavNode(object):
             self._frame_condition.notify()
 
     def _use_rear_camera(self):
-        # Rear inference only while actively reversing down the row; the
-        # other BACKOUT_* states are odometry-only, so the front camera
-        # resumes there harmlessly. FSM state is only mutated by the
-        # inference thread itself, so this read is race-free.
+        # Two states run rear inference:
+        #   STATE_BACKOUT      -- reversing down the row (the other BACKOUT_*
+        #                         states are odometry-only, so the front
+        #                         camera resumes there harmlessly);
+        #   STATE_EXIT_CLEAR   -- the rear-steered headland leg, where the
+        #                         rear view of the row just left is both the
+        #                         steering reference and the "tail is clear"
+        #                         terminator. Gated on the FSM actually being
+        #                         in that mode, so the open-loop leg and the
+        #                         front-camera revocation it depends on keep
+        #                         the front camera.
+        # FSM state is only mutated by the inference thread itself, so this
+        # read is race-free.
+        if not self._rear_camera_enabled or self._fsm is None:
+            return False
+        if self._fsm.state == STATE_BACKOUT:
+            return True
         return (
-            self._rear_camera_enabled
-            and self._fsm is not None
-            and self._fsm.state == STATE_BACKOUT
+            self._fsm.state == STATE_EXIT_CLEAR
+            and self._fsm.exit_clear_rear_steering
         )
 
     def _watchdog_cb(self, event):
@@ -520,6 +549,24 @@ class VisionNavNode(object):
                         angular_z,
                         "?" if reversed_m is None else "%.2f" % reversed_m,
                         target_m,
+                    )
+                elif self._fsm.state == STATE_EXIT_CLEAR:
+                    # Same shape for the rear-steered headland leg. 'rear
+                    # open' flipping from no to a distance is the moment the
+                    # tail cleared the row; the turn follows
+                    # exit_clear_post_rear_distance later.
+                    travelled_m, open_at, _ = self._fsm.exit_clear_progress(
+                        odom_pose
+                    )
+                    rospy.loginfo_throttle(
+                        1.0,
+                        "EXIT_CLEAR: rear offset=%+.3f slope=%+.3f -> "
+                        "angular_z=%+.3f, travelled %s m, rear open %s",
+                        result.offset_norm,
+                        result.slope_term,
+                        angular_z,
+                        "?" if travelled_m is None else "%.2f" % travelled_m,
+                        "no" if open_at is None else "at %.2f m" % open_at,
                     )
             else:
                 linear_x, angular_z, state_name, done = self._fsm.update(
@@ -723,23 +770,39 @@ class VisionNavNode(object):
         """HUD/log line showing the mission state and, where one applies,
         why the exit detector is (not) firing.
 
-        FOLLOW_ROW shows the front detector; BACKOUT shows the rear-view
-        open-exit watcher that ends the reverse leg; every other state shows
-        the state alone, so the trace never goes silent (a silent log cannot
-        distinguish "blocker never seen" from "mission already moved on").
-        None only outside mission mode.
+        FOLLOW_ROW shows the front detector; BACKOUT and the rear-steered
+        EXIT_CLEAR show the rear-view open-exit watcher that ends the leg;
+        every other state shows the state alone, so the trace never goes
+        silent (a silent log cannot distinguish "blocker never seen" from
+        "mission already moved on"). None only outside mission mode.
         """
         if self._detector is None:
             return None
         prefix = "state=%s " % self._fsm.state
-        if self._fsm.state == STATE_BACKOUT:
+        if self._fsm.state == STATE_BACKOUT or (
+            self._fsm.state == STATE_EXIT_CLEAR
+            and self._fsm.exit_clear_rear_steering
+        ):
             rear = self._fsm.rear_exit_detector
             if rear.last_status is None:
                 return prefix.rstrip()
-            return prefix + "rear exit: open %.2f/%.2f m wide=%d" % (
-                rear.last_status.open_distance,
+            s = rear.last_status
+            # openrows / near w= / edges= for the same reason the front line
+            # carries them: wide= alone cannot distinguish "corridor too
+            # narrow" from "flanks not clear", which is exactly what made the
+            # 2026-08-05 back-out log unreadable.
+            return prefix + (
+                "rear exit: open %.2f/%.2f m wide=%d openrows=%d "
+                "near w=%s edges=%s"
+            ) % (
+                s.open_distance,
                 rear.exit_confirm_distance,
-                rear.last_status.wide_rows,
+                s.wide_rows,
+                s.open_rows,
+                "-" if s.near_row_width is None else "%.2f" % s.near_row_width,
+                "-"
+                if s.near_row_edges is None
+                else "%.2f/%.2f" % s.near_row_edges,
             )
         if self._detector.last_status is None or self._fsm.state != STATE_FOLLOW_ROW:
             return prefix.rstrip()
@@ -852,6 +915,24 @@ class VisionNavNode(object):
             g("exit_clear_speed"), g("traverse_distance"), g("row_spacing"),
             g("turn_rate"), g("yaw_tolerance_deg"),
         )
+        # Report the RESOLVED value, not the parameter: it is ANDed with
+        # rear_camera_enabled, so the yaml can say true while the leg still
+        # runs open loop. Which terminator is live changes what
+        # headland_clearance above even means, so it is spelled out.
+        if self._fsm.exit_clear_rear_steering:
+            rospy.loginfo(
+                "  exit leg: REAR-STEERED -- turns on the rear open-exit "
+                "signature +%s m, NOT on headland_clearance; false exit "
+                "withdrawn after %s m",
+                g("exit_clear_post_rear_distance"), g("exit_clear_max_distance"),
+            )
+        else:
+            rospy.loginfo(
+                "  exit leg: OPEN LOOP (%s) -- turns on headland_clearance, "
+                "revocation is the false-exit backstop",
+                "no rear camera" if not self._rear_camera_enabled
+                else "exit_clear_rear_steering is false",
+            )
         rospy.loginfo(
             "recovery: reacquire speed=%s confirm=%s m max=%s m steering=%s "
             "| revoke=%s within %s m after %s m of corn",

@@ -929,3 +929,211 @@ def test_reacquire_steering_can_be_disabled():
     x, y, yaw = pose
     _, ang, _, _ = update(fsm, corridor_result(shift=20), (x + 0.02, y, yaw), WIDTH)
     assert ang == 0.0
+
+
+# --------------------------------------------------------------------------
+# Rear-camera-steered EXIT_CLEAR (2026-08-06).
+#
+# The front camera has just said "open field ahead"; the REAR camera is then
+# looking straight back down the row being left, which is the best available
+# reference for the row axis. The headland leg steers from it and turns only
+# when the REAR view ALSO opens -- the tail has cleared the last plants.
+# Replaces a blind odometry leg that clipped end-of-row corn in the field
+# (2026-08-05) and left the robot mis-aligned for the following TURN_2.
+# --------------------------------------------------------------------------
+
+
+def make_rear_steered_fsm(controller=None, **kw):
+    kw.setdefault("exit_clear_rear_steering", True)
+    return MissionFSM(
+        controller if controller is not None else StubController(),
+        RowExitDetector(
+            exit_confirm_distance=0.2,
+            blocked_confirm_seconds=1.0,
+            min_in_row_distance=2.0,
+        ),
+        num_rows=3,
+        **kw
+    )
+
+
+def drive_exit_clear(fsm, pose, rear_result, steps, step=0.1):
+    """Advance EXIT_CLEAR along its heading, feeding `rear_result` as the
+    rear camera. The node passes an invalid FRONT result on rear ticks, and
+    this mirrors that. Returns (last pose, last command, state)."""
+    x, y, yaw = pose
+    invalid = estimate_centerline(
+        np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    )
+    lin = ang = 0.0
+    state = fsm.state
+    for i in range(1, steps + 1):
+        p = (x + i * step * math.cos(yaw), y + i * step * math.sin(yaw), yaw)
+        lin, ang, state, _ = update(
+            fsm, invalid, p, WIDTH, rear_centerline_result=rear_result
+        )
+        pose = p
+        if state != STATE_EXIT_CLEAR:
+            break
+    return pose, (lin, ang), state
+
+
+def test_exit_clear_rear_steering_sign_is_negated():
+    """⚠ THE sign tripwire. BACKOUT keeps the front controller's signs
+    because the 180-deg image mirror and the REVERSED motion cancel. EXIT_CLEAR
+    drives FORWARD off the same mirrored view, so only the mirror applies and
+    the state must be NEGATED. Getting this wrong steers the robot INTO the
+    corn it is trying to leave, at the one moment nothing else is watching.
+    """
+    rear = corridor_result(shift=20)      # corridor right of image centre
+    assert rear.offset_norm > 0.05
+
+    fsm = make_rear_steered_fsm(SteeringStubController())
+    pose, state, _ = drive_row_to_exit(fsm)
+    assert state == STATE_EXIT_CLEAR
+    _, (_, ang_forward), _ = drive_exit_clear(fsm, pose, rear, 1)
+
+    # Same view, same controller, but reversing: the back-out leg.
+    fsm_back = MissionFSM(
+        SteeringStubController(),
+        RowExitDetector(
+            exit_confirm_distance=0.2,
+            blocked_confirm_seconds=1.0,
+            min_in_row_distance=2.0,
+        ),
+        num_rows=3,
+    )
+    fsm_back._backout_target = 5.0
+    fsm_back._enter(STATE_BACKOUT, (0.0, 0.0, 0.0))
+    _, ang_reverse, _, _ = update(
+        fsm_back, corridor_result(), (0.05, 0.0, 0.0), WIDTH,
+        rear_centerline_result=rear,
+    )
+
+    assert ang_forward == pytest.approx(-ang_reverse)
+    assert ang_forward == pytest.approx(rear.offset_norm)
+    assert ang_reverse == pytest.approx(-rear.offset_norm)
+
+
+def test_exit_clear_does_not_turn_until_the_rear_view_opens():
+    """headland_clearance no longer ends the leg in this mode. Driving well
+    past it with corn still behind must NOT start the turn."""
+    fsm = make_rear_steered_fsm(headland_clearance=1.0, exit_clear_max_distance=10.0)
+    pose, state, _ = drive_row_to_exit(fsm)
+    assert state == STATE_EXIT_CLEAR
+    _, (lin, _), state = drive_exit_clear(fsm, pose, corridor_result(), 30)
+    assert state == STATE_EXIT_CLEAR      # 3.0 m driven, 3x headland_clearance
+    assert lin == pytest.approx(fsm.exit_clear_speed)
+
+
+def test_exit_clear_turns_after_post_rear_distance():
+    fsm = make_rear_steered_fsm(exit_clear_post_rear_distance=0.3)
+    pose, _, _ = drive_row_to_exit(fsm)
+    _, _, state = drive_exit_clear(fsm, pose, open_result(), 40)
+    assert state == STATE_TURN_1
+
+
+def test_exit_clear_drives_post_rear_distance_before_turning():
+    """The rear signature fires when the CAMERA is level with the row end;
+    there is still a bumper's worth of robot behind it."""
+    fsm = make_rear_steered_fsm(exit_clear_post_rear_distance=0.5)
+    pose, _, _ = drive_row_to_exit(fsm)
+    x, y, yaw = pose
+    open_r = open_result()
+    invalid = estimate_centerline(
+        np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+    )
+    opened_at = None
+    for i in range(1, 40):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        _, _, state, _ = update(
+            fsm, invalid, p, WIDTH, rear_centerline_result=open_r
+        )
+        if opened_at is None and fsm._exit_clear_rear_open_at is not None:
+            opened_at = fsm._exit_clear_rear_open_at
+        if state == STATE_TURN_1:
+            travelled = math.hypot(p[0] - x, p[1] - y)
+            break
+    assert opened_at is not None
+    assert travelled >= opened_at + 0.5 - 1e-6
+
+
+def test_exit_clear_falls_back_to_open_loop_without_rear_frames():
+    """The rear camera fails SILENTLY (wrong topic, unplugged, dead). A row
+    end is exactly where that would otherwise strand the robot, so a leg that
+    never sees a single rear frame reverts to the headland_clearance
+    terminator -- the pre-2026-08 behaviour."""
+    fsm = make_rear_steered_fsm(headland_clearance=1.0)
+    pose, state, _ = drive_row_to_exit(fsm)
+    assert state == STATE_EXIT_CLEAR
+    _, _, state = drive_exit_clear(fsm, pose, None, 30)
+    assert state == STATE_TURN_1
+    # and it turned at headland_clearance, not after exit_clear_max_distance
+    assert fsm._exit_clear_rear_frames == 0
+
+
+def test_exit_clear_max_distance_withdraws_a_false_exit():
+    """Rear-steered mode's false-exit backstop, standing in for the
+    front-camera revocation this leg cannot run. A working rear camera that
+    never sees the row open means there was no row end."""
+    fsm = make_rear_steered_fsm(exit_clear_max_distance=1.0)
+    pose, _, _ = drive_row_to_exit(fsm)
+    assert fsm.rows_driven == 1
+    row_entry = fsm._row_entry_xy
+    _, _, state = drive_exit_clear(fsm, pose, corridor_result(), 20)
+    assert state == STATE_FOLLOW_ROW
+    assert fsm.rows_driven == 0
+    assert len(fsm.revoked_exits) == 1
+    # ⚠ gotcha 1d: the row was never left, so its entry reference must
+    # survive -- re-stamping it would disarm the exit detector for another
+    # min_in_row_distance metres inside a row the robot is still in.
+    assert fsm._row_entry_xy == row_entry
+    assert fsm._entry_xy == row_entry
+
+
+def test_exit_clear_open_loop_mode_is_unchanged():
+    """exit_clear_rear_steering=false must reproduce the field-proven leg
+    exactly: straight, headland_clearance-terminated, revocable."""
+    fsm = make_rear_steered_fsm(
+        exit_clear_rear_steering=False, headland_clearance=1.0
+    )
+    pose, state, _ = drive_row_to_exit(fsm)
+    assert state == STATE_EXIT_CLEAR
+    # A rear result is supplied and must be ignored outright: the leg steers
+    # straight off the FRONT view and ends on headland_clearance.
+    x, y, yaw = pose
+    open_r = open_result()
+    rear_off_centre = corridor_result(shift=20)
+    for i in range(1, 30):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        lin, ang, state, _ = update(
+            fsm, open_r, p, WIDTH, rear_centerline_result=rear_off_centre
+        )
+        if state == STATE_TURN_1:
+            travelled = math.hypot(p[0] - x, p[1] - y)
+            break
+        assert ang == 0.0, "open-loop leg must not steer"
+        assert lin == pytest.approx(fsm.exit_clear_speed)
+    assert state == STATE_TURN_1
+    assert travelled <= 1.0 + 1e-6      # headland_clearance, back-dated
+    assert fsm._exit_clear_rear_frames == 0     # rear detector never consulted
+
+
+def test_rear_steered_exit_clear_does_not_disturb_the_backout_branch():
+    """The back-out is the one rear-camera path with field validation behind
+    it; enabling rear exit steering must not touch it."""
+    fsm = make_rear_steered_fsm()
+    corridor = corridor_result()
+    blocked = blocked_result()
+    pose = None
+    for i in range(1, 31):
+        pose = (i * 0.1, 0.0, 0.0)
+        _, _, state, _ = update(fsm, corridor, pose, WIDTH)
+    for i in range(31, 60):
+        pose = (i * 0.1, 0.0, 0.0)
+        _, _, state, _ = update(fsm, blocked, pose, WIDTH)
+        if state == STATE_BACKOUT:
+            break
+    assert state == STATE_BACKOUT
+    assert fsm.rows_driven == 0
+    assert len(fsm.blocked_events) == 1

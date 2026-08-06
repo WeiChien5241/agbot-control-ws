@@ -109,6 +109,21 @@
                                                             border cannot veto a real exit -->
   <arg name="exit_open_rows_required" default="" />   <!-- scan rows (any) that must be wide -->
   <arg name="exit_clear_speed"        default="" /><!-- m/s during the post-exit leg -->
+  <arg name="exit_clear_rear_steering" default="" /><!-- steer the headland leg from the REAR
+                                                            camera (the view back down the row being
+                                                            left) and turn only when the rear ALSO sees
+                                                            open field, i.e. the tail is clear. Needs
+                                                            rear_camera_enabled. NOTE: with this on,
+                                                            headland_clearance no longer ends the leg --
+                                                            it stays the open-loop/no-rear-frames
+                                                            terminator. false = the pre-2026-08 leg. -->
+  <arg name="exit_clear_post_rear_distance" default="" /><!-- m driven after the rear view opens,
+                                                            so the far corner sweeps clear of the last
+                                                            plant during TURN_1 -->
+  <arg name="exit_clear_max_distance" default="" /><!-- m without the rear view ever opening =>
+                                                            no row end => un-count the row and resume
+                                                            FOLLOW_ROW. Rear-steered mode's false-exit
+                                                            backstop, standing in for exit_revoke_*. -->
 
   <!-- Debounce in PHYSICAL units, never frames: 5 frames is 2.5 s at 2 Hz but
        0.2 s at 25 Hz, which is how a mid-row gap fired EXIT_CLEAR instantly on
@@ -232,6 +247,12 @@
            if="$(eval arg('exit_clear_speed') != '')" />
     <param name="exit_clear_min_distance"  value="$(arg exit_clear_min_distance)"
            if="$(eval arg('exit_clear_min_distance') != '')" />
+    <param name="exit_clear_rear_steering" value="$(arg exit_clear_rear_steering)"
+           if="$(eval arg('exit_clear_rear_steering') != '')" />
+    <param name="exit_clear_post_rear_distance" value="$(arg exit_clear_post_rear_distance)"
+           if="$(eval arg('exit_clear_post_rear_distance') != '')" />
+    <param name="exit_clear_max_distance"  value="$(arg exit_clear_max_distance)"
+           if="$(eval arg('exit_clear_max_distance') != '')" />
     <param name="exit_flank_min_clear_fraction" value="$(arg exit_flank_min_clear_fraction)"
            if="$(eval arg('exit_flank_min_clear_fraction') != '')" />
     <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)"

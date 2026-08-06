@@ -166,6 +166,46 @@ traverse_distance: 0.6     # m of sideways travel after TURN_1. Deliberately
                            # run, not by editing this line.
 exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
                            # post-exit leg is where overshoot hurts most)
+# Rear-camera-steered headland leg (needs rear_camera_enabled; the node ANDs
+# the two the same way it does for the back-out). The front camera has just
+# said "open field ahead"; the REAR camera is then looking straight back down
+# the row being left, which is the best available reference for the row axis.
+# So EXIT_CLEAR steers from the rear view and turns only when the REAR camera
+# ALSO sees open field -- positive evidence that the tail has cleared the last
+# plants, instead of a blind odometry leg. Field 2026-08-05: the open-loop leg
+# clipped the end-of-row corn and left the robot mis-aligned, which is also
+# what put its nose into a plant at the following TURN_2.
+#
+# ⚠ With this on, headland_clearance NO LONGER ends EXIT_CLEAR -- the rear
+# camera does. headland_clearance still terminates the open-loop leg, which is
+# what runs with no rear camera, and is also the automatic fallback if no rear
+# frame arrives during the leg at all (the rear camera fails SILENTLY, and a
+# row end is exactly where that would otherwise strand the robot).
+#
+# ⚠ The MPC sign convention differs from the back-out's. BACKOUT keeps the
+# front signs because the 180-deg image mirror and the REVERSED motion cancel;
+# here the motion is FORWARD, so only the mirror applies and the state fed to
+# the controller is NEGATED. Rule: negate iff exactly ONE of {mirrored view,
+# reversed motion}. Tripwire: test_exit_clear_rear_steering_sign_is_negated.
+exit_clear_rear_steering: true
+exit_clear_post_rear_distance: 0.2  # m driven after the rear view opens. The
+                           # rear signature fires when the CAMERA is level with
+                           # the row end, and there is still a bumper's worth of
+                           # robot behind it -- this is what sweeps the far
+                           # corner clear of the last plant during TURN_1.
+exit_clear_max_distance: 2.0  # m of EXIT_CLEAR travel with the rear view never
+                           # opening => there was no row end => un-count the row
+                           # and resume FOLLOW_ROW. This is rear-steered mode's
+                           # false-exit backstop, replacing the exit_revoke_*
+                           # revocation below (which needs the front camera, and
+                           # cannot be rebuilt on the rear view: just after a
+                           # GENUINE exit the rear near row legitimately still
+                           # has corn on both sides, so a rear revocation would
+                           # revoke every real exit). It is the stronger test of
+                           # the two -- the robot never turns without proof --
+                           # but it is slower to act, so a false exit costs a
+                           # straight overshoot at exit_clear_speed.
+
 headland_clearance: 1.0    # m of EXIT_CLEAR forward travel before turning,
                            # measured from where the exit was FIRST SEEN (the
                            # start of the confirmation streak), not from where
@@ -179,7 +219,10 @@ exit_clear_min_distance: 0.2  # m always driven after the exit confirms, even
                            # when back-dating has already consumed all of
                            # headland_clearance.
 
-# EXIT_CLEAR revocation: for its first exit_revoke_distance meters the FSM
+# EXIT_CLEAR revocation -- the OPEN-LOOP leg's false-exit backstop only. With
+# exit_clear_rear_steering on, the front camera is busy watching backwards and
+# exit_clear_max_distance (above) does this job instead.
+# For its first exit_revoke_distance meters the FSM
 # keeps checking the exit and falls back to FOLLOW_ROW if it was wrong, so a
 # false positive costs a steering wobble instead of a drive into the corn (the
 # 2026-07-24 field failure was unrecoverable because the transition was a
