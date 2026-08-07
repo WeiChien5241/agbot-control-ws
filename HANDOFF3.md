@@ -4,9 +4,13 @@ Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-06.
 Field status: a full multi-row mission RAN IN REAL CORN 2026-08-05 -- in-row
 nav, exits, headland turns and the rear-camera BACK-OUT, no interventions.
 Read §0d first: it has the five defects that run exposed, four of which are
-diagnosed but deliberately NOT fixed.
-Hardware status: GPU robot cpr-j100-0864 now runs the WDR camera FRONT (low
-mount) + a Logitech Brio REAR, and is updated to `0936f3b`.
+diagnosed but deliberately NOT fixed -- and the fact that **the robot had a
+FLAT RIGHT-REAR TIRE** for the whole run, which plausibly explains the biggest
+of them (row hugging) on its own.
+Hardware status: GPU robot cpr-j100-0864 runs the WDR camera FRONT (low mount)
++ a Logitech Brio REAR. It was last updated to `0936f3b` and **has NOT yet
+received this session's work** -- see the bundle flow in §0b, and note that
+`catkin build` is required this time (new executable + new package.xml deps).
 
 ---
 
@@ -25,6 +29,63 @@ the robot, so none of yesterday's behaviour can be quantified after the fact.
 Confirm the `metrics:` path in the startup config block **before** rolling next
 time — a field pass does not come round twice.
 
+### ⚠ THE ROBOT HAD A FLAT RIGHT-REAR TIRE FOR THAT RUN
+
+Reported at the end of the session, after everything below was analysed. **Read
+this before acting on defect #1 (row hugging), because it may be the whole
+answer** and it invalidates measuring anything else through it.
+
+A flat rear tire on a Jackal hits the controller in three places at once:
+
+1. **It is a constant steering disturbance.** The Jackal belts both wheels on a
+   side together, so the flat one turns at the same rate on a smaller rolling
+   radius — it scrubs, and that side drags. The robot pulls right continuously.
+   `MPCRowController` has **no integral term** (`controller.py:87`; it is a
+   static gain re-solved each frame), so a constant disturbance settles at a
+   **permanent lateral offset by construction**. That is candidate (c) below,
+   supplied by hardware rather than by camera yaw.
+2. **⚠ It explains the one observation that looked anomalous.** Raising
+   `angular_z_max` 0.175 → 0.25 changed nothing — because the controller was
+   never saturating. More headroom cannot move an equilibrium that is not at
+   the limit. Had this been a control-authority problem, 0.25 would have
+   helped. **That it did not is positive evidence FOR the constant-disturbance
+   reading**, and against "the MPC is too weak".
+3. **It tilts the camera and corrupts odometry.** A soft corner drops the
+   chassis on that side, rolling and laterally shifting the camera, so every
+   corridor midpoint is biased the same way — a perception bias and an
+   actuation bias with the same sign, compounding. And wheel odometry converts
+   encoder counts with a *nominal* radius, so `/odometry/filtered` over-reports
+   distance. Everything measured in meters then fires EARLY in real meters:
+   `min_in_row_distance` (2.0), `exit_confirm_distance` (0.4),
+   `headland_clearance` (1.0), `traverse_distance` (0.6), the back-out cap.
+   That is a plausible contributor to defect #2 as well.
+
+A tire deflating progressively over a session also fits **"some rows it stayed
+in the middle, a lot of times it did not"** better than anything in the code
+does.
+
+**Procedure agreed for next time — fix the tire, then MEASURE, before touching
+the estimator.** Two vision-free tests on flat open ground, ~15 min, run
+before AND after re-inflating:
+
+```bash
+# 1. Straight-line drift. Mark a start point against a chalked reference line.
+rostopic pub -r 10 /cmd_vel geometry_msgs/Twist '{linear: {x: 0.15}, angular: {z: 0.0}}'
+#    ~33 s = 5 m, Ctrl-C, tape-measure the lateral deviation. Drive the return
+#    leg too -- that separates ground slope from robot bias.
+#    Under ~10 cm over 5 m is fine; half a metre is the hugging problem.
+
+# 2. Odometry scale. Drive exactly 5.00 m by tape, then:
+rosbag record -O /tmp/straight.bag /odometry/filtered /bluetooth_teleop/joy
+python3 agbot_vision_nav/scripts/bag_distance.py /tmp/straight.bag
+#    5.3 m reported => every meter-valued knob is 6 % off.
+```
+
+If the drift collapses once the tire is fixed, defect #1 is solved and none of
+the three code candidates need touching. **It is probably not the whole story
+though** — the border-clipping in candidate (a) is measurable, real, and
+entirely independent of the tire. The metrics CSV decides.
+
 ### Five defects, four of them deliberately NOT fixed this session
 
 Only the exit-path fix was implemented today. The other four were investigated
@@ -33,7 +94,7 @@ the session's other product — do not re-derive them.**
 
 | # | Symptom | Root cause found |
 |---|---|---|
-| 1 | Robot **hugs one side** of the row. Raising `angular_z_max` to 0.25 did not help. | Not control authority (that is what the 0.25 test rules out). Three candidates, none yet distinguished — see below. |
+| 1 | Robot **hugs one side** of the row. Raising `angular_z_max` to 0.25 did not help. | ⚠ **The robot had a FLAT RIGHT-REAR TYRE** — see the section above; that alone produces this symptom and explains why 0.25 did not help. Three code candidates behind it, none yet distinguished, and none worth chasing until the tire is ruled out. |
 | 2 | **Clips end-of-row corn on exit**; TURN_2 sometimes ends facing a plant. | ✅ **FIXED** — `EXIT_CLEAR` drove blind (`angular_z` hard-zero). |
 | 3 | **Large plant blocks the path, side gaps remain** → drives into it. | `blocked_signature` (`row_exit_detector.py:386-393`) needs **zero corridor at EVERY scan row**. The near row (0.92, at the bumper) still images ground under the plant, so `corridor_rows >= 1` forever and BLOCKED can never fire. |
 | 4 | **Leaves on the lens** read as an obstacle → 4 s stop → spurious back-out. | Nothing can tell them apart. `CLASS_SKY` is defined at `centerline_estimator.py:22` and **never read anywhere** — the one cheap signal separating "corn wall at 1 m" (sky above it) from "leaf on the glass" (fills the frame). Both fraction fields are measured over the **lower half only** (`:188-190`), so the top of the frame is discarded before anything can reason about it. |
@@ -57,11 +118,21 @@ them; `analyze_run.py` reports a signed mean, which is the hugging metric):
   (`centerline_estimator.py:26-35`); **the steering scan never was.**
 - **(c) No integral action.** `MPCRowController` has no disturbance state
   (`controller.py:87`) and re-reads `x0` raw each frame (`:166`), so the loop is
-  a static gain. Any constant bias — camera yaw misalignment above all — settles
-  at a permanent lateral offset. Today the loop centres the *camera*, not the
-  *robot*.
+  a static gain. Any constant bias settles at a permanent lateral offset. Today
+  the loop centres the *camera*, not the *robot*. **The flat tire is exactly
+  the constant disturbance this candidate describes**, so (c) is now the
+  leading explanation — but note the fix differs by cause: integral action
+  helps against an actuation disturbance and does NOTHING against a
+  measurement bias (it would just drive the biased reading to zero harder,
+  where the robot already sits). Which one it is decides whether the fix is
+  the trim, the estimator, or the controller.
 
-### What WAS built (commits `e4ba9a8`, this session)
+⚠ **Do not implement any of (a)/(b)/(c) blind.** They call for different
+fixes and one of them may be moot once the tire is fixed. The sequence is:
+tire → straight-line drift test → field run with metrics ON → read the
+FOLLOW_ROW **signed mean** from `analyze_run.py` → then choose.
+
+### What WAS built this session
 
 **1. EXIT_CLEAR is now rear-camera-steered.** The front camera has just said
 "open field ahead"; the REAR camera is then looking straight back down the row
@@ -123,8 +194,43 @@ The panel's launch-argument builder lives in `src/agbot_vision_nav/launch_args.p
 (rospy-free, unit-tested) for one reason: **a blank field is not passed.** A
 panel that helpfully sent its own default for every knob would re-pin them all
 on every run and silently defeat the params.yaml-is-source-of-truth contract —
-the exact bug §0a spent a session unpicking. `model_path` is the one required
-field; it has no yaml default.
+the exact bug §0a spent a session unpicking. `model_path` blank means the
+launch file's own default (`config/exported_best.pt` in the package).
+
+Three follow-up fixes to the panel, all from walking through the actual
+workflow rather than from tests:
+- **`bcc4c5e` — it starts a `roscore` if none is running.** The panel is the
+  FIRST thing started in a session, before any roslaunch, and
+  `rospy.init_node()` blocks indefinitely without a master — which looks
+  exactly like the GUI failing to open. Only a roscore the panel started is
+  torn down on exit.
+- **`7ba5cb9` — `model_path` made optional** (it had been required, which made
+  the panel harder to use than the command line it replaces).
+- **`66b1195` — the frame-source button follows the SIM checkbox.** It ran
+  `cameras.launch` unconditionally, which is the real-robot USB bringup: on a
+  laptop it matches no hardware, and in simulation the frames come from the
+  Gazebo URDF cameras instead, so **the panel could not be used with Gazebo at
+  all** — and the failure was silent (`usb_cam` simply never publishes and the
+  node waits forever). Ticking *simulation* now makes the button start
+  `agbot_bringup agbot_gazebo.launch`, keyed off the same flag that selects the
+  node's camera topics so the two cannot disagree.
+
+**Using the panel** (it starts everything; nothing needs launching by hand).
+⚠ `catkin build` is REQUIRED after this update -- `operator_panel.py` is a new
+installed executable and `package.xml` gained `std_srvs` + `python_qt_binding`:
+
+```bash
+cd ~/agbot_control_ws && catkin build && source devel/setup.bash
+python3 -c "import python_qt_binding"     # panel dependency; should be silent
+rosrun agbot_vision_nav operator_panel.py
+```
+Sim: tick *simulation* → **Start Gazebo** → wait for it to load → tick
+*multi-row mission* + *rear camera*, set `num_rows` → **Start mission**.
+Real robot: leave *simulation* unticked and the first button starts
+`cameras.launch`. roslaunch's output is inherited by the terminal the panel was
+started from — **that is where the startup config block and the detector lines
+appear**, and it is worth watching. The panel starts and stops things; it is
+not a monitor.
 
 **3. Fixed an UnboundLocalError that broke plain row-following** (`6343ae0`),
 found while reviewing the pause branch. `_process_frame` read `odom_pose`
@@ -135,14 +241,51 @@ thread has no try/except, so it died there and the watchdog zeroed the robot.
 Plain row-following had been broken since the metrics logger landed on
 2026-08-04 — it went unnoticed because every run since has been a mission.
 
-**154 → 170 tests.**
+**154 → 172 tests.** (`test_launch_args.py` is new: 10 tests pinning the
+blank-field-is-not-passed contract and the sim/real frame-source split.)
+
+### Also landed today (user's own commits, workspace hygiene)
+
+- `c0a1569` + `061bf2a` — **new top-level `README.md`** with the robot and
+  simulation run instructions. Note the `/dev/v4l/by-id/` gotcha recorded
+  there: only the `-video-index0` link is the actual video stream.
+- `cf56a4c` + `ac04ac7` — **the legacy `agbot_corn_rows.world` is GONE**, along
+  with its `dirt_ground` model and the launch option that selected it. The
+  maize worlds are the only worlds now; `switch_maize_world.sh full|small`
+  remains the way to swap them. Older notes in this file that mention the
+  corn-row world are describing something that no longer exists.
+- `dded98e` + `571bd8e` — `cameras.launch` comments trimmed, and **the front
+  Brio slot now carries the OTHER unit's serial** (`2511LVF11WK8`). §0b item 2
+  recorded the duplicate serial as accepted-because-unreachable; it is now
+  simply correct, so `brio_front:=true` no longer collides with the rear Brio.
 
 ### Still open after this session
-- Defects #1, #3, #4, #5 above — diagnosed, not fixed, by choice.
-- **Neither change has run in sim or in the field yet.** The rear-steered leg
-  needs `rear_camera_enabled:=true` and a working rear topic; check the
+
+- **The flat tire — fix it and run the two drift tests FIRST.** Everything
+  about defect #1 is blocked behind that measurement.
+- Defects #3, #4, #5 — diagnosed above, not fixed, by choice.
+- **Neither new feature has run in sim or in the field yet.** The rear-steered
+  leg needs `rear_camera_enabled:=true` and a working rear topic; check the
   `exit leg: REAR-STEERED` line in the startup config block before rolling.
+  The panel has never been run at all (this sandbox has no ROS1 or display).
+- **Still no metrics CSV from the field.** The 2026-08-05 run produced none, so
+  every number about row hugging remains unmeasured. Confirm the `metrics:`
+  path in the startup config block BEFORE rolling.
 - Everything in §0c's, §0b's and §0a's "Still open" lists, unchanged.
+
+### Agreed test order for the next session
+
+1. **Fix the tire**, then the two vision-free drift tests above, before and
+   after — they need no code and settle defect #1's biggest unknown.
+2. **Sim run of the rear-steered exit** on the laptop (it has never executed).
+   Watch for `(REAR)` on the HUD through EXIT_CLEAR with a non-zero
+   `angular_z`, and TURN_1 starting when the rear view opens rather than at a
+   fixed distance. `exit_clear_rear_steering:=false` gives the old leg for an
+   A/B. Also exercise pause/resume: pause mid-row, wait 30 s, resume — the
+   state must survive and `blocked_seconds` must not have banked.
+3. **Field run with metrics ON**, then `analyze_run.py`; the FOLLOW_ROW signed
+   mean is the hugging number.
+4. **Only then** decide whether (a)/(b)/(c) need any code at all.
 
 ---
 
@@ -762,7 +905,11 @@ back-out is sim-validated.
   achieved. Use `mpc_dt:=0.5`, raise `max_data_age_sec` (~1.5-3.0).
 - **Tall-camera field runs (2026-07):** in-row nav + headland turns proven.
 
-### Field behavior (real robot, 2026-07)
+### Field behavior (real robot)
+- **2026-08-05: a full multi-row mission ran in real corn** with no
+  interventions, including the first real-corn rear-camera back-out (§0d).
+  ⚠ The robot had a **flat right-rear tire** for that run — see §0d before
+  reading anything into its steering behaviour.
 - In-row navigation: works. Headland turns: work.
 - Full 3-row mission SIM-VALIDATED 2026-07-28 on the small maize world with
   the current defaults (§0). Not yet re-validated in real corn.
@@ -928,10 +1075,12 @@ cmd_vel_topic:=/cmd_vel_rear_preview`.
 | `src/agbot_vision_nav/timing_stats.py` | Rolling pipeline metrics; `inf` = predict() wall time, `dropped %` = skipped frames (by design). |
 | `src/agbot_vision_nav/debug_viz.py` | HUD overlay: state, per-row `w=`, `timing_line`, `detector_line` (renders whatever string the node builds — no change needed for new fields). |
 | `scripts/vision_nav_node.py` | Only rospy file. Frame slots + stamps, camera source by FSM state, watchdog, timing/detector/BACKOUT logging; optional second `estimate_centerline` pass for `exit_scan_row_fractions`; detector line at 1 Hz while the meter moves, with `near w=`/`edges=`; `EXIT REVOKED` warnings. |
+| `src/agbot_vision_nav/launch_args.py` | rospy-free roslaunch argv builder for the operator panel. One rule: **a blank field is not passed**, so params.yaml stays the source of truth. Also picks Gazebo vs real cameras off the same `sim` flag the node uses. |
+| `scripts/operator_panel.py` | PyQt panel: start frame source (cameras or Gazebo) / start mission with form fields / **pause + resume** / stop. Starts its own roscore if none is running. `rosrun agbot_vision_nav operator_panel.py`. |
 | `scripts/benchmark_inference.py` | Offline cross-machine inference benchmark (no ROS). |
 | `config/params.yaml` + `launch/vision_nav.launch` | All knobs incl. `exit_confirm_distance`, `blocked_confirm_seconds`, `exit_revoke_*`, `exit_flank_min_clear_fraction`, `exit_scan_row_fractions`. params.yaml is the source of truth since 2026-07-30 (§0a). |
 | `launch/cameras.launch` | Real-robot camera bringup: WDR front (`/usb_cam`, yuyv) + rear Brio (`/brio_rear`, mjpeg) + a disabled front-Brio slot. Devices pinned by `/dev/v4l/by-id/` serials. The rear node name MUST match `vision_nav.launch`'s `rear_camera_topic` — see §0b. |
-| `test/` | **113 tests**: controller 17, centerline 11, viz 3, detector 40, fsm 35, timing 7. |
+| `test/` | **172 tests**: detector 40, fsm 43, metrics 28, controller 17, intervention 13, launch_args 10, centerline 11, timing 7, viz 3. |
 
 ### `agbot_bringup/`
 | File | Purpose |
@@ -951,17 +1100,17 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 
 ## 5. NEXT STEPS (priority order)
 
-0. **First real-corn run on the new camera pair** (WDR front low + rear Brio,
-   §0b). Drop `cmd_vel_topic:=/vision_nav_check` so the robot actually drives,
-   confirm `Model loaded on device: cuda:0`, and `rostopic hz` both cameras and
-   `/odometry/filtered` before rolling. The rear Brio has never driven a
-   back-out outside sim. The `cameras.launch` items from `0936f3b` are settled:
-   `brio_rear` now defaults to true (`963f3a1`), and the duplicate
-   `brio_front_device` serial is accepted as-is (the front Brio is retired, so
-   it is unreachable — §0b).
-   This run also produces the first real metrics CSV (§0c): check the
-   `metrics:` path in the startup config block before rolling, and read the
-   run summary printed on Ctrl-C.
+⚠ **§0d supersedes the ordering below for the next session.** Its "Agreed test
+order" (tire → drift tests → sim run of the rear-steered exit → field run with
+metrics on) comes first; the items here resume after that.
+
+0. ✅ **DONE 2026-08-05 — the first real-corn run on the new camera pair
+   succeeded**, including the first real-corn rear-camera back-out (§0d). It
+   produced **no metrics CSV**, so the run cannot be quantified; that is the
+   one thing to get right next time. Pre-roll checks that still apply every
+   run: `Model loaded on device: cuda:0`, `rostopic hz` on both cameras and
+   `/odometry/filtered`, the `metrics:` path in the startup config block, and
+   no `cmd_vel_topic:=/vision_nav_check` left on the command line.
 1. **Re-test the joystick takeover in the field, user driving personally**
    (§0 DEFERRED — it worked on the bench and could not be reproduced, so this
    is now a measurement, not a fix). Watch `rostopic hz /bluetooth_teleop/joy`
@@ -1061,6 +1210,26 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 9c. **`rosbag record` does not warn on a nonexistent topic** — it subscribes and
    waits, leaving a valid ~4 KB empty bag. Real-robot front camera is
    `/usb_cam/image_raw/compressed`; `/camera/image_raw` is Gazebo only.
+10. **EXIT_CLEAR rear steering is NEGATED; BACKOUT rear steering is NOT.**
+   Mirror × reverse cancel in BACKOUT; EXIT_CLEAR drives forward off the same
+   mirrored view so only the mirror applies. Rule: negate iff exactly ONE of
+   {mirrored view, reversed motion}. Tripwire:
+   `test_exit_clear_rear_steering_sign_is_negated`. Do not "fix" the apparent
+   inconsistency — failing that test is the only evidence that would justify it.
+11. **`headland_clearance` no longer ends EXIT_CLEAR when the rear camera is
+   steering it.** It still terminates the open-loop leg, which runs with no rear
+   camera and is the automatic fallback when no rear frame arrives at all. The
+   startup config block prints which terminator is live (`exit leg:
+   REAR-STEERED` vs `OPEN LOOP`) — read it rather than assuming.
+12. **Revocation only guards the open-loop leg.** Rear-steered EXIT_CLEAR uses
+   `exit_clear_max_distance` instead. A rear-based revocation is impossible, not
+   merely unimplemented: just after a genuine exit the rear near row
+   legitimately still has corn on both sides.
+13. **Pause freezes the FSM; Ctrl-C destroys it.** Resuming must reset both
+   detectors and the MPC — the BLOCKED timer counts in ROS seconds, so a long
+   pause would otherwise bank the whole `blocked_confirm_seconds` at once.
+14. **The legacy `agbot_corn_rows.world` no longer exists** (`ac04ac7`). Older
+   notes in this file that mention it are describing something deleted.
 9. scipy needed at import. GAZEBO_MODEL_PATH needs virtual_maize_field/models.
    `gh` at `~/.local/bin/gh`. **Never `git add .`** (weights/tmp/pptx stay out).
    High dropped-frame % in the timing log is BY DESIGN.
@@ -1072,7 +1241,13 @@ Model weights (`config/exported_best.pt`), `jackal/`, `virtual_maize_field/`,
 ```bash
 cd ~/agbot_control_ws && catkin build && source devel/setup.bash
 
-# Simulation world
+# EASIEST PATH -- the operator panel starts everything (§0d). Sim: tick
+# 'simulation', press Start Gazebo, then Start mission. Real robot: leave it
+# unticked and the first button starts cameras.launch. Pause/Resume keeps the
+# mission state, unlike Ctrl-C. roslaunch output goes to THIS terminal.
+rosrun agbot_vision_nav operator_panel.py
+
+# Simulation world (by hand)
 roslaunch agbot_bringup agbot_gazebo.launch
 
 # REAL ROBOT (cpr-j100-0864): cameras first, then the node
@@ -1087,7 +1262,15 @@ roslaunch agbot_vision_nav vision_nav.launch \
 roslaunch agbot_vision_nav vision_nav.launch sim:=true \
   mission_enabled:=true rear_camera_enabled:=true num_rows:=3
 
+# Pause / resume by hand (what the panel's button calls)
+rosservice call /vision_nav_node/pause "data: true"
+rosservice call /vision_nav_node/pause "data: false"
+rostopic echo /vision_nav_node/status
+
 # Tune if needed:
+#   exit_clear_rear_steering:=false     old open-loop headland leg (A/B test)
+#   exit_clear_post_rear_distance:=0.2  m driven after the REAR view opens
+#   exit_clear_max_distance:=2.0        m without the rear opening => false exit
 #   exit_confirm_distance:=0.4          m of travel to confirm an exit
 #   exit_leak_ratio:=0.5                meter drain rate vs fill (1.0 = old)
 #   reacquire_confirm_distance:=0.12    m of in-row view to latch a new row
