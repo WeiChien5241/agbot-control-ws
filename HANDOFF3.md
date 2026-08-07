@@ -244,6 +244,48 @@ Plain row-following had been broken since the metrics logger landed on
 **154 → 172 tests.** (`test_launch_args.py` is new: 10 tests pinning the
 blank-field-is-not-passed contract and the sim/real frame-source split.)
 
+### First run of the panel, 2026-08-06 evening — two bugs, both fixed (`c9bfd28`)
+
+The panel was written but never executed (this sandbox has no ROS1 and no
+display). First real use found both of its remaining defects at once.
+
+**1. `vision_nav.launch` would not parse AT ALL.** Every *Start mission* died
+with `RLException: Invalid roslaunch XML syntax: not well-formed (invalid
+token): line 117, column 104`. Cause: an em-dash written as `--` inside an
+`<arg>` comment. **A double hyphen is illegal inside an XML comment** — the
+sequence is reserved for the `-->` delimiter. This repo writes `--` as an
+em-dash in prose *everywhere*, which is fine in Python and YAML and a hard
+syntax error here, so it will happen again.
+
+⚠ **Tripwire added: `test/test_launch_files.py`** parses every `.launch` /
+`.xacro` / `.urdf` in the workspace (skipping `jackal/` and
+`virtual_maize_field/`) and reports a double hyphen with the line number and
+the offending text, rather than a byte offset. It also pins that every
+`$(arg x)` referenced is declared. **This matters more than it looks:** the
+sandbox has no ROS1, so pytest is the ONLY place a launch-file error can be
+caught before the ROS1 machine sees it, and the failure mode is a run that
+does not start rather than a warning.
+
+**2. Stop left Gazebo running.** The SIGKILL escalation only ran when roslaunch
+TIMED OUT — and roslaunch had exited perfectly cleanly, every node logging
+`killing on exit`. But **gzserver/gzclient outlive their roslaunch**, blocking
+on a Fuel model download during teardown (`libcurl: (28) Failed to connect to
+fuel.ignitionrobotics.org`, ~2 min of TCP timeout). A leftover gzserver holds
+the world, the ports and `/use_sim_time`, so the next Start meets a half-dead
+simulator. `LaunchProcess.stop()` now sweeps the process group TERM → KILL
+until it is empty, whatever roslaunch itself did. The buttons grey out with a
+`stopping ...` note while that happens, so the window does not look hung at the
+moment the operator is trying to stop a moving robot.
+
+**172 → 187 tests.**
+
+⚠ **Launching Gazebo from the panel is optional, not required.** Starting it in
+its own terminal (`roslaunch agbot_bringup agbot_gazebo.launch`) and using the
+panel only for the mission works fine and keeps Gazebo's very noisy output
+separate — the `sim` tick is what puts `sim:=true` on the vision-nav launch,
+and that is independent of who started the simulator. If Gazebo is already
+running, just do not press the first button.
+
 ### Also landed today (user's own commits, workspace hygiene)
 
 - `c0a1569` + `061bf2a` — **new top-level `README.md`** with the robot and
