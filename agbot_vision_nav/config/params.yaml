@@ -183,29 +183,48 @@ exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
 # frame arrives during the leg at all (the rear camera fails SILENTLY, and a
 # row end is exactly where that would otherwise strand the robot).
 #
-# ⚠ The MPC sign convention differs from the back-out's. BACKOUT keeps the
-# front signs because the 180-deg image mirror and the REVERSED motion cancel;
-# here the motion is FORWARD, so only the mirror applies and the state fed to
-# the controller is NEGATED. Rule: negate iff exactly ONE of {mirrored view,
-# reversed motion}. Tripwire: test_exit_clear_rear_steering_sign_is_negated.
+# ⚠ The rear measurement is CONVERTED to the equivalent front one before the
+# MPC sees it (mission_fsm.rear_to_front_state), not negated. Negating was the
+# original rule and it was wrong: the 180-degree mirror flips the sign of the
+# LATERAL term but not of the heading term (a yaw to the left moves the
+# vanishing point to image-right in BOTH views, because both cameras rotate
+# with the robot), so negating inverts heading feedback and steers the robot
+# steadily OFF the row axis -- observed in sim, 2026-08-07. BACKOUT is a third
+# case and passes the rear result through unchanged, because reversing also
+# flips the lateral dynamics. Tripwire: test_exit_clear_rear_steering_signs.
+#
+# ⚠ The node ALTERNATES the two cameras through this leg: rear frames steer it
+# and say when the tail is clear, front frames run the exit_revoke_* backstop
+# below. Everything in the leg therefore runs at half the inference rate.
 exit_clear_rear_steering: true
+exit_clear_rear_offset_gain: 2.0  # kappa in the conversion above: the rear
+                           # offset is corrected by kappa * rear slope. It is
+                           # 2*c1/c3, set by the RATIO of the scan rows' ground
+                           # distances -- identical for both cameras, since the
+                           # rear mount is an exact geometric mirror, so this is
+                           # not a per-robot calibration. With scan_row_fractions
+                           # [0.65, 0.78, 0.92] / weights [0.2, 0.3, 0.5] imaging
+                           # roughly 3/2/1 m: c1 = 0.717, c3 = 0.667, kappa 2.15.
+                           # 0.0 drops the correcting term and reproduces the
+                           # broken lateral behaviour, so raise rather than lower
+                           # it if the leg under-corrects.
 exit_clear_post_rear_distance: 0.2  # m driven after the rear view opens. The
                            # rear signature fires when the CAMERA is level with
                            # the row end, and there is still a bumper's worth of
                            # robot behind it -- this is what sweeps the far
                            # corner clear of the last plant during TURN_1.
-exit_clear_max_distance: 2.0  # m of EXIT_CLEAR travel with the rear view never
-                           # opening => there was no row end => un-count the row
-                           # and resume FOLLOW_ROW. This is rear-steered mode's
-                           # false-exit backstop, replacing the exit_revoke_*
-                           # revocation below (which needs the front camera, and
-                           # cannot be rebuilt on the rear view: just after a
-                           # GENUINE exit the rear near row legitimately still
-                           # has corn on both sides, so a rear revocation would
-                           # revoke every real exit). It is the stronger test of
-                           # the two -- the robot never turns without proof --
-                           # but it is slower to act, so a false exit costs a
-                           # straight overshoot at exit_clear_speed.
+exit_clear_max_distance: 1.5  # m of EXIT_CLEAR travel with the rear view never
+                           # opening => turn anyway. A CEILING, not a false-exit
+                           # test: exit_revoke_* below is still the backstop, run
+                           # on the front frames the leg alternates with.
+                           # ⚠ It used to un-count the row and resume FOLLOW_ROW
+                           # instead -- in the middle of a headland, where the
+                           # exit detector then has to re-arm over
+                           # min_in_row_distance (2.0 m) of open field before it
+                           # can fire again. That is how the sim robot reached
+                           # the world edge (2026-08-07). Was 2.0; 1.5 is enough
+                           # now that the rear open point is back-dated to where
+                           # the streak began rather than where it confirmed.
 
 headland_clearance: 1.0    # m of EXIT_CLEAR forward travel before turning,
                            # measured from where the exit was FIRST SEEN (the

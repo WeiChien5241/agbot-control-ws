@@ -7,6 +7,7 @@ from agbot_vision_nav.centerline_estimator import (
     CLASS_OBSTACLE,
     CLASS_SKY,
     CLASS_TRAVERSABLE,
+    CenterlineResult,
     estimate_centerline,
 )
 from agbot_vision_nav.mission_fsm import (
@@ -957,20 +958,66 @@ def make_rear_steered_fsm(controller=None, **kw):
     )
 
 
-def drive_exit_clear(fsm, pose, rear_result, steps, step=0.1):
-    """Advance EXIT_CLEAR along its heading, feeding `rear_result` as the
-    rear camera. The node passes an invalid FRONT result on rear ticks, and
-    this mirrors that. Returns (last pose, last command, state)."""
-    x, y, yaw = pose
-    invalid = estimate_centerline(
-        np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
+# Projection constants for the synthetic views below, from the scan rows'
+# ground distances (params.yaml scan_row_fractions [0.65, 0.78, 0.92] /
+# weights [0.2, 0.3, 0.5], imaging roughly 3 / 2 / 1 m):
+#     C1 = 0.2/3 + 0.3/2 + 0.5/1     lateral -> offset
+#     C3 = 1/1 - 1/3                 lateral -> slope (far row minus near row)
+# C2 (heading -> offset) is a free scale here; heading contributes NOTHING to
+# slope, because with the camera on the row axis every point of that axis
+# projects to the same column.
+_C1 = 0.7167
+_C3 = 0.6667
+
+
+def rear_view(lateral=0.0, heading=0.0):
+    """A synthetic REAR CenterlineResult for a known robot pose error.
+
+    lateral > 0: robot LEFT of the row axis. heading > 0: yawed LEFT.
+
+        rear offset = -C1*lateral + heading      (mirror flips the lateral
+                                                  term only)
+        rear slope  = +C3*lateral                (heading-free)
+
+    Built by hand rather than from a mask because the sign table below has to
+    vary the two error sources INDEPENDENTLY -- which is the whole point.
+    Empty scan_rows keeps the rear exit detector quiet.
+    """
+    return CenterlineResult(
+        offset_norm=-_C1 * lateral + heading,
+        slope_term=_C3 * lateral,
+        valid=True,
+        traversable_fraction=0.5,
+        scan_rows=(),
+        obstacle_fraction=0.0,
     )
+
+
+def drive_exit_clear(fsm, pose, rear_result, steps, step=0.1, front_result=None):
+    """Advance EXIT_CLEAR along its heading with the node's camera
+    ALTERNATION: odd ticks carry the rear result and NO front result, even
+    ticks carry the front result and no rear one.
+
+    The front default is a genuinely open view -- the robot really is in a
+    headland -- so revocation stays quiet unless a test asks for otherwise.
+    ⚠ front ticks must pass None, not a blank result: "not looked" and
+    "looked and saw no corridor" mean opposite things to revocation.
+    Returns (last pose, last command, state).
+    """
+    if front_result is None:
+        front_result = open_result()
+    x, y, yaw = pose
     lin = ang = 0.0
     state = fsm.state
     for i in range(1, steps + 1):
         p = (x + i * step * math.cos(yaw), y + i * step * math.sin(yaw), yaw)
+        rear_tick = (i % 2) == 1
         lin, ang, state, _ = update(
-            fsm, invalid, p, WIDTH, rear_centerline_result=rear_result
+            fsm,
+            None if rear_tick else front_result,
+            p,
+            WIDTH,
+            rear_centerline_result=rear_result if rear_tick else None,
         )
         pose = p
         if state != STATE_EXIT_CLEAR:
@@ -978,41 +1025,85 @@ def drive_exit_clear(fsm, pose, rear_result, steps, step=0.1):
     return pose, (lin, ang), state
 
 
-def test_exit_clear_rear_steering_sign_is_negated():
-    """⚠ THE sign tripwire. BACKOUT keeps the front controller's signs
-    because the 180-deg image mirror and the REVERSED motion cancel. EXIT_CLEAR
-    drives FORWARD off the same mirrored view, so only the mirror applies and
-    the state must be NEGATED. Getting this wrong steers the robot INTO the
-    corn it is trying to leave, at the one moment nothing else is watching.
-    """
-    rear = corridor_result(shift=20)      # corridor right of image centre
-    assert rear.offset_norm > 0.05
-
-    fsm = make_rear_steered_fsm(SteeringStubController())
+def steer_once_in_exit_clear(rear, **kw):
+    """angular_z commanded by one rear tick of a rear-steered EXIT_CLEAR."""
+    fsm = make_rear_steered_fsm(SteeringStubController(), **kw)
     pose, state, _ = drive_row_to_exit(fsm)
     assert state == STATE_EXIT_CLEAR
-    _, (_, ang_forward), _ = drive_exit_clear(fsm, pose, rear, 1)
+    _, (_, ang), _ = drive_exit_clear(fsm, pose, rear, 1)
+    return ang
 
-    # Same view, same controller, but reversing: the back-out leg.
-    fsm_back = MissionFSM(
-        SteeringStubController(),
-        RowExitDetector(
-            exit_confirm_distance=0.2,
-            blocked_confirm_seconds=1.0,
-            min_in_row_distance=2.0,
-        ),
-        num_rows=3,
-    )
-    fsm_back._backout_target = 5.0
-    fsm_back._enter(STATE_BACKOUT, (0.0, 0.0, 0.0))
-    _, ang_reverse, _, _ = update(
-        fsm_back, corridor_result(), (0.05, 0.0, 0.0), WIDTH,
-        rear_centerline_result=rear,
+
+@pytest.mark.parametrize(
+    "name,lateral,heading,expect_left",
+    [
+        # Off to one side, pointing straight down the row: steer back onto
+        # the axis. Driving FORWARD, so left of the axis means turn right.
+        ("left of axis", +0.30, 0.0, False),
+        ("right of axis", -0.30, 0.0, True),
+        # Yawed, sitting ON the axis: unwind the yaw. ⚠ These two are the
+        # cases the old "negate the state" rule got backwards. The vanishing
+        # point moves to image-RIGHT in the rear view for a yaw to the left --
+        # the SAME direction as in the front view, because the camera rotates
+        # with the robot -- so negating made heading feedback divergent, which
+        # is what walked the robot off the row in sim (2026-08-07).
+        ("yawed left", 0.0, +0.20, False),
+        ("yawed right", 0.0, -0.20, True),
+    ],
+)
+def test_exit_clear_rear_steering_signs(name, lateral, heading, expect_left):
+    """⚠ THE sign tripwire, replacing test_..._sign_is_negated.
+
+    No single sign flip can serve this leg: the 180-degree mirror inverts the
+    LATERAL term but not the heading term, so the rear result is converted to
+    the equivalent FRONT measurement (rear_to_front_state) instead. Getting it
+    wrong steers the robot away from the row it is leaving, at the one moment
+    nothing else is watching.
+    """
+    ang = steer_once_in_exit_clear(rear_view(lateral, heading))
+    assert (ang > 0.0) == expect_left, (
+        "%s: expected a turn %s, got angular_z=%+.3f"
+        % (name, "left" if expect_left else "right", ang)
     )
 
-    assert ang_forward == pytest.approx(-ang_reverse)
-    assert ang_forward == pytest.approx(rear.offset_norm)
-    assert ang_reverse == pytest.approx(-rear.offset_norm)
+
+def test_exit_clear_and_backout_treat_the_same_rear_view_differently():
+    """The two rear-camera legs are NOT sign-flips of each other, and the one
+    that is field-proven is BACKOUT (2026-08-05).
+
+    Reversing flips the lateral dynamics as well as the view, so BACKOUT feeds
+    the rear result through unchanged. EXIT_CLEAR drives forward and must
+    convert it. A pure heading error is where they agree (turn rate acts on
+    heading regardless of which way the robot is moving); a pure lateral
+    error is where they must differ.
+    """
+    lateral = rear_view(lateral=+0.30)    # robot left of the axis
+    heading = rear_view(heading=+0.20)    # yawed left, on the axis
+
+    def backout_steer(rear):
+        fsm = MissionFSM(
+            SteeringStubController(),
+            RowExitDetector(
+                exit_confirm_distance=0.2,
+                blocked_confirm_seconds=1.0,
+                min_in_row_distance=2.0,
+            ),
+            num_rows=3,
+        )
+        fsm._backout_target = 5.0
+        fsm._enter(STATE_BACKOUT, (0.0, 0.0, 0.0))
+        _, ang, _, _ = update(
+            fsm, corridor_result(), (0.05, 0.0, 0.0), WIDTH,
+            rear_centerline_result=rear,
+        )
+        return ang
+
+    # Lateral: reversing toward the axis means turning the other way.
+    assert steer_once_in_exit_clear(lateral) < 0.0
+    assert backout_steer(lateral) > 0.0
+    # Heading: both must unwind the same yaw error the same way.
+    assert steer_once_in_exit_clear(heading) < 0.0
+    assert backout_steer(heading) < 0.0
 
 
 def test_exit_clear_does_not_turn_until_the_rear_view_opens():
@@ -1036,18 +1127,24 @@ def test_exit_clear_turns_after_post_rear_distance():
 def test_exit_clear_drives_post_rear_distance_before_turning():
     """The rear signature fires when the CAMERA is level with the row end;
     there is still a bumper's worth of robot behind it."""
-    fsm = make_rear_steered_fsm(exit_clear_post_rear_distance=0.5)
+    fsm = make_rear_steered_fsm(
+        exit_clear_post_rear_distance=0.5, exit_clear_max_distance=10.0
+    )
     pose, _, _ = drive_row_to_exit(fsm)
     x, y, yaw = pose
     open_r = open_result()
-    invalid = estimate_centerline(
-        np.full((HEIGHT, WIDTH), CLASS_OBSTACLE, dtype=np.uint8)
-    )
+    front = open_result()
     opened_at = None
+    travelled = None
     for i in range(1, 40):
         p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        rear_tick = (i % 2) == 1
         _, _, state, _ = update(
-            fsm, invalid, p, WIDTH, rear_centerline_result=open_r
+            fsm,
+            None if rear_tick else front,
+            p,
+            WIDTH,
+            rear_centerline_result=open_r if rear_tick else None,
         )
         if opened_at is None and fsm._exit_clear_rear_open_at is not None:
             opened_at = fsm._exit_clear_rear_open_at
@@ -1055,6 +1152,7 @@ def test_exit_clear_drives_post_rear_distance_before_turning():
             travelled = math.hypot(p[0] - x, p[1] - y)
             break
     assert opened_at is not None
+    assert travelled is not None
     assert travelled >= opened_at + 0.5 - 1e-6
 
 
@@ -1072,15 +1170,41 @@ def test_exit_clear_falls_back_to_open_loop_without_rear_frames():
     assert fsm._exit_clear_rear_frames == 0
 
 
-def test_exit_clear_max_distance_withdraws_a_false_exit():
-    """Rear-steered mode's false-exit backstop, standing in for the
-    front-camera revocation this leg cannot run. A working rear camera that
-    never sees the row open means there was no row end."""
+def test_exit_clear_max_distance_turns_rather_than_driving_on():
+    """The ceiling on the rear-terminated leg.
+
+    ⚠ It used to un-count the row and drop back to FOLLOW_ROW instead -- in
+    the middle of a headland, where the exit detector has to re-arm over
+    min_in_row_distance (2 m) of open field before it can fire again. That is
+    how the sim robot reached the world edge (2026-08-07). The false-exit
+    backstop is revocation, on the front frames the leg alternates with.
+    """
     fsm = make_rear_steered_fsm(exit_clear_max_distance=1.0)
     pose, _, _ = drive_row_to_exit(fsm)
     assert fsm.rows_driven == 1
-    row_entry = fsm._row_entry_xy
     _, _, state = drive_exit_clear(fsm, pose, corridor_result(), 20)
+    assert state == STATE_TURN_1
+    assert fsm.rows_driven == 1
+    assert fsm.revoked_exits == []
+
+
+def test_exit_clear_front_tick_still_revokes_a_false_exit():
+    """The revocation backstop survives rear termination, because the node
+    alternates cameras rather than committing both eyes backwards.
+
+    A mid-row false exit puts corn back beside the NEAR front scan row within
+    ~0.15 m, which is exactly what revocation keys on -- and what the rear
+    view cannot be asked, since just after a GENUINE exit the rear near row
+    legitimately still has corn on both sides.
+    """
+    fsm = make_rear_steered_fsm(exit_revoke_fail_distance=0.25)
+    pose, _, _ = drive_row_to_exit(fsm)
+    assert fsm.rows_driven == 1
+    row_entry = fsm._row_entry_xy
+    # Rear never opens, front says "still in a row": a false exit.
+    _, _, state = drive_exit_clear(
+        fsm, pose, corridor_result(), 20, front_result=corridor_result()
+    )
     assert state == STATE_FOLLOW_ROW
     assert fsm.rows_driven == 0
     assert len(fsm.revoked_exits) == 1
@@ -1089,6 +1213,84 @@ def test_exit_clear_max_distance_withdraws_a_false_exit():
     # min_in_row_distance metres inside a row the robot is still in.
     assert fsm._row_entry_xy == row_entry
     assert fsm._entry_xy == row_entry
+
+
+def test_rear_tick_must_not_be_read_as_revocation_evidence():
+    """⚠ None and "an invalid result" are NOT interchangeable here.
+
+    On a rear tick there is no front perception at all. Handing revocation a
+    blank front result instead would read as "no corridor beside me", which
+    it counts against the exit exactly like corn -- revoking every genuine
+    exit within exit_revoke_fail_distance. Driving the leg with rear ticks
+    only must therefore never revoke.
+    """
+    fsm = make_rear_steered_fsm(
+        exit_revoke_fail_distance=0.1, exit_clear_max_distance=10.0
+    )
+    pose, _, _ = drive_row_to_exit(fsm)
+    x, y, yaw = pose
+    for i in range(1, 12):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        _, _, state, _ = update(
+            fsm, None, p, WIDTH, rear_centerline_result=corridor_result()
+        )
+    assert state == STATE_EXIT_CLEAR
+    assert fsm.revoked_exits == []
+
+
+def test_exit_clear_front_tick_holds_the_last_steering_command():
+    """Front ticks carry no rear view, so they have nothing new to steer on.
+    They must HOLD the last command: alternating a real angular_z with 0.0 is
+    a square wave, not a steering signal."""
+    fsm = make_rear_steered_fsm(SteeringStubController())
+    pose, _, _ = drive_row_to_exit(fsm)
+    x, y, yaw = pose
+    rear = rear_view(lateral=+0.30)
+    _, ang_rear, state, _ = update(
+        fsm, None, (x + 0.1, y, yaw), WIDTH, rear_centerline_result=rear
+    )
+    assert state == STATE_EXIT_CLEAR and ang_rear != 0.0
+    _, ang_front, _, _ = update(fsm, open_result(), (x + 0.2, y, yaw), WIDTH)
+    assert ang_front == pytest.approx(ang_rear)
+
+
+def test_exit_clear_back_dates_the_rear_open_point():
+    """The rear open point is where the streak BEGAN, not where it confirmed.
+
+    Using the confirmation point added the detector's whole
+    exit_confirm_distance to the leg, and exit_clear_post_rear_distance on top
+    of that -- the same compounding overshoot the FRONT leg was fixed for in
+    2026-07, and most of why this leg ran ~2 m in sim (2026-08-07).
+    """
+    fsm = make_rear_steered_fsm()
+    fsm.rear_exit_detector.exit_confirm_distance = 0.4
+    pose, _, _ = drive_row_to_exit(fsm)
+    x, y, yaw = pose
+    open_r = open_result()
+    for i in range(1, 30):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        _, _, state, _ = update(
+            fsm, None, p, WIDTH, rear_centerline_result=open_r
+        )
+        if fsm._exit_clear_rear_open_at is not None:
+            travelled = math.hypot(p[0] - x, p[1] - y)
+            break
+    assert fsm._exit_clear_rear_open_at is not None
+    # Confirmed after 0.4 m of evidence, but credited to where it started.
+    assert fsm._exit_clear_rear_open_at < travelled - 0.3
+
+
+def test_rear_exit_detector_inherits_the_front_leak_ratio():
+    """Every other threshold is copied from the front detector; leaving this
+    one at the constructor default made the rear watcher silently diverge the
+    moment exit_leak_ratio was tuned in params.yaml -- in the one place it
+    would be hardest to notice."""
+    fsm = MissionFSM(
+        StubController(),
+        RowExitDetector(exit_leak_ratio=0.25, exit_confirm_distance=0.2),
+        num_rows=3,
+    )
+    assert fsm.rear_exit_detector.exit_leak_ratio == 0.25
 
 
 def test_exit_clear_open_loop_mode_is_unchanged():

@@ -31,7 +31,7 @@ from sensor_msgs.msg import CompressedImage, Image, Joy
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, SetBoolResponse
 
-from agbot_vision_nav.centerline_estimator import CenterlineResult, estimate_centerline
+from agbot_vision_nav.centerline_estimator import estimate_centerline
 from agbot_vision_nav.controller import MPCRowController
 from agbot_vision_nav.debug_viz import render_debug_image
 from agbot_vision_nav.intervention_detector import (
@@ -56,16 +56,11 @@ from agbot_vision_nav.row_exit_detector import RowExitDetector
 from agbot_vision_nav.segmentation_model import SegmentationModel
 from agbot_vision_nav.timing_stats import PipelineTimingStats
 
-# Placeholder front result passed to the FSM on rear-camera ticks (the FSM
-# ignores front perception in STATE_BACKOUT; this only keeps the signature).
-_INVALID_RESULT = CenterlineResult(
-    offset_norm=0.0,
-    slope_term=0.0,
-    valid=False,
-    traversable_fraction=0.0,
-    scan_rows=(),
-)
-
+# How long the inference loop waits for a rear frame before falling back to
+# the front camera. Long enough that a working rear camera is never skipped
+# (30 Hz in sim, ~10 Hz on the Brio), short enough that a DEAD one degrades
+# within one control cycle instead of hanging the loop.
+_REAR_FRAME_WAIT_SEC = 0.5
 
 def _quaternion_to_yaw(q):
     """Yaw from a geometry_msgs/Quaternion (avoids a tf dependency)."""
@@ -216,7 +211,10 @@ class VisionNavNode(object):
                     "~exit_clear_post_rear_distance", 0.2
                 ),
                 exit_clear_max_distance=rospy.get_param(
-                    "~exit_clear_max_distance", 2.0
+                    "~exit_clear_max_distance", 1.5
+                ),
+                exit_clear_rear_offset_gain=rospy.get_param(
+                    "~exit_clear_rear_offset_gain", 2.0
                 ),
             )
 
@@ -239,6 +237,11 @@ class VisionNavNode(object):
         self._latest_frame_seq = 0
         self._latest_rear_frame = None
         self._latest_rear_frame_seq = 0
+        # Which camera the next EXIT_CLEAR frame comes from. Flipped once per
+        # frame actually dispatched, never per wakeup: _use_rear_camera() is
+        # called in a spin loop that may go round many times waiting for a
+        # frame, and flipping there would thrash between the two slots.
+        self._exit_clear_next_is_rear = True
         self._mission_done_logged = False
         self._revoked_logged = 0
         self._blocked_logged = 0
@@ -424,16 +427,18 @@ class VisionNavNode(object):
 
     def _use_rear_camera(self):
         # Two states run rear inference:
-        #   STATE_BACKOUT      -- reversing down the row (the other BACKOUT_*
-        #                         states are odometry-only, so the front
-        #                         camera resumes there harmlessly);
-        #   STATE_EXIT_CLEAR   -- the rear-steered headland leg, where the
-        #                         rear view of the row just left is both the
-        #                         steering reference and the "tail is clear"
-        #                         terminator. Gated on the FSM actually being
-        #                         in that mode, so the open-loop leg and the
-        #                         front-camera revocation it depends on keep
-        #                         the front camera.
+        #   STATE_BACKOUT      -- reversing down the row, every frame (the
+        #                         other BACKOUT_* states are odometry-only, so
+        #                         the front camera resumes there harmlessly);
+        #   STATE_EXIT_CLEAR   -- the rear-steered headland leg, ALTERNATING
+        #                         with the front camera. The rear view steers
+        #                         the leg and says when the tail is clear; the
+        #                         front view runs the revocation backstop,
+        #                         which is the only thing that catches a false
+        #                         exit and cannot be rebuilt on the rear view
+        #                         (just after a genuine exit the rear near row
+        #                         still legitimately has corn on both sides).
+        #                         Half the frame rate each, for ~10 s.
         # FSM state is only mutated by the inference thread itself, so this
         # read is race-free.
         if not self._rear_camera_enabled or self._fsm is None:
@@ -443,6 +448,7 @@ class VisionNavNode(object):
         return (
             self._fsm.state == STATE_EXIT_CLEAR
             and self._fsm.exit_clear_rear_steering
+            and self._exit_clear_next_is_rear
         )
 
     def _pause_srv(self, req):
@@ -538,11 +544,25 @@ class VisionNavNode(object):
             with self._frame_condition:
                 slot = None
                 is_rear = False
+                # ⚠ Waiting for the rear camera FOREVER is a hang, not a
+                # degraded mode. The rear camera fails silently (unplugged, or
+                # a topic-name mismatch), and both states that ask for it are
+                # states the robot must still get out of. update() is never
+                # called while this loop waits, so the FSM's own
+                # "no rear frames arrived" fallback -- the thing that stops a
+                # dead rear camera stranding the robot at a row end -- could
+                # never run either. After this long, take a front frame and
+                # let the FSM see the leg with rear_centerline_result=None.
+                deadline = time.monotonic() + _REAR_FRAME_WAIT_SEC
                 while not rospy.is_shutdown():
                     # Pick the source per wakeup so a state change mid-wait
                     # (e.g. entering/leaving BACKOUT) switches cameras on the
                     # very next frame.
                     is_rear = self._use_rear_camera()
+                    have_front = (
+                        self._latest_frame is not None
+                        and self._latest_frame_seq != last_front_seq
+                    )
                     if is_rear:
                         if (
                             self._latest_rear_frame is not None
@@ -551,10 +571,12 @@ class VisionNavNode(object):
                             slot = self._latest_rear_frame
                             last_rear_seq = self._latest_rear_frame_seq
                             break
-                    elif (
-                        self._latest_frame is not None
-                        and self._latest_frame_seq != last_front_seq
-                    ):
+                        if have_front and time.monotonic() >= deadline:
+                            is_rear = False
+                            slot = self._latest_frame
+                            last_front_seq = self._latest_frame_seq
+                            break
+                    elif have_front:
                         slot = self._latest_frame
                         last_front_seq = self._latest_frame_seq
                         break
@@ -562,6 +584,10 @@ class VisionNavNode(object):
                 if rospy.is_shutdown():
                     return
 
+            # Alternate cameras for the next EXIT_CLEAR frame. Done here, once
+            # per dispatched frame, because the loop above re-asks
+            # _use_rear_camera() on every wakeup.
+            self._exit_clear_next_is_rear = not self._exit_clear_next_is_rear
             frame, stamp, recv_time = slot
             self._process_frame(frame, stamp, recv_time, is_rear)
 
@@ -622,7 +648,12 @@ class VisionNavNode(object):
         elif self._fsm is not None:
             if is_rear:
                 linear_x, angular_z, state_name, done = self._fsm.update(
-                    _INVALID_RESULT,
+                    # None, NOT an invalid result: this tick carries no front
+                    # perception at all. EXIT_CLEAR's revocation test reads
+                    # "no corridor beside me" as evidence the exit was false,
+                    # so handing it a blank result would revoke every real
+                    # exit within exit_revoke_fail_distance.
+                    None,
                     odom_pose,
                     mask.shape[1],
                     # Rear stays on the steering rows: the FSM uses this one
@@ -1018,9 +1049,10 @@ class VisionNavNode(object):
         # headland_clearance above even means, so it is spelled out.
         if self._fsm.exit_clear_rear_steering:
             rospy.loginfo(
-                "  exit leg: REAR-STEERED -- turns on the rear open-exit "
-                "signature +%s m, NOT on headland_clearance; false exit "
-                "withdrawn after %s m",
+                "  exit leg: REAR-STEERED (gain=%s) -- turns on the rear "
+                "open-exit signature +%s m, NOT on headland_clearance; turns "
+                "anyway after %s m; cameras ALTERNATE so revocation still runs",
+                g("exit_clear_rear_offset_gain"),
                 g("exit_clear_post_rear_distance"), g("exit_clear_max_distance"),
             )
         else:

@@ -116,14 +116,23 @@
                                                             rear_camera_enabled. NOTE: with this on,
                                                             headland_clearance no longer ends the leg:
                                                             it stays the open-loop/no-rear-frames
-                                                            terminator. false = the pre-2026-08 leg. -->
+                                                            terminator, and the node alternates the two
+                                                            cameras through the leg so the revocation
+                                                            backstop still runs on the front view.
+                                                            false = the pre-2026-08 leg. -->
   <arg name="exit_clear_post_rear_distance" default="" /><!-- m driven after the rear view opens,
                                                             so the far corner sweeps clear of the last
                                                             plant during TURN_1 -->
-  <arg name="exit_clear_max_distance" default="" /><!-- m without the rear view ever opening =>
-                                                            no row end => un-count the row and resume
-                                                            FOLLOW_ROW. Rear-steered mode's false-exit
-                                                            backstop, standing in for exit_revoke_*. -->
+  <arg name="exit_clear_max_distance" default="" /><!-- m of leg without the rear view ever
+                                                            opening => turn anyway. A ceiling, not a
+                                                            false-exit test: exit_revoke_* is still the
+                                                            backstop, run on the front camera frames
+                                                            the leg alternates with. -->
+  <arg name="exit_clear_rear_offset_gain" default="" /><!-- kappa: converts the rear measurement
+                                                            into the equivalent FRONT one before the MPC
+                                                            sees it. Set by the ratio of the scan rows'
+                                                            ground distances, not per robot. Raise if
+                                                            the leg under-corrects laterally. -->
 
   <!-- Debounce in PHYSICAL units, never frames: 5 frames is 2.5 s at 2 Hz but
        0.2 s at 25 Hz, which is how a mid-row gap fired EXIT_CLEAR instantly on
@@ -253,6 +262,8 @@
            if="$(eval arg('exit_clear_post_rear_distance') != '')" />
     <param name="exit_clear_max_distance"  value="$(arg exit_clear_max_distance)"
            if="$(eval arg('exit_clear_max_distance') != '')" />
+    <param name="exit_clear_rear_offset_gain" value="$(arg exit_clear_rear_offset_gain)"
+           if="$(eval arg('exit_clear_rear_offset_gain') != '')" />
     <param name="exit_flank_min_clear_fraction" value="$(arg exit_flank_min_clear_fraction)"
            if="$(eval arg('exit_flank_min_clear_fraction') != '')" />
     <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)"
