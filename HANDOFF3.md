@@ -1,6 +1,167 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-06.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-07.
+**Read §0e first** — the rear-steered EXIT_CLEAR finally ran in sim, failed,
+and the reason was a wrong sign rule that had been written into four files.
+The sections below §0e describe the state before that.
+
+---
+
+## 0e. SESSION 2026-08-07 — the rear-steered exit leg's first run
+
+It ran. It failed in three separate ways, all now fixed. Nothing here has been
+re-run in sim yet: **the next action is exactly the same sim run, again.**
+
+### ⚠ THE SIGN RULE WAS WRONG. Do not restore it.
+
+The rule written into `mission_fsm.py`, `params.yaml`, `vision_nav.launch` and
+`CLAUDE.md` was: *negate the state iff exactly ONE of {mirrored view, reversed
+motion} applies.* It is not true, and it is worth understanding why before
+touching any rear-camera path.
+
+Let `e` = lateral offset (positive = robot LEFT of the row axis) and `θ` =
+heading error (positive = yawed left). Project the row axis through a pinhole
+camera on the mirrored mount:
+
+| | `offset_norm` | `slope_term` (far − near) |
+|---|---|---|
+| front | `+c₁·e + c₂·θ` | `−c₃·e` |
+| rear  | `−c₁·e + c₂·θ` | `+c₃·e` |
+
+**The mirror flips the sign of the lateral term but NOT of the heading term.**
+A yaw to the left moves the vanishing point to image-*right* in both views,
+because both cameras rotate with the robot. So the rear view is not a
+sign-flipped front view, and no single sign can serve it:
+
+- **negate** → stabilises `e`, **inverts `θ` feedback**. Positive feedback on
+  heading. That is the drift the user saw: not noise, divergence.
+- **don't negate** → stabilises `θ`, de-stabilises `e`.
+
+**BACKOUT is genuinely correct** and must be left alone. Reversing flips the
+sign of the lateral dynamics too (`ė = v·sinθ` with `v < 0`), so the unchanged
+rear state works there — and note it only works because the front tuning has
+`q_offset ≫ q_heading`. Three cases, three different treatments; the code says
+so now.
+
+**The fix** is a reconstruction, not a sign. `slope_term` is a θ-free readout
+of `e` (with the camera on the axis, every point of the axis projects to one
+column, so heading contributes nothing to slope), which makes the rear pair
+invertible:
+
+```
+offset_front_equiv = rear.offset_norm + κ · rear.slope_term
+slope_front_equiv  = −rear.slope_term            κ = 2·c₁/c₃
+```
+
+`mission_fsm.rear_to_front_state()`. κ depends only on the RATIO of the scan
+rows' ground distances, identical for both cameras (the rear mount is an exact
+geometric mirror), so it is **not** a per-robot calibration: with
+`scan_row_fractions` [0.65, 0.78, 0.92] / weights [0.2, 0.3, 0.5] imaging
+roughly 3/2/1 m, `c₁ = 0.717`, `c₃ = 0.667`, `κ = 2.15` → default **2.0**
+(`exit_clear_rear_offset_gain`). κ = 0 drops the correcting term and
+reproduces the broken lateral behaviour, so raise it, never lower it.
+
+Tripwire: `test_exit_clear_rear_steering_signs` — a four-case table over
+(lateral, heading) built from the projection constants above, plus
+`test_exit_clear_and_backout_treat_the_same_rear_view_differently`, which pins
+that the two legs agree on heading and disagree on lateral. The old
+`test_exit_clear_rear_steering_sign_is_negated` is gone; it pinned the bug.
+
+### Why the turn came so late (and the robot left the world)
+
+Three effects stacked:
+
+1. **No back-dating.** The rear open point was recorded where the streak
+   CONFIRMED, so the detector's whole `exit_confirm_distance` (0.4 m) was added
+   to the leg, then `exit_clear_post_rear_distance` (0.2 m) on top. This is the
+   identical mistake the FRONT leg was fixed for in 2026-07 (`0.4 + 0.75 =
+   1.15 m of overrun`) — it just was not carried across. Now back-dated to
+   `rear_exit_detector.open_streak_start`.
+2. **The rear scan rows image ground 1–3 m BACK down the row**, so the
+   signature is inherently ~0.5–1 m late. That part is wanted: it is the
+   evidence that the tail is clear. It is also why `exit_clear_post_rear_distance`
+   stays small.
+3. **The ceiling did the worst possible thing.** `exit_clear_max_distance`
+   (2.0 m) called `_withdraw_exit()` — un-count the row, resume FOLLOW_ROW **in
+   the middle of a headland**, where the exit detector must re-arm over
+   `min_in_row_distance` (2.0 m) of open field before it can fire again. That
+   is the most likely path to the world edge. It now enters TURN_1 instead, at
+   a default of **1.5 m**.
+
+### Revocation is back, by alternating the cameras
+
+Losing the ceiling as a false-exit test needed the real backstop returned.
+Rear-terminated EXIT_CLEAR now **alternates the two cameras**: rear frames
+steer the leg and feed the rear open-exit watcher, front frames run the
+ordinary `exit_revoke_*` test. Half the inference rate each, for ~10 s at
+0.10 m/s. It cannot be rebuilt on the rear view — just after a GENUINE exit
+the rear near row legitimately still has corn on both sides, so a rear
+revocation would revoke every real exit.
+
+⚠ **`None` and "an invalid result" are not interchangeable** in `update()`.
+A rear tick passes `centerline_result=None`, meaning "did not look". A blank
+result would mean "looked and saw no corridor beside me", which revocation
+counts against the exit exactly like corn — it would revoke every genuine exit
+within `exit_revoke_fail_distance`. Tripwire:
+`test_rear_tick_must_not_be_read_as_revocation_evidence`.
+
+### Three smaller things found while doing that
+
+- **The rear detector never inherited `exit_leak_ratio`.** Every other
+  threshold is copied from the front detector; that one silently kept the
+  constructor default, so tuning it in `params.yaml` would have moved the
+  front detector and not the rear one. Answering "are the front and rear exit
+  mechanisms the same?": they are now, except for the two differences that are
+  deliberate — the rear arms at 0 m (the exit behind may be arbitrarily close)
+  and always uses the STEERING scan rows, never `exit_scan_row_fractions`.
+- **The inference loop could hang forever waiting for a rear frame.** The rear
+  camera fails silently, and both states that request it are states the robot
+  must get out of. `update()` is never called while the loop waits, so the
+  FSM's own "no rear frames arrived" fallback — the thing that stops a dead
+  rear camera stranding the robot at a row end — could never run either. It
+  now falls back to a front frame after `_REAR_FRAME_WAIT_SEC` (0.5 s).
+- **Revocation threw away its first sample** (`_revoke_last_distance` started
+  at `None` rather than 0.0). Harmless at full rate; at half rate it needed
+  three front frames to bank two frames' worth of distance and could time out
+  against `exit_revoke_distance` first.
+
+### The panel no longer starts Gazebo
+
+The frame-source button followed the `simulation` checkbox and started
+`agbot_gazebo.launch`. The settled workflow runs the simulator in its own
+terminal, so that button had nothing useful to do in sim and invited a second
+Gazebo over the first. `cameras_launch_args()` now takes no `sim` argument at
+all (so it cannot come back by accident), and the button greys out with the
+roslaunch line to type instead. The `simulation` tick now means exactly one
+thing: `sim:=true` on the vision-nav launch.
+
+### 187 → 196 tests.
+
+### Next action
+
+**Re-run the same sim mission** (Gazebo in terminal 1, panel in terminal 2,
+`num_rows:=3`). What to watch, in order:
+
+1. Startup config block: `exit leg: REAR-STEERED (gain=2.0)`,
+   `exit_clear_max_distance 1.5`, and the `metrics:` CSV path.
+2. Through EXIT_CLEAR: `angular_z` must move the robot TOWARD the row axis.
+   The old failure is unmistakable — it grew monotonically one way.
+3. `rear open at X m` ~0.5–1.0 m into the leg, TURN_1 following
+   `exit_clear_post_rear_distance` later. Total leg ~1.0–1.2 m, not 2 m.
+4. The robot stays inside the world for all three rows.
+5. Pause mid-row, wait 30 s, resume (still never exercised).
+
+If the leg now turns too EARLY and clips end-of-row corn, the knob is
+`exit_clear_post_rear_distance` (0.2 → 0.4) — not the back-dating.
+`exit_clear_rear_steering:=false` still gives the old open-loop leg for an A/B.
+
+Everything in §0d's "Still open" list is unchanged: **the flat tire and its two
+drift tests come before reading anything into row hugging**, and defects #3,
+#4, #5 are diagnosed but deliberately unfixed.
+
+---
+
+Handoff content below is from the session of 2026-08-06.
 Field status: a full multi-row mission RAN IN REAL CORN 2026-08-05 -- in-row
 nav, exits, headland turns and the rear-camera BACK-OUT, no interventions.
 Read §0d first: it has the five defects that run exposed, four of which are
@@ -12,10 +173,10 @@ Hardware status: GPU robot cpr-j100-0864 runs the WDR camera FRONT (low mount)
 received this session's work** -- see the bundle flow in §0b, and note that
 `catkin build` is required this time (new executable + new package.xml deps).
 
-NEXT ACTION when picking this up: the rear-steered EXIT_CLEAR has never run.
-Start it in sim -- Gazebo in its own terminal, then the operator panel (§0d
-"RECOMMENDED SIM WORKFLOW"). Separately, and before reading anything into the
-robot's steering, the FLAT TIRE has to be fixed and measured.
+(Superseded by §0e: the rear-steered EXIT_CLEAR has since run in sim, failed
+in three ways, and been fixed -- see §0e for the next action. Still true:
+before reading anything into the robot's steering, the FLAT TIRE has to be
+fixed and measured.)
 
 ---
 
