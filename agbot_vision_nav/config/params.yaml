@@ -193,9 +193,10 @@ exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
 # case and passes the rear result through unchanged, because reversing also
 # flips the lateral dynamics. Tripwire: test_exit_clear_rear_steering_signs.
 #
-# ⚠ The node ALTERNATES the two cameras through this leg: rear frames steer it
-# and say when the tail is clear, front frames run the exit_revoke_* backstop
-# below. Everything in the leg therefore runs at half the inference rate.
+# The node infers on the REAR camera for the whole leg and switches back
+# afterwards, so the debug image shows the rear view (HUD: "(REAR)") while it
+# lasts. The exit detection is the SAME mechanism as the front camera's, on the
+# same thresholds -- see rear_exit_detector in mission_fsm.py.
 exit_clear_rear_steering: true
 exit_clear_rear_offset_gain: 2.0  # kappa in the conversion above: the rear
                            # offset is corrected by kappa * rear slope. It is
@@ -208,21 +209,15 @@ exit_clear_rear_offset_gain: 2.0  # kappa in the conversion above: the rear
                            # 0.0 drops the correcting term and reproduces the
                            # broken lateral behaviour, so raise rather than lower
                            # it if the leg under-corrects.
-# ⚠ Two hard limits on this leg's steering, because the rear view of a HEADLAND
-# is a far worse measurement than the in-row view the MPC is tuned for, and the
-# MPC cannot tell. Sim 2026-08-07: fed a border-clipped rear scan row it
-# saturated at angular_z_max (0.175) and HELD it for the whole leg -- 15 s of
-# that is 150 degrees of unintended turn, and the robot nearly left the world.
-# The leg's job is a small alignment correction, so it gets a small budget.
-# (The primary fix is upstream of both: the leg only steers on a rear corridor
-# whose edges are INSIDE the image, since a border-clipped corridor has a
-# fictitious midpoint. These are the backstop for what that lets through.)
-exit_clear_angular_z_max: 0.08  # rad/s cap during EXIT_CLEAR only; in-row
-                           # driving keeps angular_z_max
-exit_clear_max_yaw_deg: 20.0  # total yaw the leg may sweep before it gives up
-                           # steering and drives straight. A budget, not a rate:
-                           # it bounds how far a bad measurement can take the
-                           # robot no matter how long the leg lasts.
+# ⚠ The leg steers only while the rear corridor has BOTH edges inside the
+# image. `valid` cannot see that: the corridor scan stops at the first
+# non-traversable pixel OR at the image border, and the midpoint averages the
+# two kinds of boundary as if they were the same. In a row that is a bias; in a
+# HEADLAND, where the ground genuinely continues past the frame, it is a
+# fiction, and the MPC steered on it at full authority for a whole leg (sim
+# 2026-08-07: `edges=1.00/0.00`, `angular_z=+0.175` held to the world edge).
+# An unusable rear frame is then treated exactly as the front controller
+# treats an unusable front frame: no steering that tick.
 exit_clear_post_rear_distance: 0.2  # m driven after the rear view opens. The
                            # rear signature fires when the CAMERA is level with
                            # the row end, and there is still a bumper's worth of
@@ -231,7 +226,8 @@ exit_clear_post_rear_distance: 0.2  # m driven after the rear view opens. The
 exit_clear_max_distance: 1.5  # m of EXIT_CLEAR travel with the rear view never
                            # opening => turn anyway. A CEILING, not a false-exit
                            # test: exit_revoke_* below is still the backstop, run
-                           # on the front frames the leg alternates with.
+                           # on the front frames the node falls back to
+                           # if the rear camera stops delivering.
                            # ⚠ It used to un-count the row and resume FOLLOW_ROW
                            # instead -- in the middle of a headland, where the
                            # exit detector then has to re-arm over

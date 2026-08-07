@@ -116,24 +116,17 @@
                                                             rear_camera_enabled. NOTE: with this on,
                                                             headland_clearance no longer ends the leg:
                                                             it stays the open-loop/no-rear-frames
-                                                            terminator, and the node alternates the two
-                                                            cameras through the leg so the revocation
-                                                            backstop still runs on the front view.
-                                                            false = the pre-2026-08 leg. -->
+                                                            terminator. The node infers on the rear
+                                                            camera for the whole leg and switches back
+                                                            afterwards. false = the pre-2026-08 leg. -->
   <arg name="exit_clear_post_rear_distance" default="" /><!-- m driven after the rear view opens,
                                                             so the far corner sweeps clear of the last
                                                             plant during TURN_1 -->
   <arg name="exit_clear_max_distance" default="" /><!-- m of leg without the rear view ever
                                                             opening => turn anyway. A ceiling, not a
                                                             false-exit test: exit_revoke_* is still the
-                                                            backstop, run on the front camera frames
-                                                            the leg alternates with. -->
-  <arg name="exit_clear_angular_z_max" default="" /><!-- rad/s cap during EXIT_CLEAR only.
-                                                            The headland view is a much worse
-                                                            measurement than the in-row one, so the leg
-                                                            steers gently or not at all. -->
-  <arg name="exit_clear_max_yaw_deg" default="" /><!-- total degrees the leg may steer through
-                                                            before giving up and driving straight -->
+                                                            backstop; it needs the front camera, so in
+                                                            this mode it only runs on fallback frames. -->
   <arg name="exit_clear_rear_offset_gain" default="" /><!-- kappa: converts the rear measurement
                                                             into the equivalent FRONT one before the MPC
                                                             sees it. Set by the ratio of the scan rows'
@@ -270,10 +263,6 @@
            if="$(eval arg('exit_clear_max_distance') != '')" />
     <param name="exit_clear_rear_offset_gain" value="$(arg exit_clear_rear_offset_gain)"
            if="$(eval arg('exit_clear_rear_offset_gain') != '')" />
-    <param name="exit_clear_angular_z_max" value="$(arg exit_clear_angular_z_max)"
-           if="$(eval arg('exit_clear_angular_z_max') != '')" />
-    <param name="exit_clear_max_yaw_deg"   value="$(arg exit_clear_max_yaw_deg)"
-           if="$(eval arg('exit_clear_max_yaw_deg') != '')" />
     <param name="exit_flank_min_clear_fraction" value="$(arg exit_flank_min_clear_fraction)"
            if="$(eval arg('exit_flank_min_clear_fraction') != '')" />
     <param name="exit_confirm_distance"    value="$(arg exit_confirm_distance)"

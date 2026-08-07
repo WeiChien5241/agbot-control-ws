@@ -59,9 +59,6 @@ robot reverses out the end it entered, steering from the REAR camera):
     ⚠ headland_clearance does NOT terminate this mode -- the rear camera
     does, bounded above by exit_clear_max_distance. It remains the terminator
     of the open-loop mode below.
-    ⚠ The node ALTERNATES cameras through this leg: rear frames steer and
-    terminate it, front frames run the revocation backstop below. Everything
-    in the leg therefore runs at half the inference rate.
 
   * OPEN-LOOP (the original, and the automatic fallback whenever no usable
     rear frame arrives during the leg -- a dead or mis-topiced rear camera
@@ -71,15 +68,17 @@ robot reverses out the end it entered, steering from the REAR camera):
     1.15 m of overshoot), with exit_clear_min_distance always driven after
     the exit confirmed.
 
-- A false open exit is caught by REVOCATION in BOTH modes: for the first
+- A false open exit is caught by REVOCATION: for the first
   exit_revoke_distance meters, a nearest FRONT scan row that stays
   corn-flanked for a continuous exit_revoke_fail_distance falls back to
   FOLLOW_ROW and un-counts the row (the 2026-07-24 field failure drove into
-  the corn because the transition was a one-way commit). Rear-steered mode
-  gets it by alternating cameras rather than committing both eyes backwards.
-  It cannot be rebuilt on the rear view -- just after a GENUINE exit the rear
-  near row legitimately still has corn on both sides, so a rear revocation
-  would revoke every real exit.
+  the corn because the transition was a one-way commit). It needs the front
+  camera, so in rear-steered mode it only runs on the fallback frames that
+  arrive when the rear camera is not delivering; there, exit_clear_max_distance
+  is the bound instead -- drive that far without the rear view opening and the
+  robot turns anyway. Revocation cannot be rebuilt on the rear view: just
+  after a GENUINE exit the rear near row legitimately still has corn on both
+  sides, so a rear revocation would revoke every real exit.
 - All maneuver segments are closed-loop on wheel odometry: turns integrate
   measured yaw until 90 degrees is swept; EXIT_CLEAR / TRAVERSE integrate
   measured displacement. The TRAVERSE leg is traverse_distance (default
@@ -212,8 +211,6 @@ class MissionFSM:
         exit_clear_post_rear_distance=0.2,
         exit_clear_max_distance=1.5,
         exit_clear_rear_offset_gain=2.0,
-        exit_clear_angular_z_max=0.08,
-        exit_clear_max_yaw_deg=20.0,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -294,9 +291,9 @@ class MissionFSM:
         # and drop back to FOLLOW_ROW instead -- in the middle of a headland,
         # where the exit detector then has to re-arm over min_in_row_distance
         # (2.0 m) of open field before it can fire again. That is how the sim
-        # robot reached the world edge (2026-08-07). The false-exit backstop is
-        # the FRONT-camera revocation below, which rear-terminated mode now
-        # keeps by alternating cameras through the leg.
+        # robot reached the world edge (2026-08-07). It is the bound on the
+        # leg, not a false-exit test: the front-camera revocation below is
+        # that, and it cannot run while the node is looking backwards.
         self.exit_clear_max_distance = exit_clear_max_distance
         # kappa in rear_to_front_state(). 2*c1/c3, where c1 and c3 come from the
         # scan rows' ground distances: with scan_row_fractions
@@ -306,20 +303,6 @@ class MissionFSM:
         # the term that makes the reconstruction work), so raise rather than
         # lower it if the leg under-corrects.
         self.exit_clear_rear_offset_gain = exit_clear_rear_offset_gain
-        # ⚠ Two hard limits on what this leg's steering may do. The rear view
-        # of a headland is a much worse measurement than the in-row view the
-        # MPC is tuned for, and the MPC has no idea: fed a border-clipped rear
-        # row it saturated at angular_z_max (0.175) and HELD it for the whole
-        # leg -- 15 s at that rate is 150 degrees of unintended turn, which is
-        # how the robot nearly left the world (sim, 2026-08-07). The leg's job
-        # is a small alignment correction, so it gets a small budget:
-        #   * a gentler rate cap than the in-row one, and
-        #   * a total yaw budget, after which it drives straight.
-        # Neither is a substitute for the trust gate on the measurement
-        # itself (nearest_row_corridor_is_bounded); they are the backstop for
-        # what the gate lets through.
-        self.exit_clear_angular_z_max = abs(exit_clear_angular_z_max)
-        self.exit_clear_max_yaw = math.radians(abs(exit_clear_max_yaw_deg))
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
@@ -341,12 +324,6 @@ class MissionFSM:
         # demotes the leg back to the open-loop terminator.
         self._exit_clear_rear_open_at = None
         self._exit_clear_rear_frames = 0
-        # Last steering command of the rear-terminated leg. The node alternates
-        # cameras through EXIT_CLEAR (rear steers and terminates, front watches
-        # for a false exit), and a front tick must HOLD this rather than
-        # commanding zero -- alternating a real angular_z with 0.0 would be a
-        # square wave, not a steering signal.
-        self._exit_clear_angular_z = 0.0
         self._revoke_fail = 0.0         # m of continuous near-row corn
         self._revoke_last_distance = None
         self._last_yaw = None      # previous yaw sample, for sweep integration
@@ -375,7 +352,6 @@ class MissionFSM:
             self._revoke_last_distance = 0.0
             self._exit_clear_rear_open_at = None
             self._exit_clear_rear_frames = 0
-            self._exit_clear_angular_z = 0.0
             if self.exit_clear_rear_steering:
                 # Same reasons as BACKOUT: clear the MPC rate-limiter history
                 # before the sign convention flips, and clear the rear
@@ -498,7 +474,6 @@ class MissionFSM:
         self._exit_clear_offset = 0.0
         self._exit_clear_rear_open_at = None
         self._exit_clear_rear_frames = 0
-        self._exit_clear_angular_z = 0.0
         self._controller.reset()
         self._detector.reset()
 
@@ -507,18 +482,13 @@ class MissionFSM:
                                  travelled, odom_pose, now):
         """EXIT_CLEAR steered and terminated by the REAR camera.
 
-        The node alternates cameras through this leg, so exactly one of the
-        two results is fresh on any given tick:
-          * a REAR tick steers and feeds the rear open-exit watcher that ends
-            the leg;
-          * a FRONT tick runs the ordinary revocation test, which is the
-            false-exit backstop and needs the forward view. Its steering
-            contribution is to HOLD the last rear-derived command.
+        The node infers on the REAR camera for the whole leg, so
+        exit_centerline_result is normally None. It is not None only on the
+        fallback frames the node takes when the rear camera stops delivering,
+        and there the ordinary revocation test is exactly what should run.
 
         Returns the same (linear_x, angular_z, state, done) tuple as update().
         """
-        # Front tick: the only thing the forward view is asked for here is
-        # "was that exit real?". Revocation may end the leg by itself.
         if exit_centerline_result is not None:
             if self._revoke_exit(exit_centerline_result, image_width,
                                  travelled, odom_pose):
@@ -586,15 +556,20 @@ class MissionFSM:
         # feedback and drove the robot OFF the row axis. Transforming the
         # STATE rather than the output keeps the controller's _u_prev and its
         # rate-limit constraint in the same frame as the published command.
-        # ⚠ That rate limit now sees ~2x longer steps, because the leg runs at
-        # half the inference rate while the cameras alternate.
         #
-        # Only on a TRUSTWORTHY rear measurement, though. A corridor clipped by
-        # the image border has a fictitious midpoint (see
-        # nearest_row_corridor_is_bounded), and in a headland that is the
-        # normal case, not the exception. Holding the last command through
-        # those frames is right: an untrustworthy reading is not evidence that
-        # the heading changed.
+        # ⚠ `valid` means something WEAKER here than it does in a row. It is a
+        # pixel count over the lower half, and it cannot see that the corridor
+        # ran off the side of the image -- the scan stops at the first
+        # non-traversable pixel OR at the border, and x_mid averages the two
+        # kinds of boundary as if they were the same thing. In a row that is a
+        # bias; in a HEADLAND, where the ground genuinely continues past the
+        # frame, it is a fiction, and the MPC steered on it at full authority
+        # for a whole leg (sim, 2026-08-07: `edges=1.00/0.00`,
+        # `angular_z=+0.175` held to the world edge). So the leg asks the one
+        # extra question `valid` cannot answer, and otherwise treats an
+        # unusable rear frame exactly as the front controller treats an
+        # unusable front frame: no steering this tick.
+        angular_z = 0.0
         if (
             rear_centerline_result is not None
             and rear_centerline_result.valid
@@ -608,24 +583,7 @@ class MissionFSM:
                 self.exit_clear_rear_offset_gain,
             )
             _, angular_z = self._controller.compute(offset, slope, True)
-            self._exit_clear_angular_z = max(
-                -self.exit_clear_angular_z_max,
-                min(self.exit_clear_angular_z_max, angular_z),
-            )
-
-        # Spend the yaw budget, then drive straight. _integrate_yaw is the same
-        # wrap-safe accumulator the 90-degree turns use; here it measures how
-        # far the steering has actually swung the robot, which is the quantity
-        # that ran away.
-        if abs(self._integrate_yaw(odom_pose)) >= self.exit_clear_max_yaw:
-            self._exit_clear_angular_z = 0.0
-
-        return (
-            self.exit_clear_speed,
-            self._exit_clear_angular_z,
-            self.state,
-            False,
-        )
+        return self.exit_clear_speed, angular_z, self.state, False
 
     def _looks_like_row(self, centerline_result, image_width):
         """True when the near scan row has a corridor with corn on BOTH sides.
@@ -661,15 +619,17 @@ class MissionFSM:
         Args:
             centerline_result: CenterlineResult for the current FRONT frame,
                 or None when this tick carries no front perception at all
-                (the node is inferring on the rear camera). None is NOT the
-                same as an invalid result: "nothing seen" counts as evidence
-                against an exit in the revocation test, while "not looked"
-                must count as nothing.
+                (the node is inferring on the rear camera). ⚠ None is NOT the
+                same as an invalid result: "looked and saw no corridor beside
+                me" counts as evidence against an exit in the revocation test,
+                while "did not look" must count as nothing.
             odom_pose: (x, y, yaw) from odometry, or None if unavailable.
             image_width: mask width in pixels.
             rear_centerline_result: CenterlineResult from the rear camera,
                 or None. Used in STATE_BACKOUT, and in STATE_EXIT_CLEAR when
-                exit_clear_rear_steering is on. ⚠ The two treat it
+                exit_clear_rear_steering is on -- the same open-exit detector
+                the front camera runs, on the same thresholds, pointed
+                backwards. ⚠ The two treat it
                 differently: BACKOUT reverses and passes it through UNCHANGED
                 (reversing flips the lateral dynamics, which is what makes the
                 mirrored view work as-is); EXIT_CLEAR drives FORWARD and must

@@ -88,21 +88,21 @@ Three effects stacked:
    is the most likely path to the world edge. It now enters TURN_1 instead, at
    a default of **1.5 m**.
 
-### Revocation is back, by alternating the cameras
+### The false-exit backstop in this mode
 
-Losing the ceiling as a false-exit test needed the real backstop returned.
-Rear-terminated EXIT_CLEAR now **alternates the two cameras**: rear frames
-steer the leg and feed the rear open-exit watcher, front frames run the
-ordinary `exit_revoke_*` test. Half the inference rate each, for ~10 s at
-0.10 m/s. It cannot be rebuilt on the rear view — just after a GENUINE exit
-the rear near row legitimately still has corn on both sides, so a rear
-revocation would revoke every real exit.
+Revocation needs the FRONT camera, and this leg looks backwards, so it only
+runs on the fallback frames the node takes when the rear camera stops
+delivering. `exit_clear_max_distance` is the bound the rest of the time --
+drive that far without the rear view opening and the robot turns anyway.
+Revocation cannot be rebuilt on the rear view: just after a GENUINE exit the
+rear near row legitimately still has corn on both sides, so a rear revocation
+would revoke every real exit.
 
 ⚠ **`None` and "an invalid result" are not interchangeable** in `update()`.
 A rear tick passes `centerline_result=None`, meaning "did not look". A blank
 result would mean "looked and saw no corridor beside me", which revocation
-counts against the exit exactly like corn — it would revoke every genuine exit
-within `exit_revoke_fail_distance`. Tripwire:
+counts against the exit exactly like corn -- it would revoke every genuine
+exit within `exit_revoke_fail_distance`. Tripwire:
 `test_rear_tick_must_not_be_read_as_revocation_evidence`.
 
 ### Three smaller things found while doing that
@@ -160,29 +160,34 @@ measurable, ~22-33% of in-row frames — except that in a HEADLAND it is the
 normal case rather than a bias, and the leg was giving it full steering
 authority.
 
-Three fixes, in order of importance:
+**The fix is one check, not a control mechanism.** The leg steers only on a
+rear corridor with BOTH edges inside the image
+(`row_exit_detector.nearest_row_corridor_is_bounded`); anything else is
+treated exactly as the front controller treats an unusable front frame -- no
+steering that tick. `valid` cannot cover this on its own: it is a pixel count
+over the lower half and says nothing about the corridor running off the frame.
 
-1. **The leg steers only on a rear corridor with both edges INSIDE the image**
-   (`row_exit_detector.nearest_row_corridor_is_bounded`). An untrustworthy
-   reading is not evidence the heading changed, so those frames hold the last
-   command rather than commanding zero.
-2. **`exit_clear_angular_z_max` (0.08 rad/s)** — the leg's job is a small
-   alignment correction, and the MPC is tuned for the in-row view with no idea
-   the headland view is worse. Applied outside the controller.
-3. **`exit_clear_max_yaw_deg` (20 deg)** — a budget on TOTAL swept yaw
-   (odometry, via the same `_integrate_yaw` the 90-degree turns use), after
-   which the leg drives straight. A rate cap alone still lets a long leg
-   accumulate; this bounds the damage however long it lasts.
+⚠ **An earlier version of this fix also added `exit_clear_angular_z_max` and
+`exit_clear_max_yaw_deg`. Both were REMOVED at the user's direction, and the
+reasoning is worth keeping: they were new control mechanisms that exist
+nowhere else in this pipeline, invented to bound a symptom whose cause was a
+bad measurement. The rear leg is meant to be the FRONT mechanism pointed
+backwards -- same detector, same thresholds, same MPC -- and every extra knob
+is a place where the two can silently diverge. If the leg ever needs a gentler
+hand than the in-row driving does, that is evidence the measurement is still
+wrong, not that it needs its own limits.**
 
 ⚠ Do not "fix" this by raising `angular_z_max` or the MPC weights. The
 controller was doing exactly what it was told; the input was fiction.
 
-**The debug image also flipped between the front and rear views several times
-a second** — the alternation, seen through one topic. Each camera now has its
-own: `~debug/image` and `~debug/image_rear`. Open both in `rqt_image_view`.
-The front topic goes quiet during BACKOUT, which is the one rear-only state.
+**The debug image flipped between the front and rear views several times a
+second.** That was the camera alternation, seen through one topic; the
+alternation is gone, so the view switches to the rear ONCE when the leg starts
+and switches back when it ends -- which is the behaviour that was there before
+and the behaviour that is wanted. One topic, one `rqt_image_view`, `(REAR)` on
+the HUD while it lasts.
 
-### 187 → 199 tests.
+### 187 → 196 tests.
 
 ### Next action
 
@@ -191,16 +196,17 @@ The front topic goes quiet during BACKOUT, which is the one rear-only state.
 
 1. Startup config block: `exit leg: REAR-STEERED (gain=2.0, |w|<=0.08 rad/s,
    <=20.0 deg total)`, `exit_clear_max_distance 1.5`, `metrics:` CSV path.
-2. Through EXIT_CLEAR: `angular_z` must be SMALL and must not sit at its cap.
-   A run of `+0.08` frame after frame is the same failure as before, just
-   slower — check `edges=` on the rear detector line if you see it.
+2. Through EXIT_CLEAR: `angular_z` must move the robot TOWARD the row axis
+   and must not sit at `angular_z_max` frame after frame. If it does, read
+   `edges=` on the rear detector line — a corridor running off the frame is
+   the measurement the leg is now supposed to refuse.
 3. `rear open at X m` ~0.5–1.0 m into the leg, TURN_1 following
    `exit_clear_post_rear_distance` later. Total leg ~1.0–1.2 m, not 2 m.
    If `openrows` stays 0 for the whole leg the turn now happens anyway at
    `exit_clear_max_distance` — check whether the robot was still rotating.
 4. The robot stays inside the world for all three rows.
-5. `rqt_image_view` on BOTH `~debug/image` and `~debug/image_rear`; neither
-   should ever flip cameras.
+5. The debug view switches to the rear ONCE at the start of the leg and back
+   at the end -- no flipping.
 6. Pause mid-row, wait 30 s, resume (still never exercised).
 
 If the leg now turns too EARLY and clips end-of-row corn, the knob is
