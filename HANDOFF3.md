@@ -600,7 +600,11 @@ with zero context. Supersedes all previous HANDOFF3 content.
 
 ---
 
-## 0. START HERE — state of play (end of session 2026-07-28)
+## 0. Session 2026-07-28 — the row-exit rebuild
+
+(This section used to be titled START HERE. **§0d is the entry point now**;
+this is kept because the row-exit design decisions in it are still live. Test
+counts and "state of play" statements below are as of 2026-07-28.)
 
 **Row-exit detection was rebuilt today and is SIM-VALIDATED**: a full 3-row
 mission ran clean (`Mission DONE: rows_driven=3, blocked rows: none, revoked
