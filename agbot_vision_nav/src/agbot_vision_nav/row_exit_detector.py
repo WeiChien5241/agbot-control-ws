@@ -208,6 +208,37 @@ def nearest_row_flank_clear(
     return flags[near_index]
 
 
+def nearest_row_corridor_is_bounded(centerline_result, image_width):
+    """True when the NEAREST scan row's corridor has both of its edges INSIDE
+    the image, so its midpoint is a real corridor centre. None if there is no
+    scan row at all.
+
+    ⚠ This is the difference between a measurement and a fiction. The corridor
+    scan runs outward from the image centre until it hits a non-traversable
+    pixel OR RUNS OUT OF IMAGE, and x_mid cannot tell the two apart: a row
+    clipped at the left border averages a real corn boundary on the right with
+    an imaginary one at column 0, which drags the midpoint toward the centre.
+    A FULLY clipped row reports exactly zero offset no matter where the robot
+    actually is.
+
+    Mid-row this is a bias (HANDOFF3 defect #1 candidate (a): the near row
+    clips in 22-33% of FOLLOW_ROW frames). In the rear view during EXIT_CLEAR
+    it is the DOMINANT case -- the robot is in a headland, so the corridor
+    genuinely runs off one edge -- and steering on it drove the robot in a
+    slow circle at full angular_z until it nearly left the world (sim,
+    2026-08-07: `edges=1.00/0.00` with `angular_z=+0.175` held for the whole
+    leg). The nearest row is the one checked because it clips most and carries
+    the largest steering weight (0.5).
+    """
+    index = nearest_row_index(centerline_result)
+    if index is None:
+        return None
+    sr = centerline_result.scan_rows[index]
+    if sr.x_left is None:
+        return False
+    return sr.x_left > 0 and sr.x_right < image_width - 1
+
+
 class RowExitDetector:
     """End-of-row detection debounced in meters (open) and seconds (blocked)."""
 

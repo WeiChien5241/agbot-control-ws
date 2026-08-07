@@ -8,6 +8,7 @@ from agbot_vision_nav.centerline_estimator import (
     CLASS_SKY,
     CLASS_TRAVERSABLE,
     CenterlineResult,
+    ScanRowResult,
     estimate_centerline,
 )
 from agbot_vision_nav.mission_fsm import (
@@ -970,7 +971,7 @@ _C1 = 0.7167
 _C3 = 0.6667
 
 
-def rear_view(lateral=0.0, heading=0.0):
+def rear_view(lateral=0.0, heading=0.0, clipped=False):
     """A synthetic REAR CenterlineResult for a known robot pose error.
 
     lateral > 0: robot LEFT of the row axis. heading > 0: yawed LEFT.
@@ -981,14 +982,23 @@ def rear_view(lateral=0.0, heading=0.0):
 
     Built by hand rather than from a mask because the sign table below has to
     vary the two error sources INDEPENDENTLY -- which is the whole point.
-    Empty scan_rows keeps the rear exit detector quiet.
+
+    The scan row it carries is narrow (no open-exit signature, so the leg does
+    not terminate mid-test) and, unless `clipped`, has both edges INSIDE the
+    image -- which is what makes the midpoint a real measurement and is
+    required before the leg will steer at all.
     """
+    row = (
+        ScanRowResult(90, 0, 140, 70.0, -0.3, 1.0, 0.0)     # runs off the left
+        if clipped
+        else ScanRowResult(90, 60, 140, 100.0, 0.0, 0.0, 0.0)
+    )
     return CenterlineResult(
         offset_norm=-_C1 * lateral + heading,
         slope_term=_C3 * lateral,
         valid=True,
         traversable_fraction=0.5,
-        scan_rows=(),
+        scan_rows=(row,),
         obstacle_fraction=0.0,
     )
 
@@ -1025,7 +1035,10 @@ def drive_exit_clear(fsm, pose, rear_result, steps, step=0.1, front_result=None)
     return pose, (lin, ang), state
 
 
-def steer_once_in_exit_clear(rear, **kw):
+def steer_once_in_exit_clear(rear, exit_clear_angular_z_max=10.0, **kw):
+    # The cap defaults OPEN here so the sign table reads the controller's own
+    # output; it has its own test below.
+    kw["exit_clear_angular_z_max"] = exit_clear_angular_z_max
     """angular_z commanded by one rear tick of a rear-steered EXIT_CLEAR."""
     fsm = make_rear_steered_fsm(SteeringStubController(), **kw)
     pose, state, _ = drive_row_to_exit(fsm)
@@ -1065,6 +1078,60 @@ def test_exit_clear_rear_steering_signs(name, lateral, heading, expect_left):
         "%s: expected a turn %s, got angular_z=%+.3f"
         % (name, "left" if expect_left else "right", ang)
     )
+
+
+def test_exit_clear_does_not_steer_on_a_border_clipped_rear_row():
+    """⚠ The measurement gate, and the reason the leg ran away in sim.
+
+    A corridor clipped by the image border averages a real corn boundary with
+    an imaginary one at the frame edge, so its midpoint is fiction -- and in a
+    HEADLAND that is the normal case, not the exception. Sim 2026-08-07 logged
+    `edges=1.00/0.00` (corridor running off the left border) with
+    `angular_z=+0.175` held for the entire leg: full authority, on nothing.
+    """
+    clipped = rear_view(lateral=+0.30, clipped=True)
+    assert steer_once_in_exit_clear(clipped) == 0.0
+    # Same pose error, measured properly, does steer.
+    assert steer_once_in_exit_clear(rear_view(lateral=+0.30)) != 0.0
+
+
+def test_exit_clear_steering_is_capped_below_the_in_row_limit():
+    """The leg's job is a small alignment correction. The MPC is tuned for the
+    in-row view and has no idea the headland view is worse, so the cap is
+    applied outside it."""
+    ang = steer_once_in_exit_clear(
+        rear_view(lateral=+2.0), exit_clear_angular_z_max=0.08
+    )
+    assert abs(ang) == pytest.approx(0.08)
+
+
+def test_exit_clear_yaw_budget_stops_the_steering():
+    """A total-yaw budget, not just a rate cap: it bounds how far a bad
+    measurement can take the robot however long the leg lasts. 15 s at the
+    in-row 0.175 rad/s is 150 degrees, which is what nearly put the robot out
+    of the world."""
+    fsm = make_rear_steered_fsm(
+        SteeringStubController(),
+        exit_clear_max_yaw_deg=10.0,
+        exit_clear_max_distance=10.0,
+    )
+    pose, _, _ = drive_row_to_exit(fsm)
+    x, y, yaw = pose
+    rear = rear_view(lateral=+0.30)
+    commands = []
+    for i in range(1, 20):
+        # The robot actually turns, at 3 degrees per tick: the budget is spent
+        # against MEASURED yaw, like every other closed-loop leg in the FSM.
+        p = (x + i * 0.05, y, yaw + math.radians(3.0 * i))
+        _, ang, state, _ = update(
+            fsm, None, p, WIDTH, rear_centerline_result=rear
+        )
+        if state != STATE_EXIT_CLEAR:
+            break
+        commands.append(ang)
+    assert commands[0] != 0.0            # steered while it had budget
+    assert commands[-1] == 0.0           # gave up once it was spent
+    assert any(c != 0.0 for c in commands[:3])
 
 
 def test_exit_clear_and_backout_treat_the_same_rear_view_differently():

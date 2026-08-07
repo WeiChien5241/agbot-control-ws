@@ -216,6 +216,12 @@ class VisionNavNode(object):
                 exit_clear_rear_offset_gain=rospy.get_param(
                     "~exit_clear_rear_offset_gain", 2.0
                 ),
+                exit_clear_angular_z_max=rospy.get_param(
+                    "~exit_clear_angular_z_max", 0.08
+                ),
+                exit_clear_max_yaw_deg=rospy.get_param(
+                    "~exit_clear_max_yaw_deg", 20.0
+                ),
             )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
@@ -312,8 +318,15 @@ class VisionNavNode(object):
 
         self._cmd_vel_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
         self._debug_pub = None
+        self._debug_rear_pub = None
         if self._publish_debug_image:
             self._debug_pub = rospy.Publisher(debug_image_topic, Image, queue_size=1)
+            # Rear frames get their own topic so neither view ever flips (see
+            # _publish_debug). Created unconditionally: the rear camera can be
+            # enabled by a launch arg, and a topic nobody publishes to is free.
+            self._debug_rear_pub = rospy.Publisher(
+                debug_image_topic.rstrip("/") + "_rear", Image, queue_size=1
+            )
 
         if camera_topic_is_compressed:
             rospy.Subscriber(
@@ -798,7 +811,7 @@ class VisionNavNode(object):
         if self._debug_pub is not None:
             self._publish_debug(
                 frame, mask, result, linear_x, angular_z, state_name,
-                self._timing.hud_line(), detector_line,
+                self._timing.hud_line(), detector_line, is_rear=is_rear,
             )
 
     def _log_metrics_row(self, result, linear_x, angular_z, state_name,
@@ -1049,10 +1062,12 @@ class VisionNavNode(object):
         # headland_clearance above even means, so it is spelled out.
         if self._fsm.exit_clear_rear_steering:
             rospy.loginfo(
-                "  exit leg: REAR-STEERED (gain=%s) -- turns on the rear "
-                "open-exit signature +%s m, NOT on headland_clearance; turns "
-                "anyway after %s m; cameras ALTERNATE so revocation still runs",
+                "  exit leg: REAR-STEERED (gain=%s, |w|<=%s rad/s, <=%s deg "
+                "total) -- turns on the rear open-exit signature +%s m, NOT on "
+                "headland_clearance; turns anyway after %s m; cameras "
+                "ALTERNATE so revocation still runs",
                 g("exit_clear_rear_offset_gain"),
+                g("exit_clear_angular_z_max"), g("exit_clear_max_yaw_deg"),
                 g("exit_clear_post_rear_distance"), g("exit_clear_max_distance"),
             )
         else:
@@ -1079,14 +1094,26 @@ class VisionNavNode(object):
         self._cmd_vel_pub.publish(twist)
 
     def _publish_debug(self, frame, mask, result, linear_x, angular_z,
-                       state_name=None, timing_line=None, detector_line=None):
+                       state_name=None, timing_line=None, detector_line=None,
+                       is_rear=False):
+        # ⚠ One topic per CAMERA, never one topic carrying both. The rear-
+        # terminated EXIT_CLEAR alternates cameras frame by frame, and a single
+        # topic then flips between a forward and a backward view several times
+        # a second -- unreadable at exactly the moment the operator needs to
+        # judge whether the robot is leaving the row straight (reported from
+        # the first sim run, 2026-08-07). Open both in rqt_image_view to watch
+        # the leg; the front topic simply goes quiet during BACKOUT, which is
+        # the one state that is rear-only.
+        publisher = self._debug_rear_pub if is_rear else self._debug_pub
+        if publisher is None:
+            return
         try:
             debug_img = render_debug_image(
                 frame, mask, result, linear_x, angular_z, state_name=state_name,
                 timing_line=timing_line, detector_line=detector_line,
             )
             msg = self._bridge.cv2_to_imgmsg(debug_img, encoding="bgr8")
-            self._debug_pub.publish(msg)
+            publisher.publish(msg)
         except Exception as exc:
             rospy.logwarn_throttle(5.0, "Failed to publish debug image: %s", exc)
 

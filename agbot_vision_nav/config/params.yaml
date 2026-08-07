@@ -208,6 +208,21 @@ exit_clear_rear_offset_gain: 2.0  # kappa in the conversion above: the rear
                            # 0.0 drops the correcting term and reproduces the
                            # broken lateral behaviour, so raise rather than lower
                            # it if the leg under-corrects.
+# ⚠ Two hard limits on this leg's steering, because the rear view of a HEADLAND
+# is a far worse measurement than the in-row view the MPC is tuned for, and the
+# MPC cannot tell. Sim 2026-08-07: fed a border-clipped rear scan row it
+# saturated at angular_z_max (0.175) and HELD it for the whole leg -- 15 s of
+# that is 150 degrees of unintended turn, and the robot nearly left the world.
+# The leg's job is a small alignment correction, so it gets a small budget.
+# (The primary fix is upstream of both: the leg only steers on a rear corridor
+# whose edges are INSIDE the image, since a border-clipped corridor has a
+# fictitious midpoint. These are the backstop for what that lets through.)
+exit_clear_angular_z_max: 0.08  # rad/s cap during EXIT_CLEAR only; in-row
+                           # driving keeps angular_z_max
+exit_clear_max_yaw_deg: 20.0  # total yaw the leg may sweep before it gives up
+                           # steering and drives straight. A budget, not a rate:
+                           # it bounds how far a bad measurement can take the
+                           # robot no matter how long the leg lasts.
 exit_clear_post_rear_distance: 0.2  # m driven after the rear view opens. The
                            # rear signature fires when the CAMERA is level with
                            # the row end, and there is still a bumper's worth of

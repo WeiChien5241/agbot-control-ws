@@ -135,21 +135,73 @@ all (so it cannot come back by accident), and the button greys out with the
 roslaunch line to type instead. The `simulation` tick now means exactly one
 thing: `sim:=true` on the vision-nav launch.
 
-### 187 → 196 tests.
+### Second sim run, same day — the leg drove in a slow circle
+
+The sign fix was right and not enough. Log from the run:
+
+```
+EXIT_CLEAR: rear offset=-0.093 slope=+0.017 -> angular_z=+0.167, travelled 0.03 m, rear open no
+state=EXIT_CLEAR rear exit: open 0.00/0.40 m wide=1 openrows=0 near w=0.84 edges=0.31/0.00
+EXIT_CLEAR: rear offset=-0.221 slope=+0.008 -> angular_z=+0.175, travelled 0.10 m, rear open no
+state=EXIT_CLEAR rear exit: open 0.00/0.40 m wide=0 openrows=0 near w=0.79 edges=1.00/0.00
+```
+
+**`angular_z` is saturated at `angular_z_max` (0.175) and stays there.** At
+0.10 m/s the leg lasts ~15 s, and 15 s at 0.175 rad/s is **150 degrees** of
+unintended turn. That is the "nearly fell out of the world", and it also
+explains why the rear exit never fired: the robot was rotating, so the rear
+camera swung off the row and `openrows` stayed 0 the whole time.
+
+**Root cause: `edges=1.00/0.00`.** The rear corridor runs off the LEFT image
+border. `_scan_row_boundaries` cannot tell "hit corn" from "ran out of image",
+so `x_mid` averages a real corn boundary against a fictitious one at column 0
+and the offset is invented. This is HANDOFF3 defect #1 candidate (a) — known,
+measurable, ~22-33% of in-row frames — except that in a HEADLAND it is the
+normal case rather than a bias, and the leg was giving it full steering
+authority.
+
+Three fixes, in order of importance:
+
+1. **The leg steers only on a rear corridor with both edges INSIDE the image**
+   (`row_exit_detector.nearest_row_corridor_is_bounded`). An untrustworthy
+   reading is not evidence the heading changed, so those frames hold the last
+   command rather than commanding zero.
+2. **`exit_clear_angular_z_max` (0.08 rad/s)** — the leg's job is a small
+   alignment correction, and the MPC is tuned for the in-row view with no idea
+   the headland view is worse. Applied outside the controller.
+3. **`exit_clear_max_yaw_deg` (20 deg)** — a budget on TOTAL swept yaw
+   (odometry, via the same `_integrate_yaw` the 90-degree turns use), after
+   which the leg drives straight. A rate cap alone still lets a long leg
+   accumulate; this bounds the damage however long it lasts.
+
+⚠ Do not "fix" this by raising `angular_z_max` or the MPC weights. The
+controller was doing exactly what it was told; the input was fiction.
+
+**The debug image also flipped between the front and rear views several times
+a second** — the alternation, seen through one topic. Each camera now has its
+own: `~debug/image` and `~debug/image_rear`. Open both in `rqt_image_view`.
+The front topic goes quiet during BACKOUT, which is the one rear-only state.
+
+### 187 → 199 tests.
 
 ### Next action
 
 **Re-run the same sim mission** (Gazebo in terminal 1, panel in terminal 2,
 `num_rows:=3`). What to watch, in order:
 
-1. Startup config block: `exit leg: REAR-STEERED (gain=2.0)`,
-   `exit_clear_max_distance 1.5`, and the `metrics:` CSV path.
-2. Through EXIT_CLEAR: `angular_z` must move the robot TOWARD the row axis.
-   The old failure is unmistakable — it grew monotonically one way.
+1. Startup config block: `exit leg: REAR-STEERED (gain=2.0, |w|<=0.08 rad/s,
+   <=20.0 deg total)`, `exit_clear_max_distance 1.5`, `metrics:` CSV path.
+2. Through EXIT_CLEAR: `angular_z` must be SMALL and must not sit at its cap.
+   A run of `+0.08` frame after frame is the same failure as before, just
+   slower — check `edges=` on the rear detector line if you see it.
 3. `rear open at X m` ~0.5–1.0 m into the leg, TURN_1 following
    `exit_clear_post_rear_distance` later. Total leg ~1.0–1.2 m, not 2 m.
+   If `openrows` stays 0 for the whole leg the turn now happens anyway at
+   `exit_clear_max_distance` — check whether the robot was still rotating.
 4. The robot stays inside the world for all three rows.
-5. Pause mid-row, wait 30 s, resume (still never exercised).
+5. `rqt_image_view` on BOTH `~debug/image` and `~debug/image_rear`; neither
+   should ever flip cameras.
+6. Pause mid-row, wait 30 s, resume (still never exercised).
 
 If the leg now turns too EARLY and clips end-of-row corn, the knob is
 `exit_clear_post_rear_distance` (0.2 → 0.4) — not the back-dating.

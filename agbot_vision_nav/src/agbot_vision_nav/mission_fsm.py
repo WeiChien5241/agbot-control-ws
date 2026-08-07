@@ -105,6 +105,7 @@ from agbot_vision_nav.row_exit_detector import (
     EXIT_ROW_END_BLOCKED,
     EXIT_ROW_END_OPEN,
     RowExitDetector,
+    nearest_row_corridor_is_bounded,
     nearest_row_flank_clear,
 )
 
@@ -211,6 +212,8 @@ class MissionFSM:
         exit_clear_post_rear_distance=0.2,
         exit_clear_max_distance=1.5,
         exit_clear_rear_offset_gain=2.0,
+        exit_clear_angular_z_max=0.08,
+        exit_clear_max_yaw_deg=20.0,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -303,6 +306,20 @@ class MissionFSM:
         # the term that makes the reconstruction work), so raise rather than
         # lower it if the leg under-corrects.
         self.exit_clear_rear_offset_gain = exit_clear_rear_offset_gain
+        # ⚠ Two hard limits on what this leg's steering may do. The rear view
+        # of a headland is a much worse measurement than the in-row view the
+        # MPC is tuned for, and the MPC has no idea: fed a border-clipped rear
+        # row it saturated at angular_z_max (0.175) and HELD it for the whole
+        # leg -- 15 s at that rate is 150 degrees of unintended turn, which is
+        # how the robot nearly left the world (sim, 2026-08-07). The leg's job
+        # is a small alignment correction, so it gets a small budget:
+        #   * a gentler rate cap than the in-row one, and
+        #   * a total yaw budget, after which it drives straight.
+        # Neither is a substitute for the trust gate on the measurement
+        # itself (nearest_row_corridor_is_bounded); they are the backstop for
+        # what the gate lets through.
+        self.exit_clear_angular_z_max = abs(exit_clear_angular_z_max)
+        self.exit_clear_max_yaw = math.radians(abs(exit_clear_max_yaw_deg))
 
         # +1 = left (positive angular.z, REP-103), -1 = right
         self._turn_sign = 1 if first_turn_direction == "left" else -1
@@ -571,15 +588,38 @@ class MissionFSM:
         # rate-limit constraint in the same frame as the published command.
         # ⚠ That rate limit now sees ~2x longer steps, because the leg runs at
         # half the inference rate while the cameras alternate.
-        if rear_centerline_result is not None and rear_centerline_result.valid:
+        #
+        # Only on a TRUSTWORTHY rear measurement, though. A corridor clipped by
+        # the image border has a fictitious midpoint (see
+        # nearest_row_corridor_is_bounded), and in a headland that is the
+        # normal case, not the exception. Holding the last command through
+        # those frames is right: an untrustworthy reading is not evidence that
+        # the heading changed.
+        if (
+            rear_centerline_result is not None
+            and rear_centerline_result.valid
+            and nearest_row_corridor_is_bounded(
+                rear_centerline_result, image_width
+            )
+        ):
             offset, slope = rear_to_front_state(
                 rear_centerline_result.offset_norm,
                 rear_centerline_result.slope_term,
                 self.exit_clear_rear_offset_gain,
             )
-            _, self._exit_clear_angular_z = self._controller.compute(
-                offset, slope, True
+            _, angular_z = self._controller.compute(offset, slope, True)
+            self._exit_clear_angular_z = max(
+                -self.exit_clear_angular_z_max,
+                min(self.exit_clear_angular_z_max, angular_z),
             )
+
+        # Spend the yaw budget, then drive straight. _integrate_yaw is the same
+        # wrap-safe accumulator the 90-degree turns use; here it measures how
+        # far the steering has actually swung the robot, which is the quantity
+        # that ran away.
+        if abs(self._integrate_yaw(odom_pose)) >= self.exit_clear_max_yaw:
+            self._exit_clear_angular_z = 0.0
+
         return (
             self.exit_clear_speed,
             self._exit_clear_angular_z,
