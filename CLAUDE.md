@@ -117,14 +117,16 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 - `src/agbot_vision_nav/debug_viz.py` — debug overlay image for `rqt_image_view` (mask wash, scan rows, midpoints, per-row corridor width `w=`, mission state HUD).
 - `src/agbot_vision_nav/launch_args.py` — rospy-free roslaunch argv builder for the operator panel. Its one rule: **a blank field is not passed**, so `params.yaml` stays the source of truth and the panel cannot silently re-pin every knob at its own defaults.
 - `scripts/vision_nav_node.py` — only file touching `rospy`/`cv_bridge`. Single-slot frame buffer, separate inference thread, 5 Hz watchdog, optional odometry subscriber. Mission mode is gated behind `~mission_enabled` (default **false** → plain row-following, identical to pre-mission behavior). Offers `~pause` (`std_srvs/SetBool`) and a latched `~status` string.
-- `scripts/operator_panel.py` — PyQt panel: start cameras / start mission with form fields / **pause + resume** / stop. `rosrun agbot_vision_nav operator_panel.py`.
+- `scripts/operator_panel.py` — PyQt panel: start frame source (cameras, or Gazebo when `simulation` is ticked) / start mission with form fields / **pause + resume** / stop. `rosrun agbot_vision_nav operator_panel.py`. Starting Gazebo from it is optional — running it in its own terminal and using the panel only for the mission works identically.
+
+⚠ **`--` is illegal inside an XML comment** (reserved for `-->`), and this repo writes `--` as an em-dash in prose everywhere. It broke `vision_nav.launch` outright on 2026-08-06. `test/test_launch_files.py` parses every launch/xacro and names the offending line — the sandbox has no ROS1, so pytest is the only place a launch-file error is caught before the robot sees it.
 
 **Pause vs Ctrl-C** — they are not the same thing. Ctrl-C destroys the mission: `rows_driven`, the boustrophedon turn direction, the detector's arming distance and the row-entry pose all live in the node, so a restart begins at row 1. `~pause` publishes zero and **skips the FSM update**, so all of that survives. Resuming resets the detectors and the MPC, because the BLOCKED timer counts in ROS *seconds* — without that, a 30 s pause would deposit the whole `blocked_confirm_seconds` on the first frame back and fire a back-out nothing justified.
 
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 170 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 187 passed
 ```
 
 Performance report from a run (no ROS; CSVs are written automatically):
