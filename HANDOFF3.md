@@ -189,6 +189,50 @@ the HUD while it lasts.
 
 ### 187 → 196 tests.
 
+### Third sim run, 2026-08-08 — it worked; one thing left to shorten
+
+The full mission ran. Remaining complaint: the robot drove a long way past the
+row end before turning, still nearly reaching the world edge while it waited
+for the rear camera to agree.
+
+**The mechanism, and why it was too long.** The rear watcher is the same
+`RowExitDetector` as the front one, fed `travelled` (distance since EXIT_CLEAR
+began) instead of distance-in-row and armed at 0 m. It banks metres while the
+rear view reads open (>= 1 scan row wide AND both flank strips clear), leaks at
+half rate when it does not, and fires at `exit_confirm_distance` -- which it
+INHERITED from the front detector at 0.4 m. Firing back-dates the turn point to
+where the streak began, so the 0.4 m is not added to the *turn point*, but the
+robot still has to physically drive it before the detector will fire at all.
+Net effect: the leg always ran ~0.4 m past the row end, and
+`exit_clear_post_rear_distance` (0.2) was entirely masked by it -- it never did
+anything.
+
+**Why the 0.4 m was wrong here, not just large.** The two detectors answer
+different questions. The FRONT one decides whether the row has ended AT ALL,
+from inside the row, with nothing to corroborate it: a mid-row gap looks
+identical to a row end, and 0.4 m of driving is what buys the confidence to
+tell them apart. By the time the rear one runs, that question has been answered
+and paid for. All it is asked is "has my tail passed the last plants" -- a fact
+about where the robot IS, not a judgement about what kind of place it is in.
+Re-buying the front's evidence was paying twice for one decision.
+
+**New knob: `exit_clear_rear_confirm_distance` (0.1 m).** The ONE threshold the
+rear watcher does not inherit. `exit_detect_min_frames` (2) still stops a
+single flickery frame firing it, and the deliberate margin for turning early is
+`exit_clear_post_rear_distance` -- which now actually binds, and is the right
+place to pay for caution because it is measured from the row end, whereas
+confirmation distance is dead time. Expected leg: ~0.2 m past the streak start
+instead of ~0.4 m.
+
+⚠ **The back-out is on a SEPARATE watcher and is unchanged.**
+`mission_fsm.rear_exit_detector` (BACKOUT) and `mission_fsm.exit_clear_detector`
+(EXIT_CLEAR) are now two objects. The reverse leg is field-proven (2026-08-05)
+and must not inherit a threshold shortened for the headland. The node's HUD
+reads `active_rear_detector`, which follows the state, so the printed
+`open X/Y m` is always the one the robot is actually waiting on.
+
+### 196 → 199 tests.
+
 ### Next action
 
 **Re-run the same sim mission** (Gazebo in terminal 1, panel in terminal 2,
@@ -200,10 +244,12 @@ the HUD while it lasts.
    and must not sit at `angular_z_max` frame after frame. If it does, read
    `edges=` on the rear detector line — a corridor running off the frame is
    the measurement the leg is now supposed to refuse.
-3. `rear open at X m` ~0.5–1.0 m into the leg, TURN_1 following
-   `exit_clear_post_rear_distance` later. Total leg ~1.0–1.2 m, not 2 m.
-   If `openrows` stays 0 for the whole leg the turn now happens anyway at
-   `exit_clear_max_distance` — check whether the robot was still rotating.
+3. `rear open at X m`, then TURN_1 `exit_clear_post_rear_distance` later —
+   the confirm distance is now 0.1 m, so the leg should end ~0.2 m past the
+   point where the rear view first read open. If `openrows` stays 0 for the
+   whole leg the turn happens anyway at `exit_clear_max_distance`.
+   ⚠ If it now turns too EARLY and clips the last plants, raise
+   `exit_clear_post_rear_distance` (0.2 → 0.4), NOT the confirm distance.
 4. The robot stays inside the world for all three rows.
 5. The debug view switches to the rear ONCE at the start of the leg and back
    at the end -- no flipping.

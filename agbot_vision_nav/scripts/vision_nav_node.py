@@ -217,6 +217,9 @@ class VisionNavNode(object):
                 exit_clear_rear_offset_gain=rospy.get_param(
                     "~exit_clear_rear_offset_gain", 2.0
                 ),
+                exit_clear_rear_confirm_distance=rospy.get_param(
+                    "~exit_clear_rear_confirm_distance", 0.1
+                ),
             )
 
         rospy.loginfo("Loading segmentation model from %s ...", model_path)
@@ -474,6 +477,7 @@ class VisionNavNode(object):
                 self._detector.reset()
             if self._fsm is not None:
                 self._fsm.rear_exit_detector.reset()
+                self._fsm.exit_clear_detector.reset()
             self._controller.reset()
         if self._metrics is not None:
             self._metrics.mark_event("PAUSE" if paused else "RESUME")
@@ -900,7 +904,7 @@ class VisionNavNode(object):
             self._fsm.state == STATE_EXIT_CLEAR
             and self._fsm.exit_clear_rear_steering
         ):
-            rear = self._fsm.rear_exit_detector
+            rear = self._fsm.active_rear_detector
             if rear.last_status is None:
                 return prefix.rstrip()
             s = rear.last_status
@@ -1039,9 +1043,10 @@ class VisionNavNode(object):
         if self._fsm.exit_clear_rear_steering:
             rospy.loginfo(
                 "  exit leg: REAR-STEERED (gain=%s) -- turns on the rear "
-                "open-exit signature +%s m, NOT on headland_clearance; turns "
-                "anyway after %s m",
+                "open-exit signature (confirm=%s m) +%s m, NOT on "
+                "headland_clearance; turns anyway after %s m",
                 g("exit_clear_rear_offset_gain"),
+                g("exit_clear_rear_confirm_distance"),
                 g("exit_clear_post_rear_distance"), g("exit_clear_max_distance"),
             )
         else:

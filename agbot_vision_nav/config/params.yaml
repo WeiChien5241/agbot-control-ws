@@ -218,6 +218,33 @@ exit_clear_rear_offset_gain: 2.0  # kappa in the conversion above: the rear
 # 2026-08-07: `edges=1.00/0.00`, `angular_z=+0.175` held to the world edge).
 # An unusable rear frame is then treated exactly as the front controller
 # treats an unusable front frame: no steering that tick.
+exit_clear_rear_confirm_distance: 0.1  # m of sustained rear OPEN evidence
+                           # before the leg accepts "the tail is clear". Much
+                           # shorter than the front detector's
+                           # exit_confirm_distance (0.4) ON PURPOSE, and it is
+                           # the ONE threshold the rear watcher does not
+                           # inherit. The two answer different questions: the
+                           # front detector decides whether the row has ended AT
+                           # ALL, from inside the row, with nothing to
+                           # corroborate it -- a mid-row gap looks identical to
+                           # a row end, so it pays 0.4 m of driving for the
+                           # evidence. By the time this one runs, that has
+                           # already been answered and paid for; all it is asked
+                           # is "has my tail passed the last plants", which is a
+                           # fact about where the robot IS. Charging another
+                           # 0.4 m for it doubled the leg (sim 2026-08-08: the
+                           # robot nearly left the world waiting to re-confirm
+                           # something the front camera had already confirmed).
+                           # exit_detect_min_frames still stops a single flickery
+                           # frame firing it, and the deliberate margin for
+                           # turning early is exit_clear_post_rear_distance
+                           # below -- that one is measured from the row end,
+                           # whereas confirmation distance is dead time.
+                           # ⚠ Does NOT affect the blocked-row back-out: that
+                           # uses a separate watcher on the front thresholds
+                           # (mission_fsm.rear_exit_detector), because its
+                           # reverse leg is field-proven and must not inherit a
+                           # change made for the headland.
 exit_clear_post_rear_distance: 0.2  # m driven after the rear view opens. The
                            # rear signature fires when the CAMERA is level with
                            # the row end, and there is still a bumper's worth of

@@ -211,6 +211,7 @@ class MissionFSM:
         exit_clear_post_rear_distance=0.2,
         exit_clear_max_distance=1.5,
         exit_clear_rear_offset_gain=2.0,
+        exit_clear_rear_confirm_distance=0.1,
     ):
         if first_turn_direction not in ("left", "right"):
             raise ValueError("first_turn_direction must be 'left' or 'right'")
@@ -234,6 +235,41 @@ class MissionFSM:
             # default made the rear detector silently diverge from the front
             # one the moment exit_leak_ratio was tuned in params.yaml, and the
             # rear leg is exactly where that would be hardest to notice.
+            exit_leak_ratio=detector.exit_leak_ratio,
+        )
+        # Rear-view open-exit watcher for EXIT_CLEAR. Same detector, same
+        # thresholds, ONE deliberate difference: a much shorter confirmation
+        # distance.
+        #
+        # The two are answering different questions. The FRONT detector is
+        # deciding whether the row has ended AT ALL, from inside the row, with
+        # nothing else to corroborate it -- a mid-row gap looks the same as a
+        # row end, so it pays 0.4 m of driving for the evidence. By the time
+        # this one runs, that question has already been answered and paid for.
+        # All it is asked is "has my tail passed the last plants yet", which is
+        # a geometric fact about where the robot is, not a judgement about what
+        # kind of place it is in. Charging another 0.4 m for it made the leg
+        # twice as long as it needed to be (sim, 2026-08-08: the robot nearly
+        # left the world waiting for the confirmation of something the front
+        # camera had already confirmed).
+        #
+        # exit_detect_min_frames still applies, so no single flickery frame can
+        # fire it, and exit_clear_post_rear_distance is the deliberate margin
+        # for turning slightly early. That is the right place to pay for
+        # caution here -- it is measured from the row end, whereas confirmation
+        # distance is dead time.
+        #
+        # ⚠ Kept SEPARATE from rear_exit_detector on purpose: that one
+        # terminates the BACKOUT reverse, which is field-proven (2026-08-05)
+        # and must not inherit a threshold change made for the headland leg.
+        self.exit_clear_detector = RowExitDetector(
+            exit_width_threshold=detector.exit_width_threshold,
+            exit_confirm_distance=exit_clear_rear_confirm_distance,
+            min_in_row_distance=0.0,
+            exit_open_rows_required=detector.exit_open_rows_required,
+            exit_flank_edge_margin=detector.exit_flank_edge_margin,
+            exit_flank_min_clear_fraction=detector.exit_flank_min_clear_fraction,
+            exit_detect_min_frames=detector.exit_detect_min_frames,
             exit_leak_ratio=detector.exit_leak_ratio,
         )
         self.num_rows = num_rows
@@ -334,6 +370,18 @@ class MissionFSM:
         self._suppress_flip = False    # skip one turn-sign flip at REACQUIRE
 
     # ------------------------------------------------------------ helpers --
+    @property
+    def active_rear_detector(self):
+        """Whichever rear watcher the current state is using, for the HUD.
+
+        Two exist because the questions differ (see the constructor); the ROS
+        node just wants the one whose numbers explain what the robot is
+        waiting for right now.
+        """
+        if self.state == STATE_EXIT_CLEAR:
+            return self.exit_clear_detector
+        return self.rear_exit_detector
+
     def _enter(self, state, odom_pose):
         self.state = state
         self._entry_xy = (odom_pose[0], odom_pose[1]) if odom_pose else None
@@ -354,11 +402,11 @@ class MissionFSM:
             self._exit_clear_rear_frames = 0
             if self.exit_clear_rear_steering:
                 # Same reasons as BACKOUT: clear the MPC rate-limiter history
-                # before the sign convention flips, and clear the rear
+                # before the steering reference changes, and clear the rear
                 # accumulator so this leg does not inherit evidence banked by
-                # a previous back-out or headland.
+                # a previous headland.
                 self._controller.reset()
-                self.rear_exit_detector.reset()
+                self.exit_clear_detector.reset()
         if state == STATE_FOLLOW_ROW:
             self._row_entry_xy = self._entry_xy
             self._controller.reset()
@@ -499,7 +547,7 @@ class MissionFSM:
             # the camera is alive, which is the only thing this counter is
             # asked. Zero here means no rear frames arrived at all.
             self._exit_clear_rear_frames += 1
-            rear_signal = self.rear_exit_detector.update(
+            rear_signal = self.exit_clear_detector.update(
                 rear_centerline_result, image_width, travelled, now=now
             )
             if (
@@ -513,7 +561,7 @@ class MissionFSM:
                 # exit_clear_post_rear_distance on top of that -- the same
                 # compounding overshoot the front leg was fixed for in
                 # 2026-07, and most of why this leg ran ~2 m in sim.
-                streak_start = self.rear_exit_detector.open_streak_start
+                streak_start = self.exit_clear_detector.open_streak_start
                 self._exit_clear_rear_open_at = (
                     streak_start if streak_start is not None else travelled
                 )

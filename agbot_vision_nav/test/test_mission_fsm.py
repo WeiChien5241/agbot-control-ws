@@ -1262,7 +1262,7 @@ def test_exit_clear_back_dates_the_rear_open_point():
     2026-07, and most of why this leg ran ~2 m in sim (2026-08-07).
     """
     fsm = make_rear_steered_fsm()
-    fsm.rear_exit_detector.exit_confirm_distance = 0.4
+    fsm.exit_clear_detector.exit_confirm_distance = 0.4
     pose, _, _ = drive_row_to_exit(fsm)
     x, y, yaw = pose
     open_r = open_result()
@@ -1279,6 +1279,56 @@ def test_exit_clear_back_dates_the_rear_open_point():
     assert fsm._exit_clear_rear_open_at < travelled - 0.3
 
 
+def test_exit_clear_confirms_faster_than_the_front_detector():
+    """The rear check is a SECOND look at something the front camera already
+    confirmed, so it does not re-pay the front's evidence distance.
+
+    The front detector decides whether the row ended at all, from inside the
+    row, where a mid-row gap looks identical to a row end -- 0.4 m of driving
+    buys that. This one only asks where the robot is now. Charging 0.4 m again
+    doubled the leg and nearly took the robot out of the world (sim,
+    2026-08-08).
+    """
+    fsm = make_rear_steered_fsm(exit_clear_rear_confirm_distance=0.1)
+    assert fsm.exit_clear_detector.exit_confirm_distance == 0.1
+    assert fsm.exit_clear_detector.exit_confirm_distance < (
+        fsm._detector.exit_confirm_distance
+    )
+    # Every OTHER threshold is still the front detector's.
+    for name in (
+        "exit_width_threshold",
+        "exit_open_rows_required",
+        "exit_flank_edge_margin",
+        "exit_flank_min_clear_fraction",
+        "exit_detect_min_frames",
+        "exit_leak_ratio",
+    ):
+        assert getattr(fsm.exit_clear_detector, name) == getattr(
+            fsm._detector, name
+        ), name
+
+
+def test_backout_keeps_the_front_confirm_distance():
+    """⚠ The back-out reverse is field-proven (2026-08-05) and must NOT
+    inherit a threshold shortened for the headland leg. Different watcher, on
+    purpose."""
+    fsm = make_rear_steered_fsm(exit_clear_rear_confirm_distance=0.05)
+    assert fsm.rear_exit_detector is not fsm.exit_clear_detector
+    assert fsm.rear_exit_detector.exit_confirm_distance == (
+        fsm._detector.exit_confirm_distance
+    )
+
+
+def test_active_rear_detector_follows_the_state():
+    """The HUD reads one number; it has to be the one explaining what the
+    robot is waiting for right now."""
+    fsm = make_rear_steered_fsm()
+    fsm.state = STATE_EXIT_CLEAR
+    assert fsm.active_rear_detector is fsm.exit_clear_detector
+    fsm.state = STATE_BACKOUT
+    assert fsm.active_rear_detector is fsm.rear_exit_detector
+
+
 def test_rear_exit_detector_inherits_the_front_leak_ratio():
     """Every other threshold is copied from the front detector; leaving this
     one at the constructor default made the rear watcher silently diverge the
@@ -1290,6 +1340,7 @@ def test_rear_exit_detector_inherits_the_front_leak_ratio():
         num_rows=3,
     )
     assert fsm.rear_exit_detector.exit_leak_ratio == 0.25
+    assert fsm.exit_clear_detector.exit_leak_ratio == 0.25
 
 
 def test_exit_clear_open_loop_mode_is_unchanged():

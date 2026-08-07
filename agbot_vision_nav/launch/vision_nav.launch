@@ -119,6 +119,13 @@
                                                             terminator. The node infers on the rear
                                                             camera for the whole leg and switches back
                                                             afterwards. false = the pre-2026-08 leg. -->
+  <arg name="exit_clear_rear_confirm_distance" default="" /><!-- m of sustained rear OPEN
+                                                            evidence before the leg accepts that the tail
+                                                            is clear. Deliberately much shorter than the
+                                                            front exit_confirm_distance: the front camera
+                                                            has already decided the row ended, this only
+                                                            asks where the robot is. Does NOT affect the
+                                                            blocked-row back-out. -->
   <arg name="exit_clear_post_rear_distance" default="" /><!-- m driven after the rear view opens,
                                                             so the far corner sweeps clear of the last
                                                             plant during TURN_1 -->
@@ -257,6 +264,8 @@
            if="$(eval arg('exit_clear_min_distance') != '')" />
     <param name="exit_clear_rear_steering" value="$(arg exit_clear_rear_steering)"
            if="$(eval arg('exit_clear_rear_steering') != '')" />
+    <param name="exit_clear_rear_confirm_distance" value="$(arg exit_clear_rear_confirm_distance)"
+           if="$(eval arg('exit_clear_rear_confirm_distance') != '')" />
     <param name="exit_clear_post_rear_distance" value="$(arg exit_clear_post_rear_distance)"
            if="$(eval arg('exit_clear_post_rear_distance') != '')" />
     <param name="exit_clear_max_distance"  value="$(arg exit_clear_max_distance)"
