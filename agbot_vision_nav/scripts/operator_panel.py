@@ -9,11 +9,14 @@ row-entry pose all live in the node, so a mid-run stop meant restarting the
 whole mission from row 1. This panel drives the node's ~pause service
 instead, which freezes the state machine and leaves all of that intact.
 
-It starts everything the run needs, so nothing has to be launched by hand:
-the frame source (real cameras, or Gazebo when the sim box is ticked) and the
-vision-nav node. roslaunch's own output still goes to the terminal this was
-started from -- that is where the startup config block and the detector lines
-appear, and it is worth watching.
+On the real robot it starts everything the run needs: the USB cameras and the
+vision-nav node. In SIMULATION it starts only the vision-nav node -- Gazebo is
+launched from its own terminal (`roslaunch agbot_bringup agbot_gazebo.launch`)
+and the frame-source button is disabled, because Gazebo's output would
+otherwise bury the vision-nav startup config block in this terminal, and that
+block is the part worth reading. roslaunch's own output still goes to the
+terminal this was started from -- that is where the startup config block and
+the detector lines appear.
 
 What it is NOT: a monitoring tool. The debug image
 (rqt_image_view /vision_nav_node/debug/image) and that console are still where
@@ -256,13 +259,9 @@ class OperatorPanel(QWidget):
         if self._cameras.running():
             self._stop_with_feedback(self._cameras, "frame source")
             return
-        # Follows the SIM checkbox: real cameras open USB devices that a
-        # laptop does not have, and in simulation the frames come from the
-        # Gazebo URDF cameras instead. Same flag the node uses to pick its
-        # camera topics, so the two cannot disagree.
-        ok, message = self._cameras.start(
-            cameras_launch_args(sim=self._sim.isChecked())
-        )
+        # Real-robot USB bringup only. In simulation this button is disabled
+        # (see _refresh) because Gazebo belongs in its own terminal.
+        ok, message = self._cameras.start(cameras_launch_args())
         self._log(message)
 
     def _mission_args(self):
@@ -307,8 +306,11 @@ class OperatorPanel(QWidget):
         try:
             launch.stop()
         finally:
-            self._cameras_btn.setEnabled(True)
+            # _refresh, not setEnabled(True): the frame-source button is also
+            # disabled by the simulation checkbox, and re-enabling it blindly
+            # here would hand back a button that must stay greyed out.
             self._mission_btn.setEnabled(True)
+            self._refresh()
         self._log("%s stopped" % label)
 
     def _toggle_pause(self):
@@ -335,14 +337,20 @@ class OperatorPanel(QWidget):
         if rospy.is_shutdown():
             self.close()
             return
+        # In simulation there is nothing for this button to start: Gazebo is
+        # run from its own terminal on purpose (its output would otherwise
+        # bury the vision-nav startup config block), and the URDF cameras come
+        # up with it. Disabled rather than hidden, so the reason is visible.
+        # (Still enabled if a real-camera launch is somehow running, so ticking
+        # the box mid-session can never strand a process with no Stop button.)
         sim = self._sim.isChecked()
-        noun = "Gazebo" if sim else "cameras"
+        self._cameras_btn.setEnabled(not sim or self._cameras.running())
         self._cameras_btn.setText(
-            ("Stop %s" if self._cameras.running() else "Start %s") % noun
+            "Stop cameras" if self._cameras.running() else "Start cameras"
         )
         self._cameras_label.setText(
-            "Gazebo simulation (agbot_gazebo.launch) -- the robot, the maize "
-            "world and its URDF cameras" if sim else
+            "simulation: start Gazebo in its own terminal --\n"
+            "roslaunch agbot_bringup agbot_gazebo.launch" if sim else
             "real robot: front WDR + rear Brio (cameras.launch)"
         )
         self._mission_btn.setText(

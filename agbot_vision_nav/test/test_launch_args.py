@@ -86,11 +86,15 @@ def test_unknown_field_raises_rather_than_being_dropped():
         mission_launch_args(MODEL, linear_x_cruse="0.2")
 
 
-def test_frame_source_follows_the_sim_flag():
-    """Real cameras open USB devices a laptop does not have; in simulation the
-    frames come from the Gazebo URDF cameras, so what has to start is the
-    simulator. Keyed off the same flag that selects the node's camera topics,
-    so the two cannot disagree."""
+def test_frame_source_is_always_the_real_cameras():
+    """The panel never starts Gazebo.
+
+    It used to, keyed off the simulation checkbox. The settled sim workflow is
+    the simulator in its OWN terminal (its output otherwise buries the
+    vision-nav startup config block), so the panel's frame-source button is
+    the real-robot USB bringup and nothing else -- and it takes no sim
+    argument at all, so the old behaviour cannot come back by accident.
+    """
     assert cameras_launch_args() == ["agbot_vision_nav", "cameras.launch"]
-    assert cameras_launch_args(sim=False) == ["agbot_vision_nav", "cameras.launch"]
-    assert cameras_launch_args(sim=True) == ["agbot_bringup", "agbot_gazebo.launch"]
+    with pytest.raises(TypeError):
+        cameras_launch_args(sim=True)

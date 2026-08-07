@@ -23,8 +23,6 @@ command line it replaces.
 PKG = "agbot_vision_nav"
 CAMERAS_LAUNCH = "cameras.launch"
 VISION_NAV_LAUNCH = "vision_nav.launch"
-BRINGUP_PKG = "agbot_bringup"
-GAZEBO_LAUNCH = "agbot_gazebo.launch"
 
 # Fields passed through verbatim when non-blank. Booleans are handled
 # separately because a checkbox has no "blank" state -- it is always either
@@ -42,19 +40,20 @@ BOOLEAN_FIELDS = (
 )
 
 
-def cameras_launch_args(sim=False):
-    """What has to be running before the vision-nav node has frames.
+def cameras_launch_args():
+    """The real robot's USB camera bringup -- the only frame source the panel
+    starts.
 
-    These are two entirely different things and picking the wrong one is a
-    silent failure: cameras.launch opens USB devices by /dev/v4l/by-id serial
-    and publishes /usb_cam + /brio_rear, which on a laptop matches no hardware;
-    in simulation the frames come from the Gazebo URDF cameras instead
-    (/camera/image_raw + /camera_rear/image_raw), so what has to start is the
-    whole simulator. Keyed off the same `sim` flag that selects the node's
-    camera topics, so the two cannot disagree.
+    ⚠ It deliberately does NOT start Gazebo in simulation, though it used to.
+    The settled sim workflow (2026-08-06) is the simulator in its OWN terminal:
+    Gazebo's output is extremely noisy and buries the vision-nav startup config
+    block, which is the part actually worth reading. The panel offering to
+    start it as well was one more way to end up with two simulators, or with
+    the config block unreadable, for no benefit. The `simulation` checkbox now
+    means exactly one thing -- sim:=true on the vision-nav launch, which picks
+    the Gazebo camera topics -- and says nothing about who started the
+    simulator.
     """
-    if sim:
-        return [BRINGUP_PKG, GAZEBO_LAUNCH]
     return [PKG, CAMERAS_LAUNCH]
 
 
