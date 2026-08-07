@@ -114,7 +114,7 @@
                                                             left) and turn only when the rear ALSO sees
                                                             open field, i.e. the tail is clear. Needs
                                                             rear_camera_enabled. NOTE: with this on,
-                                                            headland_clearance no longer ends the leg --
+                                                            headland_clearance no longer ends the leg:
                                                             it stays the open-loop/no-rear-frames
                                                             terminator. false = the pre-2026-08 leg. -->
   <arg name="exit_clear_post_rear_distance" default="" /><!-- m driven after the rear view opens,

@@ -96,21 +96,51 @@ class LaunchProcess(object):
             return False, "could not start %s: %s" % (self.name, exc)
         return True, " ".join(cmd)
 
-    def stop(self):
+    def stop(self, grace=10.0, straggler_grace=3.0):
         if not self.running():
             return False
+        try:
+            pgid = os.getpgid(self._proc.pid)
+        except OSError:
+            self._proc = None
+            return True
         # SIGINT, not SIGKILL: roslaunch shuts its nodes down cleanly on
         # SIGINT, which is what makes the node write its metrics CSV summary
         # and publish a final zero Twist. SIGKILL would skip both.
         try:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGINT)
-            self._proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-        except OSError:
+            os.killpg(pgid, signal.SIGINT)
+            self._proc.wait(timeout=grace)
+        except (subprocess.TimeoutExpired, OSError):
             pass
+        # ⚠ roslaunch exiting does NOT mean its children are gone, and waiting
+        # on it is therefore not enough. Gazebo classic routinely outlives its
+        # roslaunch: gzserver/gzclient block on a Fuel model download during
+        # teardown (`libcurl: (28) Failed to connect to
+        # fuel.ignitionrobotics.org`, ~2 min of TCP timeout) long after every
+        # node has logged "killing on exit". Observed 2026-08-06: Stop looked
+        # like it did nothing because the escalation below only ran on a
+        # roslaunch TIMEOUT, and roslaunch had exited perfectly cleanly.
+        # A leftover gzserver holds the world, the ports and /use_sim_time, so
+        # the next Start comes up against a half-dead simulator.
+        self._reap_group(pgid, straggler_grace)
         self._proc = None
         return True
+
+    @staticmethod
+    def _reap_group(pgid, grace):
+        """Escalate TERM -> KILL until the process group is empty."""
+        for sig, wait_for in ((signal.SIGTERM, grace), (signal.SIGKILL, 1.0)):
+            try:
+                os.killpg(pgid, sig)
+            except OSError:
+                return  # group already empty; nothing outlived roslaunch
+            deadline = time.time() + wait_for
+            while time.time() < deadline:
+                try:
+                    os.killpg(pgid, 0)  # signal 0 = existence probe
+                except OSError:
+                    return
+                time.sleep(0.2)
 
 
 class OperatorPanel(QWidget):
@@ -224,8 +254,7 @@ class OperatorPanel(QWidget):
     # ------------------------------------------------------------ actions --
     def _toggle_cameras(self):
         if self._cameras.running():
-            self._cameras.stop()
-            self._log("frame source stopped")
+            self._stop_with_feedback(self._cameras, "frame source")
             return
         # Follows the SIM checkbox: real cameras open USB devices that a
         # laptop does not have, and in simulation the frames come from the
@@ -252,8 +281,7 @@ class OperatorPanel(QWidget):
 
     def _toggle_mission(self):
         if self._mission.running():
-            self._mission.stop()
-            self._log("mission stopped")
+            self._stop_with_feedback(self._mission, "mission")
             return
         try:
             args = self._mission_args()
@@ -262,6 +290,26 @@ class OperatorPanel(QWidget):
             return
         ok, message = self._mission.start(args)
         self._log(message)
+
+    def _stop_with_feedback(self, launch, label):
+        """Shut a launch down, keeping the window painted while it happens.
+
+        Stopping blocks for as long as the teardown takes, and with Gazebo
+        that is routinely several seconds (see LaunchProcess.stop). Without
+        this the window greys out and looks hung at exactly the moment the
+        operator is trying to stop a moving robot -- which invites a second
+        click, or a panic Ctrl-C that leaves the stragglers behind.
+        """
+        self._log("stopping %s ..." % label)
+        self._cameras_btn.setEnabled(False)
+        self._mission_btn.setEnabled(False)
+        QApplication.processEvents()
+        try:
+            launch.stop()
+        finally:
+            self._cameras_btn.setEnabled(True)
+            self._mission_btn.setEnabled(True)
+        self._log("%s stopped" % label)
 
     def _toggle_pause(self):
         target = not self._paused
