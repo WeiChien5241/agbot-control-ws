@@ -12,6 +12,11 @@ Hardware status: GPU robot cpr-j100-0864 runs the WDR camera FRONT (low mount)
 received this session's work** -- see the bundle flow in §0b, and note that
 `catkin build` is required this time (new executable + new package.xml deps).
 
+NEXT ACTION when picking this up: the rear-steered EXIT_CLEAR has never run.
+Start it in sim -- Gazebo in its own terminal, then the operator panel (§0d
+"RECOMMENDED SIM WORKFLOW"). Separately, and before reading anything into the
+robot's steering, the FLAT TIRE has to be fixed and measured.
+
 ---
 
 ## 0d. SESSION 2026-08-06 — first real-corn mission, and what it broke
@@ -279,12 +284,33 @@ moment the operator is trying to stop a moving robot.
 
 **172 → 187 tests.**
 
-⚠ **Launching Gazebo from the panel is optional, not required.** Starting it in
-its own terminal (`roslaunch agbot_bringup agbot_gazebo.launch`) and using the
-panel only for the mission works fine and keeps Gazebo's very noisy output
-separate — the `sim` tick is what puts `sim:=true` on the vision-nav launch,
-and that is independent of who started the simulator. If Gazebo is already
-running, just do not press the first button.
+### ✅ RECOMMENDED SIM WORKFLOW — Gazebo in its own terminal
+
+Settled 2026-08-06 after the first run. Launching Gazebo *from* the panel works
+(and its Stop is now fixed), but it is **not** the way to do it:
+
+```bash
+# terminal 1 -- the simulator, on its own
+roslaunch agbot_bringup agbot_gazebo.launch
+
+# terminal 2 -- once Gazebo is up
+rosrun agbot_vision_nav operator_panel.py
+#   tick: simulation + multi-row mission + rear camera, then Start mission.
+#   Do NOT press the frame-source button; Gazebo is already running.
+```
+
+Why: Gazebo's output is extremely noisy and it interleaves with the vision-nav
+startup config block in the panel's terminal — and that block is the thing
+actually worth reading (`Model loaded on device:`, `exit leg: REAR-STEERED`,
+`metrics:`). Keeping them apart makes both readable.
+
+⚠ The two things the `simulation` tick controls are **independent**: it puts
+`sim:=true` on the vision-nav launch (which is what selects the Gazebo camera
+topics `/camera/image_raw` + `/camera_rear/image_raw`), and it decides which
+launch the frame-source button *would* start. The tick does not care who
+started the simulator, so ticking it while Gazebo runs in another terminal is
+exactly right. Same on the real robot: `cameras.launch` in its own terminal
+plus an unticked box is equally valid.
 
 ### Also landed today (user's own commits, workspace hygiene)
 
@@ -306,10 +332,15 @@ running, just do not press the first button.
 - **The flat tire — fix it and run the two drift tests FIRST.** Everything
   about defect #1 is blocked behind that measurement.
 - Defects #3, #4, #5 — diagnosed above, not fixed, by choice.
-- **Neither new feature has run in sim or in the field yet.** The rear-steered
-  leg needs `rear_camera_enabled:=true` and a working rear topic; check the
-  `exit leg: REAR-STEERED` line in the startup config block before rolling.
-  The panel has never been run at all (this sandbox has no ROS1 or display).
+- ⚠ **The rear-steered EXIT_CLEAR has STILL never executed.** The 2026-08-06
+  evening attempt got Gazebo up but every *Start mission* died on the launch
+  XML error, so the node never started. That is fixed (`c9bfd28`), and this is
+  now the first thing to try. Check the `exit leg: REAR-STEERED` line in the
+  startup config block before rolling; it needs `rear_camera_enabled:=true`
+  and a live rear topic.
+- **The panel itself HAS now been run** and both bugs the first run exposed are
+  fixed. Still unexercised: Start mission end to end, pause/resume, and Stop
+  on a vision-nav launch (only Stop-on-Gazebo has been tried).
 - **Still no metrics CSV from the field.** The 2026-08-05 run produced none, so
   every number about row hugging remains unmeasured. Confirm the `metrics:`
   path in the startup config block BEFORE rolling.
@@ -1287,14 +1318,14 @@ metrics on) comes first; the items here resume after that.
 ```bash
 cd ~/agbot_control_ws && catkin build && source devel/setup.bash
 
-# EASIEST PATH -- the operator panel starts everything (§0d). Sim: tick
-# 'simulation', press Start Gazebo, then Start mission. Real robot: leave it
-# unticked and the first button starts cameras.launch. Pause/Resume keeps the
-# mission state, unlike Ctrl-C. roslaunch output goes to THIS terminal.
-rosrun agbot_vision_nav operator_panel.py
-
-# Simulation world (by hand)
-roslaunch agbot_bringup agbot_gazebo.launch
+# RECOMMENDED (§0d): simulator in its OWN terminal, panel in another. Gazebo's
+# output otherwise buries the vision-nav startup config block, which is the
+# part worth reading. The panel CAN start Gazebo itself; it is just noisier.
+roslaunch agbot_bringup agbot_gazebo.launch          # terminal 1
+rosrun agbot_vision_nav operator_panel.py            # terminal 2
+#   tick simulation + multi-row mission + rear camera -> Start mission.
+#   Do NOT press the frame-source button when Gazebo is already up.
+#   Pause/Resume keeps the mission state, unlike Ctrl-C.
 
 # REAL ROBOT (cpr-j100-0864): cameras first, then the node
 roslaunch agbot_vision_nav cameras.launch          # brio_rear defaults to true
