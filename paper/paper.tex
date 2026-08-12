@@ -1,0 +1,157 @@
+%% AIAgNav --- ICRA 2027 submission
+%% Build:  make          (pdf)
+%%         make pages    (page count -- the only number that matters)
+%%         make words    (per-section word count vs. budget)
+%%
+%% HARD LIMIT: 8 pages including references.
+%% Budget measured from P-AgNav (RA-L 2025), which is exactly 8 pages:
+%%
+%%   Abstract + I. Intro .... 1344 w
+%%   II. System Overview .....  989 w
+%%   III. System Design ..... 2831 w   <-- the technical core
+%%   IV. Experiments ........ 1003 w
+%%   V. Conclusion ..........  247 w
+%%   References .............  958 w
+%%   TOTAL .................. 7372 w
+%%
+%% Figures are not overhead -- they are how P-AgNav stays short. Their Fig. 4
+%% (pipeline diagram) replaces roughly a page of prose. Budget ~2 pages of
+%% figures and write less text, not more.
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{cite}
+\usepackage[caption=false,font=footnotesize]{subfig}
+
+\graphicspath{{fig/}}
+
+%% --- notation shorthands: define once, use everywhere -------------------
+\newcommand{\offset}{e_t}                 % normalized lateral offset
+\newcommand{\slope}{s_t}                  % heading / slope term
+\newcommand{\angvel}{\omega_t}            % angular velocity
+\newcommand{\linvel}{v_t}                 % linear velocity
+\newcommand{\horizon}{N}                  % MPC horizon
+
+\begin{document}
+
+\title{AIAgNav: A Semantic Segmentation-Based Autonomous\\
+       Navigation System for Cornfields}
+
+\author{\IEEEauthorblockN{Author One, Author Two, and David J. Cappelleri}
+\IEEEauthorblockA{School of Mechanical Engineering, Purdue University,
+West Lafayette, IN 47907 USA}%
+\thanks{This work was supported by ...}}
+
+\maketitle
+
+%% ===================================================================
+%% ABSTRACT  --- budget: ~150 w
+%% ===================================================================
+\begin{abstract}
+TODO. One sentence of problem, one of approach, one of what is new,
+one of validation. See P-AgNav's abstract for the exact shape.
+\end{abstract}
+
+%% ===================================================================
+%% I. INTRODUCTION  --- budget: ~1200 w (with abstract: 1344 w)
+%% Deferred per author's instruction; write last, once III is settled.
+%% Ends with an explicit 3-item contribution list (P-AgNav does this).
+%% ===================================================================
+\section{Introduction}
+TODO --- deferred.
+
+%% ===================================================================
+%% II. SYSTEM OVERVIEW  --- budget: ~990 w  (draft currently 2274 w)
+%%   A. System Hardware
+%%   B. Sensing modality: why a monocular camera + learned segmentation
+%%   C. Framework Overview  (+ pipeline figure, + field assumptions)
+%% This section motivates the representation. It is the AIAgNav analogue
+%% of P-AgNav Sec. II-B ("LiDAR Representation: Range View") and should
+%% carry the "why DINOv3 / why three classes" argument at the level of
+%% a design justification, NOT a tutorial.
+%% ===================================================================
+\section{System Overview}
+\subsection{System Hardware}
+TODO
+\subsection{Visual Representation}
+TODO
+\subsection{Framework Overview}
+TODO
+
+%% ===================================================================
+%% III. SYSTEM DESIGN --- budget: 2831 w TOTAL (draft currently 11812 w)
+%% Suggested split, mirroring P-AgNav's proportions:
+%%   A. Semantic Segmentation .......... ~700 w
+%%   B. Centerline / Row-Width Estimation ~600 w
+%%   C. MPC Row Following .............. ~800 w   (equation-dense)
+%%   D. Row Exit Detection ............. ~400 w
+%%   E. Mission FSM / Row Switching .... ~330 w
+%% Equations carry the content; prose is connective tissue only.
+%% ===================================================================
+\section{System Design}
+
+\begin{table}[t]
+\caption{Summary of Notations}
+\label{tab:notation}
+\centering
+\begin{tabular}{ll}
+\toprule
+Symbol & Description \\
+\midrule
+$\offset$   & Normalized lateral offset of the row centerline \\
+$\slope$    & Heading-free lateral readout (slope term) \\
+$\angvel$   & Commanded angular velocity \\
+$\linvel$   & Commanded linear velocity \\
+$\horizon$  & MPC prediction horizon \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Semantic Segmentation}
+TODO
+
+\subsection{Centerline and Row Width Estimation}
+TODO
+
+\subsection{Model Predictive Row Following}
+The MPC minimizes the cost $J$ over the horizon $\horizon$:
+\begin{equation}
+\label{eq:mpc_cost}
+J = \sum_{k=1}^{\horizon} \big( \text{TODO} \big)
+\end{equation}
+subject to the state update and constraints
+\begin{equation}
+\label{eq:mpc_dynamics}
+\text{TODO}
+\end{equation}
+
+\subsection{Row Exit Detection}
+TODO
+
+\subsection{Row Switching}
+TODO
+
+%% ===================================================================
+%% IV. EXPERIMENTAL RESULTS --- budget: ~1000 w
+%% Two tables (SIM, field) + the failure-mode figure. P-AgNav reports
+%% collisions and human interventions; we report MDBI from the metrics
+%% logger, which is the directly comparable number.
+%% ===================================================================
+\section{Experimental Results}
+TODO
+
+%% ===================================================================
+%% V. CONCLUSION --- budget: ~250 w
+%% ===================================================================
+\section{Conclusion}
+TODO
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}
