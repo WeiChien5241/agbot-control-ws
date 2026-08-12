@@ -33,13 +33,6 @@
 %% Unresolved facts render visibly in the PDF so they cannot slip through.
 \newcommand{\TODO}[1]{\textbf{[TODO: #1]}}
 
-%% --- notation shorthands: define once, use everywhere -------------------
-\newcommand{\offset}{e_t}                 % normalized lateral offset
-\newcommand{\slope}{s_t}                  % heading / slope term
-\newcommand{\angvel}{\omega_t}            % angular velocity
-\newcommand{\linvel}{v_t}                 % linear velocity
-\newcommand{\horizon}{N}                  % MPC horizon
-
 \begin{document}
 
 \title{AIAgNav: A Semantic Segmentation-Based Autonomous\\
@@ -106,11 +99,22 @@ TODO
 \toprule
 Symbol & Description \\
 \midrule
-$\offset$   & Normalized lateral offset of the row centerline \\
-$\slope$    & Heading-free lateral readout (slope term) \\
-$\angvel$   & Commanded angular velocity \\
-$\linvel$   & Commanded linear velocity \\
-$\horizon$  & MPC prediction horizon \\
+$H,\,W$ & Mask height and width, px \\
+$c_x$ & Image centre column, $W/2$ \\
+$f_i,\,\lambda_i$ & Height fraction and pooling weight of scan row $i$ \\
+$x_{L,i},\,x_{R,i}$ & Corridor bounds on scan row $i$ \\
+$x_{\mathrm{mid},i},\,w_i$ & Corridor midpoint and width on scan row $i$ \\
+$e_i,\,e$ & Per-row and pooled normalized lateral error \\
+$s$ & Heading proxy (slope term) \\
+$\tau,\,\tau_{\min}$ & Traversable fraction of lower half; its threshold \\
+$\mathbf{x},\,u$ & MPC state $[e\;\,s]^{\!\top}$ and control $\omega$ \\
+$A,\,B$ & System and input matrices \\
+$\alpha,\,\beta$ & Lateral coupling and control effectiveness \\
+$Q,\,r,\,r_\Delta$ & State, control, and control-rate weights \\
+$N,\,dt,\,dt_0$ & Horizon, control period, reference period \\
+$\omega_{\max},\,\Delta\omega_{\max}$ & Angular rate and slew limits \\
+$v$ & Commanded linear velocity \\
+$m,\,\rho,\,m_c$ & Exit evidence, leak ratio, confirmation threshold \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -243,16 +247,87 @@ controller holds its previous command rather than steering on the frame, and
 stops if rejections persist.
 
 \subsection{Model Predictive Row Following}
-The MPC minimizes the cost $J$ over the horizon $\horizon$:
-\begin{equation}
-\label{eq:mpc_cost}
-J = \sum_{k=1}^{\horizon} \big( \text{TODO} \big)
-\end{equation}
-subject to the state update and constraints
+\label{sec:mpc}
+The controller converts the state $(e, s)$ into an angular velocity. A
+proportional law on $e$ alone is sufficient to hold a straight row but couples
+poorly to the heading term, and it offers no principled way to bound how
+sharply the command may change between frames -- a real constraint here, since
+a single badly segmented frame must not produce a step in steering. The system
+therefore uses a receding-horizon model predictive controller, which expresses
+both requirements as costs and constraints on the same optimization.
+
+The state is $\mathbf{x} = [\,e \;\; s\,]^{\!\top}$ and the control is the
+angular velocity $u = \omega$. Over one control period the corridor midpoint
+drifts laterally in proportion to the current heading error, and the heading
+error itself is driven by the commanded rate, giving a linear time-invariant
+model in normalized image space,
 \begin{equation}
 \label{eq:mpc_dynamics}
-\text{TODO}
+\mathbf{x}_{k+1} = A\,\mathbf{x}_k + B\,u_k,
+\quad
+A = \begin{bmatrix} 1 & \alpha \\ 0 & 1 \end{bmatrix},
+\quad
+B = \begin{bmatrix} 0 \\ \beta \end{bmatrix}.
 \end{equation}
+Here $\alpha$ is the lateral coupling -- how much heading error translates into
+lateral drift per step -- and $\beta$ is the control effectiveness, how much
+the commanded rate moves the heading term per step. Both are identified
+empirically. This is a point of departure from range-view systems such as
+P-AgNav~\cite{kim2025pagnav}, where a $360^\circ$ horizontal field of view maps
+angular velocity to image displacement in closed form. A perspective camera
+admits no such constant: the pixel displacement produced by a given rotation
+depends on depth, which is unobserved. Fitting the two scalars on logged runs
+avoids requiring the depth that would make them analytic.
+
+The cost penalizes deviation from the row over the horizon $N$ while
+regularizing the command,
+\begin{equation}
+\label{eq:mpc_cost}
+J = \sum_{k=1}^{N} \mathbf{x}_k^{\!\top} Q\, \mathbf{x}_k
+  + \sum_{k=0}^{N-1} \left[ r\,u_k^2 + r_\Delta \left(u_k - u_{k-1}\right)^2 \right],
+\end{equation}
+with $Q = \mathrm{diag}(q_e, q_s)$. The two state weights encode a priority:
+being off-centre is penalized considerably more than being misaligned, because
+a heading error corrects itself as the robot advances whereas a lateral offset
+does not. The term in $r$ discourages large commands, and the term in
+$r_\Delta$ penalizes change between consecutive commands. That last term is
+what supplies temporal smoothing in this system. Learned under-canopy
+controllers typically obtain smoothing by fusing the visual estimate with
+inertial measurements in a Kalman filter; here it falls out of the cost
+function, so the pipeline needs neither an IMU nor a filter state that must be
+re-initialized whenever the mission is paused.
+
+The optimization is subject to a magnitude bound and a slew bound,
+\begin{equation}
+\label{eq:mpc_constraints}
+\left|u_k\right| \le \omega_{\max},
+\qquad
+\left|u_k - u_{k-1}\right| \le \Delta\omega_{\max},
+\end{equation}
+where $u_{-1}$ is the command applied on the previous frame, so the constraint
+binds across frames and not merely within the planned sequence. The problem is
+solved by sequential least-squares quadratic programming at every accepted
+frame; only the first element $u_0$ is applied, and the remainder of the
+horizon is discarded and recomputed on the next frame.
+
+One practical requirement shapes the parameterization. The same controller runs
+on two robots whose inference rates differ by more than an order of magnitude,
+and a model calibrated per \emph{step} is wrong on both unless the step is
+fixed. The parameters $\alpha$, $\beta$, and $\Delta\omega_{\max}$ are therefore
+specified at a reference control period $dt_0$ and scaled by $dt/dt_0$ at
+construction. The per-step drift and control effectiveness then match the real
+elapsed time per step, and the slew limit stays constant in
+$\mathrm{rad}\,\mathrm{s}^{-2}$ rather than silently tightening as the loop
+slows.
+
+The linear velocity is held at a constant cruise value while the robot is
+following a row. This is a deliberate simplification relative to
+P-AgNav~\cite{kim2025pagnav}, which couples speed inversely to commanded
+curvature so the platform slows through sharp corrections. Under the row
+geometry considered here the commanded rate stays small enough that the
+coupling changes little, and a constant speed makes the distance-based logic of
+Section~\ref{sec:exit} easier to reason about. Speed is reduced only during the
+headland manoeuvre, where overshoot is most costly.
 
 \subsection{Row Exit Detection}
 \label{sec:exit}
