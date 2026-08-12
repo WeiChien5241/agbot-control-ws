@@ -175,7 +175,72 @@ frame.
 
 \subsection{Corridor and Centerline Estimation}
 \label{sec:centerline}
-TODO
+The mask is reduced to a two-dimensional navigation state by pure geometry.
+No regression head is trained to predict heading or lateral distance, and no
+camera intrinsics enter the computation: the state is read directly off the
+class mask, so it is defined in normalized image coordinates and is
+independent of camera resolution.
+
+The system measures the corridor on a small set of horizontal scan rows placed
+at fractions $f_i$ of the image height, ordered from farthest to nearest. On
+each scan row it starts at the image centre column $c_x = W/2$ and expands
+outward while the mask remains traversable, giving the bounds $x_{L,i}$ and
+$x_{R,i}$ of the contiguous traversable run that straddles the centre column,
+\begin{equation}
+\label{eq:midpoint}
+x_{\mathrm{mid},i} = \tfrac{1}{2}\left(x_{L,i} + x_{R,i}\right),
+\qquad
+w_i = x_{R,i} - x_{L,i} .
+\end{equation}
+Anchoring the search at $c_x$ rather than taking the widest traversable run in
+the row is what makes the measurement unambiguous when the mask contains more
+than one open region, as it does whenever a gap in the crop wall exposes the
+neighbouring row: the corridor the robot is actually in is the one aligned
+with its own heading. If the centre column is not traversable, that scan row
+yields no measurement and is skipped. The width $w_i$ is retained and consumed
+by the exit detector of Section~\ref{sec:exit}.
+
+Each valid scan row gives a lateral error, normalized by the half-width so
+that it is dimensionless and bounded, and these are pooled into a single
+lateral state $e$ by a weighted mean over the valid rows,
+\begin{equation}
+\label{eq:offset}
+e_i = \frac{x_{\mathrm{mid},i} - c_x}{W/2},
+\qquad
+e = \mathrm{clip}\!\left(\frac{\sum_i \lambda_i e_i}{\sum_i \lambda_i},\, -1,\, 1\right).
+\end{equation}
+A positive $e$ places the corridor midpoint right of the image centre, meaning
+the robot sits left of the corridor centre. The weights $\lambda_i$ favour the
+near rows. Near rows and far rows fail in opposite ways, and the weighting
+reflects which failure is more costly: the near rows report where the robot is
+now and stay reliable because the ground closest to the camera segments
+cleanly, whereas the far rows carry the earliest warning of a curve or a row
+end but sit where perspective compresses the corridor to a few pixels and the
+mask degrades. Weighting toward the near field keeps steering stable while
+leaving the far rows enough influence to anticipate.
+
+Because the same scan already yields an offset at several distances, the
+robot's heading relative to the row follows from their difference at no
+additional cost,
+\begin{equation}
+\label{eq:slope}
+s = e_{\mathrm{far}} - e_{\mathrm{near}},
+\end{equation}
+evaluated between the farthest and nearest valid rows. A corridor that tilts
+rightward with distance indicates the robot is heading left of the row
+direction. This is the term that separates the two ways a robot can be wrong
+inside a row -- displaced from the centreline, and pointed across it -- which
+a single lateral reading cannot distinguish. It is computed across rows within
+one frame rather than across time, so it needs no history, no filter, and no
+inertial measurement.
+
+A frame is accepted only if at least one scan row produced a measurement and
+the traversable fraction $\tau$ of the lower half of the mask reaches a
+threshold $\tau_{\min}$. The second test rejects the case where the mask has
+collapsed -- an occluded lens, a lost row -- while a narrow spurious run at the
+centre column still yields a confident-looking midpoint. On rejection the
+controller holds its previous command rather than steering on the frame, and
+stops if rejections persist.
 
 \subsection{Model Predictive Row Following}
 The MPC minimizes the cost $J$ over the horizon $\horizon$:
