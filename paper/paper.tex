@@ -331,10 +331,84 @@ headland manoeuvre, where overshoot is most costly.
 
 \subsection{Row Exit Detection}
 \label{sec:exit}
-TODO
+The system recognizes two end-of-row signatures, both read from quantities
+Section~\ref{sec:centerline} has already computed. In the open signature the
+corridor widens from the narrow band characteristic of an occupied row toward
+the full image width, and the outer strips at the image borders become
+traversable: the crop walls have ended. The test requires a sufficient number
+of scan rows to be simultaneously wide and flank-clear, but deliberately does
+not require \emph{particular} rows. Requiring the far rows is the intuitive
+choice and fails in the field, because beyond the last plants the distant
+ground segments poorly and those rows can remain invalid indefinitely. In the
+blocked signature no scan row yields a corridor at all while the lower half of
+the mask still contains obstacle pixels, which is a crop wall square ahead
+rather than a lost mask.
+
+Neither signature may be trusted on a single frame, and the debounce is where
+the design matters. Evidence accumulates in \emph{physical} units rather than
+in frames,
+\begin{equation}
+\label{eq:accumulator}
+m_{k+1} =
+\begin{cases}
+  m_k + \Delta_k, & \text{signature present},\\[2pt]
+  \max\!\left(m_k - \rho\,\Delta_k,\; 0\right), & \text{otherwise},
+\end{cases}
+\end{equation}
+firing when $m_k \ge m_c$. The increment $\Delta_k$ is the distance driven
+since the previous frame for the open signature and the elapsed time for the
+blocked signature. The units differ because the two signatures fail
+differently: an exit must be confirmed by driving through it, so if the robot
+stalls the safe outcome is not to fire, whereas a blocked view stops the robot
+outright, so a distance-based counter would never fill and the recovery would
+deadlock.
+
+Counting frames instead would not be a simplification but a defect. The same
+frame count means different things on different platforms: a threshold tuned on
+the CPU-only robot corresponds to more than a second of evidence there and a
+fraction of one on the GPU robot, and a mid-row gap that is harmless on one
+fires an exit on the other. Nor may the accumulator demand strictly consecutive
+frames, since at a high frame rate a confirmation distance spans tens of frames
+and a single flickering frame would reset the streak permanently. The leaky
+form asks instead for net sustained evidence.
+
+The leak is asymmetric, $\rho < 1$. A symmetric leak sounds neutral and is not:
+a signature that holds on half the frames nets exactly zero and can never fire
+no matter how far the robot drives, which is precisely what a real but marginal
+exit looks like. Finally, each signature is armed by distance travelled into
+the row -- the open signature only after the robot is far enough in that the
+open field behind it has left the frame, the blocked signature much earlier,
+since an obstacle just past the row entrance must still be caught and the
+signature cannot false-fire there.
 
 \subsection{Row Switching}
-TODO
+\label{sec:switching}
+Multi-row operation is sequenced by a finite state machine. On a confirmed open
+exit the robot leaves row following and drives clear of the last plants, then
+executes a quarter turn onto the headland, traverses to the neighbouring row,
+turns again to face down it, and reacquires row following once the segmentation
+mask presents a corridor. The two turns and the traverse are closed on wheel
+odometry rather than on vision, because the headland offers no corridor to
+steer by; vision resumes as the authority the moment the robot is inside the
+next row. Turn direction alternates between switches, so the robot covers the
+plot in a boustrophedon pattern, and the mission ends after a commanded number
+of rows or when no further row is found. The clearing leg runs slower than the
+row-following cruise, since overshoot there is what misaligns the entry into
+the next row. Where a rear camera is available, that leg is steered from the
+rear view looking back down the row just left, which reports directly whether
+the tail has cleared the last plants; the conversion from the rear view to the
+same state used in Section~\ref{sec:mpc} is not a sign flip and is given in the
+supplementary material.
+
+The blocked signature enters a separate branch. Because the system drives only
+forward within a row, a crop wall ahead cannot be turned around in place
+without striking plants, so the robot reverses out of the end it entered under
+rear-view guidance and odometry bounds, then joins the next row with an S-turn.
+That row is traversed in the same direction as the blocked one rather than the
+alternating direction, since the robot never reached the far end, and the
+boustrophedon flip is suppressed once to account for it. Blocked events are
+counted and reported at mission completion, as they mark rows that were not
+fully covered.
 
 %% ===================================================================
 %% IV. EXPERIMENTAL RESULTS --- budget: ~1000 w
