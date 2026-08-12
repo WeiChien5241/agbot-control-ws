@@ -32,5 +32,8 @@ words:
 watch:
 	latexmk -pdf -pvc -interaction=nonstopmode $(TEX)
 
+# latexmk -C leaves paper.bbl behind. A stale empty .bbl gets re-read before
+# bibtex can regenerate it and aborts the build, so remove it unconditionally.
 clean:
-	latexmk -C 2>/dev/null || rm -f *.aux *.log *.out *.bbl *.blg *.fls *.fdb_latexmk
+	-latexmk -C 2>/dev/null
+	rm -f *.aux *.log *.out *.bbl *.blg *.fls *.fdb_latexmk
