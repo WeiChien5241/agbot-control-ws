@@ -30,6 +30,9 @@
 
 \graphicspath{{fig/}}
 
+%% Unresolved facts render visibly in the PDF so they cannot slip through.
+\newcommand{\TODO}[1]{\textbf{[TODO: #1]}}
+
 %% --- notation shorthands: define once, use everywhere -------------------
 \newcommand{\offset}{e_t}                 % normalized lateral offset
 \newcommand{\slope}{s_t}                  % heading / slope term
@@ -113,9 +116,65 @@ $\horizon$  & MPC prediction horizon \\
 \end{table}
 
 \subsection{Semantic Segmentation}
-TODO
+The navigation state is derived from a per-pixel semantic segmentation of a
+single forward-facing RGB frame. Under a corn canopy the appearance cues that
+separate drivable ground from crop are unstable: illumination changes by more
+than an order of magnitude between direct sun and deep shade within one row,
+hanging leaves throw high-contrast shadows across the corridor floor, and soil
+colour shifts with moisture and tillage. Hand-tuned colour or texture
+thresholds are adequate over a short segment but do not survive these
+transitions, and the row-following controller carries no independent state
+estimate to fall back on when they fail. The system therefore learns the
+ground/crop distinction rather than specifying it.
 
-\subsection{Centerline and Row Width Estimation}
+The network pairs a DINOv3 ViT-S/16 backbone with an encoder-only mask
+transformer head. The choice is driven by label efficiency rather than by
+accuracy on a public benchmark. Annotated data for this task cannot be
+inherited from an existing dataset: it must be produced by hand from footage
+recorded in the target field, at the growth stage and camera mounting of the
+deployed robot, and the achievable quantity is bounded by how much one operator
+can label in a season. The training set here is \TODO{confirm image count}
+annotated frames. Self-supervised DINOv3 features transfer to dense prediction
+under very little supervision, which is what makes a set of that size viable;
+a backbone trained from scratch, or one supervised on ImageNet classification,
+would demand substantially more annotation before producing masks clean enough
+to measure corridor boundaries on. ViT-S/16 is the smallest variant in the
+family, which matters because one set of weights must serve both robots in the
+fleet, only one of which carries a GPU.
+
+The model predicts three classes: sky, traversable ground, and obstacle. The
+controller reads only the traversable class, so the presence of a sky class
+deserves an explanation. At a row end, and throughout a headland, the upper
+part of the frame opens onto bright sky. A two-class model must assign those
+pixels to either ground or crop, and their brightness and near-absence of
+texture make them resemble open ground far more closely than they resemble a
+corn plant. Because the exit detector of Section~\ref{sec:exit} fires when the
+traversable corridor widens toward the full image width, folding sky into the
+traversable class reproduces the exact signature of a row end at arbitrary
+points inside a row. A dedicated sky label removes that failure mode for the
+cost of one output channel. The obstacle class, conversely, is deliberately
+coarse: it covers the corn plants bounding the corridor, fallen stalks, and
+any foreign object, because the control decision they induce is identical --
+do not drive there. Separating them would add annotation burden without
+changing a single command.
+
+Training runs for 2\,500 steps at batch size 2 and $224 \times 224$ input
+resolution in mixed precision. The schedule is short by the standards of
+segmentation training, and deliberately so: with a training set this small, a
+longer schedule fits the particular plants that happened to be annotated rather
+than the ground/crop boundary the controller needs.
+
+At inference the model is given the full-resolution camera frame and returns a
+class-index mask, which is resized to the frame resolution when the two differ.
+That resize must be nearest-neighbour. Mask values are class indices, not
+intensities, so any interpolating kernel synthesises intermediate values that
+correspond to no class at all, and it does so precisely at region boundaries --
+which is exactly where Section~\ref{sec:centerline} measures the corridor
+edges. A single misplaced boundary column biases the lateral error for that
+frame.
+
+\subsection{Corridor and Centerline Estimation}
+\label{sec:centerline}
 TODO
 
 \subsection{Model Predictive Row Following}
@@ -131,6 +190,7 @@ subject to the state update and constraints
 \end{equation}
 
 \subsection{Row Exit Detection}
+\label{sec:exit}
 TODO
 
 \subsection{Row Switching}
