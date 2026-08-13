@@ -51,8 +51,22 @@ West Lafayette, IN 47907 USA}%
 %% ABSTRACT  --- budget: ~150 w
 %% ===================================================================
 \begin{abstract}
-TODO. One sentence of problem, one of approach, one of what is new,
-one of validation. See P-AgNav's abstract for the exact shape.
+Under-canopy navigation in cornfields must be closed on onboard perception:
+the corridor between rows is under a metre wide and GNSS degrades exactly where
+the canopy is densest. Existing under-canopy systems solve this with 3D LiDAR,
+which measures geometry and cannot separate a rigid stalk from a leaf hanging
+into the corridor.
+This paper presents AIAgNav, a navigation system that drives a ground robot
+in-row, under-canopy, and across multiple rows from a single monocular RGB
+camera. A DINOv3 backbone with a mask transformer head segments each frame into
+sky, traversable ground and obstacle; closed-form geometry reduces the mask to a
+lateral error and a heading proxy; and a receding-horizon model predictive
+controller in normalized image coordinates issues the steering command, with no
+filter, no camera calibration, and no state estimator in between. A mission
+layer detects the end of a row from the same mask, turns onto the headland,
+re-enters the next row, and reverses out of blocked rows. The
+system is evaluated in simulation and in a cornfield,
+\TODO{headline result: distance covered, rows completed, MDBI}.
 \end{abstract}
 
 %% ===================================================================
@@ -61,7 +75,90 @@ one of validation. See P-AgNav's abstract for the exact shape.
 %% Ends with an explicit 3-item contribution list (P-AgNav does this).
 %% ===================================================================
 \section{Introduction}
-TODO --- deferred.
+Under-canopy ground robots are the most direct route to per-plant measurement in
+row crops. A robot driving between corn rows reaches the stalk, the lower leaves
+and the soil surface, none of which an aerial platform or a high-clearance
+tractor can observe once the canopy closes~\cite{kim2022pagbot}. The environment
+it must drive in, however, is among the least forgiving available to a mobile
+robot. The corridor between two rows of mature corn is under a metre wide,
+bounded by plants that are rigid enough to damage a robot and flexible enough to
+sweep across its sensors, and lit by a canopy that produces order-of-magnitude
+illumination changes over a few metres of travel. GNSS, which carries most
+agricultural autonomy above the canopy, degrades under it exactly where the
+corridor is narrowest. Navigation under the canopy therefore has to be closed on
+onboard perception.
+
+This work follows a line of under-canopy systems developed on the same platform.
+P-AgBot~\cite{kim2022pagbot} centres the robot in a row by balancing left and
+right distances from a 2D LiDAR and demonstrates in-row physical sampling.
+P-AgSLAM~\cite{kim2024pagslam} builds an under-canopy state estimate from
+3D LiDAR features. P-AgNav~\cite{kim2025pagnav} extends that sensing into a
+complete navigation system: it projects the 3D point cloud into a range view,
+extracts the row corridor from that image, and sequences in-row driving,
+end-of-row detection and headland turning into multi-row missions. The
+navigation problem in a cornfield is, in that sense, not open. What this work
+questions is the sensor the solution is built on.
+
+A range sensor measures geometry, and the question a row-following controller
+asks is not geometric. A return at 0.6\,m to the left of the robot is the same
+measurement whether it came from a stalk, which must be avoided, or from a leaf
+hanging into the corridor, which the robot drives through several times a
+minute; no post-processing of the point cloud recovers a distinction that was
+never measured. The consequence is that a geometric system must treat the
+corridor conservatively, and that its notion of the row end is a matter of
+where returns stop rather than of what the robot is looking at. A 3D LiDAR is
+also the most expensive component on the robot by a wide margin, which matters
+for a platform intended to be deployed in numbers across a research farm.
+
+Camera-based under-canopy navigation addresses the semantic gap and has taken
+two broad forms. CropFollow~\cite{sivakumar2021cropfollow} regresses heading and
+lateral distance directly from a monocular image with a learned predictor and
+fuses the estimate with inertial measurements in a filter, which is robust but
+places the entire navigation state inside a network whose failures are difficult
+to inspect and whose training set must be large. Agronav~\cite{panda2023agronav}
+segments the traversable region and fits a semantic line to it, an approach much
+closer to the one taken here, but is developed for above-canopy field roads and
+inter-row lanes rather than for the occluded, low-contrast interior of a mature
+corn row. Neither addresses the full multi-row mission --- exit, headland turn,
+re-entry, and recovery when the row is blocked --- which is what separates a
+row follower from a system that can cover a plot.
+
+AIAgNav is a monocular, camera-only navigation system for that setting. A
+single forward-facing RGB frame is segmented into sky, traversable ground and
+obstacle by a DINOv3~\cite{simeoni2025dinov3} backbone with a mask transformer
+head, chosen for label efficiency because the annotations must be produced by
+hand from footage of the target field. The mask is reduced to a two-element
+navigation state by closed-form geometry rather than by a learned regression
+head, and that state is consumed directly by a receding-horizon model predictive
+controller formulated in normalized image coordinates. A mission layer detects
+the end of the row from the same mask, turns onto the headland, re-enters the
+next row, and reverses out of rows that are blocked rather than finished. No
+GNSS, no map, no waypoints, no camera calibration and no LiDAR are used at any
+stage.
+
+The contributions are:
+
+\begin{itemize}
+\item A complete in-row and multi-row cornfield navigation system driven by a
+single low-cost monocular camera, with a second identical camera used only for
+reverse and headland manoeuvres. The control problem is posed entirely in
+normalized image coordinates, so no intrinsics, extrinsics or metric scale enter
+the control law.
+\item A navigation state read off a semantic segmentation mask by geometry
+rather than regression, giving a lateral error and a heading proxy from a single
+frame, at several depths, with no filter and no inertial input between
+perception and control.
+\item A mission layer for multi-row operation whose end-of-row evidence
+accumulates in metres and seconds rather than in frame counts, so that one set
+of thresholds transfers unchanged between robots whose inference rates differ by
+an order of magnitude, together with a rear-view-steered headland leg and a
+blocked-row reverse recovery.
+\end{itemize}
+
+GNSS is used nowhere in the system described here. An RTK receiver is planned
+for the above-canopy transit from the field edge to the row entrance, which is
+the one regime in which it is reliable, and it remains outside the navigation
+system presented in this paper.
 
 %% ===================================================================
 %% II. SYSTEM OVERVIEW  --- budget: ~990 w  (draft currently 2274 w)
@@ -285,13 +382,30 @@ frame.
 
 \subsection{Corridor and Centerline Estimation}
 \label{sec:centerline}
+
+\begin{figure}[t]
+\centering
+%% TODO(fig): replace with a debug-overlay capture from a field run --
+%% camera frame + class mask + scan rows, corridor bounds, midpoints.
+\framebox[0.98\columnwidth]{\rule{0pt}{3.6cm}\parbox{0.7\columnwidth}{\centering
+\textbf{[Fig.~2 placeholder]}\\[2pt] segmentation overlay:\\ scan rows, corridor
+bounds, midpoints}}
+\caption{Corridor measurement on a class mask. The traversable region is washed
+over the camera frame; on each scan row the search starts at the image centre
+column and expands outward to the corridor bounds, whose midpoint gives the
+per-row lateral error. The difference between the far and near rows is the
+heading proxy.}
+\label{fig:overlay}
+\end{figure}
+
 The mask is reduced to a two-dimensional navigation state by pure geometry.
 No regression head is trained to predict heading or lateral distance, and no
 camera intrinsics enter the computation: the state is read directly off the
 class mask, so it is defined in normalized image coordinates and is
 independent of camera resolution.
 
-The system measures the corridor on a small set of horizontal scan rows placed
+The system measures the corridor on a small set of horizontal scan rows
+(Fig.~\ref{fig:overlay}) placed
 at fractions $f_i$ of the image height, ordered from farthest to nearest. On
 each scan row it starts at the image centre column $c_x = W/2$ and expands
 outward while the mask remains traversable, giving the bounds $x_{L,i}$ and
@@ -544,7 +658,28 @@ TODO
 %% V. CONCLUSION --- budget: ~250 w
 %% ===================================================================
 \section{Conclusion}
-TODO
+This paper presented AIAgNav, a navigation system that drives a ground robot
+in-row and under-canopy in cornfields, and across multiple rows, from a single
+monocular RGB camera. The navigation state is recovered from a semantic
+segmentation mask by closed-form geometry and consumed directly by a model
+predictive controller formulated in normalized image coordinates, so the
+pipeline uses no GNSS, no map, no waypoints, no LiDAR, no camera calibration
+and no state estimator between perception and control. A mission layer detects
+the end of a row from the same mask, sequences headland turns, and recovers
+from blocked rows by reversing out under rear-view guidance. Expressing
+end-of-row evidence in metres and seconds rather than in frame counts allows one
+set of thresholds to transfer between robots whose inference rates differ by an
+order of magnitude, which is what makes the same system deployable on a
+GPU-equipped platform and on a stock CPU-only one.
+
+Three directions follow. The first is above-canopy transit: an RTK receiver used
+only between the field edge and the row entrance, the one regime in which GNSS
+is dependable, would close the gap between deployment and the first row. The
+second is integration with the physical sampling module the platform already
+carries, so that a covered plot yields measurements rather than a trajectory.
+The third is the sky class, which the controller currently ignores: a lens
+occluded by a leaf and a crop wall directly ahead produce the same mask today,
+and sky visibility is the most direct signal available for separating them.
 
 %% While drafting, include every entry in refs.bib so the reference list's
 %% page cost stays visible. Once the body actually cites things, delete this
