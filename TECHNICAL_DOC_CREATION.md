@@ -1,6 +1,6 @@
 # Technical Doc Creation — AIAgNav ICRA 2027 paper
 
-Handoff written 2026-08-12. Head commit at time of writing: `245d100`.
+Handoff updated 2026-08-13. Head commit at time of writing: `17b1e09`.
 Read this file plus `paper/OUTLINE_III.md` and you have everything.
 
 ---
@@ -20,12 +20,32 @@ The deliverable is `paper/paper.tex`, not a markdown file.
 
 ## 2. CURRENT STATE
 
-**Section III (System Design) is COMPLETE**, cut from 11,812 words to ~2,500.
-Everything else is a `TODO` stub. The document compiles clean.
+**Everything except Section IV is drafted.** Sections I, II, III and V are
+written, three figures are in place (two real TikZ diagrams, one placeholder),
+and the document compiles clean with no undefined references.
 
 ```
-pages: 4 / 8      0 undefined references      0 overfull boxes
+pages: 6 / 8      0 undefined references      \nocite{*} removed
 ```
+
+| Section | Words | Budget | Status |
+|---|---:|---:|---|
+| Abstract | 177 | 150 | written; one `\TODO` for the headline number |
+| I. Introduction | 857 | 1200 | written; 3-item contribution list; **only 6 references** |
+| II. System Overview | 1005 | 990 | written (hardware / visual representation / framework) |
+| III. System Design | 2528 | 2831 | complete |
+| IV. Experimental Results | — | 1003 | **deliberately deferred** (2026-08-13 decision) |
+| V. Conclusion | 256 | 247 | written |
+
+**Figures:** `fig/pipeline.tex` (Fig. 1, TikZ block diagram) and `fig/fsm.tex`
+(Fig. 2 in III-E, TikZ state machine) are finished and readable at print size.
+Fig. 2 in III-B is a `\framebox` **placeholder** for the segmentation overlay —
+the user will supply a `debug_viz.py` capture (torch cannot run in this sandbox).
+
+**Two pages are left and three things still want them**: Section IV (~1 page
+with tables), the real overlay figure, and a reference list that is currently
+6 entries where a submission wants roughly 20. Expect to cut prose from I or II
+when related work lands. `make pages` is still the arbiter.
 
 | Subsection | Words | Budget |
 |---|---:|---:|
@@ -173,7 +193,28 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
 
 ## 5. NEXT STEPS
 
-Tasks 1–7 are done. Remaining, in priority order:
+Tasks 1–13 are done except Section IV. Remaining, in priority order:
+
+**A. Section IV Experimental Results (~1,003 w).** Deferred by the user on
+2026-08-13 — write it when field data exists. What is on this machine today is
+10 **simulation** runs in `~/agbot_logs` (2026-08-06/07, ≈144 m total,
+0 interventions, so MDBI is only a `>=` bound) plus perception mIoU 0.8717 from
+Supplementary S6.2. No field CSV exists; old field runs predate the metrics
+logger and would have to come from rosbags via `scripts/bag_distance.py`.
+The abstract carries a `\TODO` for the headline number.
+
+**B. Swap in the real segmentation-overlay figure** (`fig:overlay` in III-B) once
+the user captures a debug-overlay frame into `paper/fig/`. The placeholder
+reserves 3.6 cm so the page count is already honest.
+
+**C. Related work.** Six references is thin for a submission. Adding ~12 more
+costs roughly half a page that the current layout does not have — plan to trim
+Section II or the introduction's third and fourth paragraphs when they go in.
+
+**D. Author block and funding line** are still `Author One, Author Two` and
+"supported by ...".
+
+Historical task list (all now complete except as noted above):
 
 **8. Cut Section II System Overview to ~989 words** (from 2,274).
 Three parts: hardware; why a monocular camera and a learned mask as the
@@ -208,16 +249,15 @@ lightly-train entries. **Delete the `\nocite{*}`** once the body cites things.
 **14. Final pass to 8 pages.** `make pages` must report ≤ 8 with figures and
 full references in place.
 
-**Open questions blocking work — ask the user, do not invent:**
+**Questions answered on 2026-08-13 — do not re-ask:**
 
-- **Training set size.** `Train.py` says 2,500 steps with a comment "roughly 500
-  steps for every 20 images", implying ~100 annotated frames. Unverified — the
-  dataset lives on a Windows path. III-A currently renders
-  `[TODO: confirm image count]` **visibly in the PDF**.
-- **Hardware for Section II.** Two Jackals exist: `cpr-j100-0463` (no GPU, ~2 Hz)
-  and `cpr-j100-0864` (GPU, ~16 ms inference, ~24 Hz). Which is *the* robot for
-  the paper? Camera make/model? Mount height (the repo mentions a ~0.7 m tall
-  mount, field-proven 2026-07, vs a ~0.5 m low mount)?
+- **Training set size: 443 annotated frames**, 80/20 split, mIoU 0.8717. The
+  number was in the design doc's own Appendix A.2 (now Supplementary S6.2), not
+  in `Train.py`. III-A states it and the `\TODO` is gone.
+- **Platform: both Jackals stay in the paper.** The 12x control-rate spread
+  between the CPU-only and GPU robots is what motivates the metric/time
+  parameterization in III-C and III-D, so it earns its space.
+- **Results: deferred**, see next steps A. **Overlay figure: placeholder**, see B.
 
 ---
 
