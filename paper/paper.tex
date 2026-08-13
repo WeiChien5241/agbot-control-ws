@@ -73,11 +73,115 @@ TODO --- deferred.
 %% ===================================================================
 \section{System Overview}
 \subsection{System Hardware}
-TODO
+AIAgNav runs on P-AgBot~\cite{kim2022pagbot}, a Clearpath Robotics Jackal J100
+skid-steer platform, the same robot used in the lab's earlier under-canopy
+work~\cite{kim2024pagslam,kim2025pagnav}. For this work it carries no LiDAR.
+The navigation sensing is two commodity USB cameras, and the only other input
+is the platform's stock state estimator, which fuses wheel encoders with an
+onboard IMU.
+
+The two cameras are mounted on the top deck as an exact geometric mirror about
+the robot centre: the same height, the same inset from their respective deck
+edges, and the same field of view, one facing forward and one facing back. The
+symmetry is load-bearing rather than cosmetic, because the headland manoeuvre of
+Section~\ref{sec:switching} steers on the rear image and the conversion of that
+view into the forward navigation state assumes the reverse view is the geometric
+twin of the forward one. Both cameras run at the resolution and frame rate of
+the annotation footage, so no resolution domain gap separates training from
+deployment.
+
+The cameras sit on the deck rather than on a mast, because as the canopy closes
+an elevated camera is repeatedly occluded by leaves. The mount pose is not a
+free choice downstream: it sets the nominal corridor width that the row-exit
+logic of Section~\ref{sec:exit} reads, near seven tenths of the image width at
+the nearest scan row here against roughly half at mast height. Width thresholds
+are properties of a camera pose, not of a cornfield.
+
+Two physical Jackals were used, and the difference between them shaped the
+real-time design. One carries the stock computer with no discrete GPU and
+completes a segmentation forward pass in about 500\,ms, giving a control rate
+near 2\,Hz; the other carries a discrete GPU and runs the same weights in 16\,ms,
+near 24\,Hz. A twelvefold spread in control rate between two instances of the
+same platform is why the row-exit evidence of Section~\ref{sec:exit} accumulates
+in metres and seconds rather than in frames, and why the controller of
+Section~\ref{sec:mpc} rescales its own dynamics to the measured control period.
+Odometry is used for exactly three purposes -- measuring distance travelled
+inside a row, closing the loop on the headland turns, and measuring path length
+for the autonomy metric. No map is built and no global localization is performed.
+
 \subsection{Visual Representation}
-TODO
+The central argument of P-AgNav~\cite{kim2025pagnav} is that a 3D LiDAR range
+view is a compact, illumination-independent representation from which navigation
+features can be extracted cheaply. That argument is not in dispute here. The
+motivation for the present system is a different limitation: a range sensor
+cannot answer the question the controller actually asks.
+
+Navigation inside a corn row reduces to a per-region question -- can the robot
+drive there? A range return at 0.6\,m to the left is the same measurement whether
+it came from a rigid stalk, which must be avoided, or from a hanging leaf, which
+the robot drives through routinely. No geometric post-processing recovers that
+distinction, because the information was never in the measurement. Semantic
+segmentation of an RGB frame answers the drivability question per pixel by
+construction, and it does so with a sensor that costs a small fraction of a 3D
+LiDAR. A forward- and slightly downward-looking camera additionally images the
+ground ahead of the robot at many depths in a single frame, which
+Section~\ref{sec:centerline} exploits to recover both the lateral and the
+heading component of the navigation state without any temporal filtering.
+
+The costs of the choice are absorbed by the design rather than denied. Light
+under a closed canopy varies by more than an order of magnitude within a single
+row; the system meets this by learning the ground/crop distinction from footage
+spanning those conditions, and by defining an explicit safe behaviour for frames
+whose mask is unusable. A monocular camera supplies no metric depth; the entire
+control problem is therefore posed in normalized image coordinates, and no
+intrinsics, extrinsics, or metric scale enter the control law at any point. A
+camera sees far less than a $360^\circ$ LiDAR; the mirrored rear view covers the
+two manoeuvres the forward view cannot serve -- clearing the headland and
+reversing out of a blocked row. One failure mode is not absorbed:
+a leaf resting on the lens and a crop wall directly ahead produce the same mask,
+and the system treats both as blocked.
+
 \subsection{Framework Overview}
-TODO
+The field is assumed, as in~\cite{kim2025pagnav}, to consist of approximately
+straight parallel rows of uniform spacing, arranged in plots separated by
+headland space wide enough for the robot to turn, with each row aligned to a
+corresponding row in the opposite plot. Within that setting the system covers
+five operational stages: in-row navigation under the canopy; classification of
+the end of the row from the mask alone; row switching across the headland;
+recovery from a row that is blocked rather than ended; and termination after a
+commanded number of rows, with the blocked rows reported.
+
+Fig.~\ref{fig:pipeline} shows the resulting data flow. One frame enters and one
+velocity command leaves. Two properties of the pipeline are worth stating at
+the overview level.
+
+There is no state estimator between perception and control. The class mask is
+reduced to a two-element navigation state by closed-form geometry and handed to
+the model predictive controller directly: no Kalman filter, no learned
+regression head, and no fusion with inertial measurements. Temporal smoothing is
+instead a property of the controller, expressed as a rate penalty and a rate
+constraint inside the same optimization that produces the command
+(Section~\ref{sec:mpc}), so it is subject to the same limits as the rest of the
+control problem instead of forming a separate tuning surface.
+
+Perception is shared rather than duplicated. The row-exit detector consumes the
+same boundary search the centerline estimator already performs; corridor widths
+and border occupancy are by-products of that scan. End-of-row classification
+therefore costs essentially nothing beyond the segmentation forward pass, which
+is what allows it to run at the control rate on the CPU-only robot.
+
+\begin{figure}[t]
+\centering
+%% TODO(fig): replace with fig/pipeline.pdf -- placeholder reserves the space.
+\framebox[\columnwidth]{\rule{0pt}{5.0cm}\parbox{0.8\columnwidth}{\centering
+\textbf{[Fig.~1 placeholder]}\\ AIAgNav processing pipeline}}
+\caption{AIAgNav processing pipeline. A single camera frame is segmented into
+sky, traversable ground, and obstacle; a scan-row geometry stage reduces the
+mask to a lateral error and a heading proxy, which drive the image-space MPC;
+the same scan feeds the row-exit detector, and the mission state machine
+sequences row following, headland turns, and blocked-row recovery.}
+\label{fig:pipeline}
+\end{figure}
 
 %% ===================================================================
 %% III. SYSTEM DESIGN --- budget: 2831 w TOTAL (draft currently 11812 w)
@@ -137,8 +241,10 @@ accuracy on a public benchmark. Annotated data for this task cannot be
 inherited from an existing dataset: it must be produced by hand from footage
 recorded in the target field, at the growth stage and camera mounting of the
 deployed robot, and the achievable quantity is bounded by how much one operator
-can label in a season. The training set here is \TODO{confirm image count}
-annotated frames. Self-supervised DINOv3 features transfer to dense prediction
+can label in a season. The training set here is 443 annotated frames, split
+$80/20$ between training and validation, curated to cover the cases that break a
+row follower rather than the average frame: entering a row, dead-end rows, gaps
+where plants are missing, and downed corn. Self-supervised DINOv3 features transfer to dense prediction
 under very little supervision, which is what makes a set of that size viable;
 a backbone trained from scratch, or one supervised on ImageNet classification,
 would demand substantially more annotation before producing masks clean enough
