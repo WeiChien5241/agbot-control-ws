@@ -1,0 +1,40 @@
+%% Fig. 1 --- AIAgNav processing pipeline.  \input from paper.tex.
+\begin{tikzpicture}[
+  font=\scriptsize,
+  node distance=3.2mm,
+  box/.style={draw, rounded corners=1pt, align=center, inner sep=2pt,
+              minimum height=5.2mm, text width=38mm},
+  small/.style={box, text width=17mm},
+  side/.style={box, text width=12mm, font=\tiny, fill=black!5},
+  io/.style={box, text width=17mm, fill=black!8},
+  ar/.style={-{Latex[length=1.4mm]}, thin}
+]
+
+\node[io] (camf) {Front camera};
+\node[io, right=2.5mm of camf] (camr) {Rear camera};
+\node[box, below=4.5mm of $(camf.south)!0.5!(camr.south)$] (buf)
+      {Single-slot frame buffer\\(overwrite, never queue)};
+\node[box, below=of buf] (seg)
+      {Semantic segmentation\\DINOv3 ViT-S/16 + mask head\\$\rightarrow$ mask $\in\{$sky, ground, obstacle$\}$};
+\node[box, below=of seg] (cen)
+      {Corridor scan (Sec.~III-B)\\$\rightarrow$ $e$, $s$, widths $w_i$};
+\node[small, below left=5mm and -18mm of cen] (det) {Row-exit\\detector};
+\node[small, below right=5mm and -18mm of cen] (mpc) {Image-space\\MPC};
+\node[box, below=13mm of cen] (fsm) {Mission state machine\\(row switching, recovery)};
+\node[io, below=3.5mm of fsm] (out) {Velocity command};
+\node[side] (odo) at ([xshift=-33mm]det.center) {Odometry\\(distance, yaw)};
+
+\draw[ar] (camf.south) -- ++(0,-1.6mm) -| (buf.north);
+\draw[ar] (camr.south) -- ++(0,-1.6mm) -| (buf.north);
+\draw[ar] (buf) -- (seg);
+\draw[ar] (seg) -- (cen);
+\draw[ar] (cen.south) -- ++(0,-1.8mm) -| (mpc.north);
+\draw[ar] (cen.south) -- ++(0,-1.8mm) -| (det.north);
+\draw[ar] (mpc.south) |- ($(fsm.north)+(0,1.8mm)$) -- (fsm.north);
+\draw[ar] (det.south) |- ($(fsm.north)+(0,1.8mm)$);
+\draw[ar] (odo.east) -- (det.west);
+\draw[ar] (odo.south) |- (fsm.west);
+\draw[ar] (fsm) -- (out);
+\draw[ar] (fsm.east) -- ++(3.5mm,0) |- (buf.east)
+      node[pos=0.12, right, font=\tiny, align=left] {camera\\select};
+\end{tikzpicture}

@@ -1,0 +1,39 @@
+%% Fig. 2 --- mission state machine.  \input from paper.tex.
+\begin{tikzpicture}[
+  font=\tiny,
+  st/.style={draw, rounded corners=1pt, align=center, inner sep=1.5pt,
+             minimum height=4.4mm, text width=11.5mm},
+  term/.style={st, fill=black!8},
+  ar/.style={-{Latex[length=1.2mm]}, thin},
+  lbl/.style={font=\tiny, inner sep=1pt}
+]
+%% nominal cycle
+\node[st] (f)  at (0,0)    {FOLLOW\\ROW};
+\node[st] (ec) at (15mm,0) {EXIT\\CLEAR};
+\node[st] (t1) at (30mm,0) {TURN 1};
+\node[st] (tr) at (45mm,0) {TRAVERSE};
+\node[st] (t2) at (60mm,0) {TURN 2};
+\node[st] (ra) at (75mm,0) {REACQUIRE};
+
+%% blocked-row branch
+\node[term] (dn) at (0,-13mm)    {DONE};
+\node[st]  (bo)  at (17mm,-13mm) {BACK\\OUT};
+\node[st]  (bc)  at (32mm,-13mm) {BACKOUT\\CLEAR};
+\node[st]  (b1)  at (47mm,-13mm) {TURN 1};
+\node[st]  (btr) at (61mm,-13mm) {TRAVERSE};
+\node[st]  (b2)  at (75mm,-13mm) {TURN 2};
+
+\draw[ar] (f)  -- node[lbl, above=1.6mm] {open exit} (ec);
+\draw[ar] (ec) -- (t1);
+\draw[ar] (t1) -- (tr);
+\draw[ar] (tr) -- (t2);
+\draw[ar] (t2) -- (ra);
+\draw[ar] (ra.north) -- ++(0,3mm) -- node[lbl, above] {next row} ($(f.north)+(0,3mm)$) -- (f.north);
+\draw[ar] (f.south) -- node[lbl, left=0.3mm] {last row} (dn.north);
+\draw[ar] (f.south east) -- node[lbl, pos=0.9, right=0.3mm] {blocked} ++(3.2mm,-4mm) |- (bo.west);
+\draw[ar] (bo)  -- (bc);
+\draw[ar] (bc)  -- (b1);
+\draw[ar] (b1)  -- (btr);
+\draw[ar] (btr) -- (b2);
+\draw[ar] (b2.north) -- (ra.south);
+\end{tikzpicture}

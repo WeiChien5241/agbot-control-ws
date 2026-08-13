@@ -27,6 +27,8 @@
 \usepackage{url}
 \usepackage{cite}
 \usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc}
 
 \graphicspath{{fig/}}
 
@@ -172,9 +174,7 @@ is what allows it to run at the control rate on the CPU-only robot.
 
 \begin{figure}[t]
 \centering
-%% TODO(fig): replace with fig/pipeline.pdf -- placeholder reserves the space.
-\framebox[\columnwidth]{\rule{0pt}{5.0cm}\parbox{0.8\columnwidth}{\centering
-\textbf{[Fig.~1 placeholder]}\\ AIAgNav processing pipeline}}
+\input{fig/pipeline}
 \caption{AIAgNav processing pipeline. A single camera frame is segmented into
 sky, traversable ground, and obstacle; a scan-row geometry stage reduces the
 mask to a lateral error and a heading proxy, which drive the image-space MPC;
@@ -489,7 +489,22 @@ signature cannot false-fire there.
 
 \subsection{Row Switching}
 \label{sec:switching}
-Multi-row operation is sequenced by a finite state machine. On a confirmed open
+
+\begin{figure}[t]
+\centering
+\input{fig/fsm}
+\caption{Mission state machine. The upper chain is the nominal cycle: a
+confirmed open exit sends the robot across the headland and back into row
+following. The lower chain is the blocked-row branch, which reverses out of the
+row and joins the next one in the same direction of travel. The mission
+terminates after the commanded number of rows, and also when reacquisition
+finds no corridor, which is how an unbounded mission recognizes that no rows
+are left.}
+\label{fig:fsm}
+\end{figure}
+
+Multi-row operation is sequenced by a finite state machine, Fig.~\ref{fig:fsm}.
+On a confirmed open
 exit the robot leaves row following and drives clear of the last plants, then
 executes a quarter turn onto the headland, traverses to the neighbouring row,
 turns again to face down it, and reacquires row following once the segmentation
