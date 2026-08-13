@@ -69,12 +69,12 @@ Notation table `tab:notation` is filled and matches the symbols actually used.
 
 | Section | Budget | Status |
 |---|---:|---|
-| Abstract + I. Introduction | 1,344 | stub |
-| II. System Overview | 989 | stub |
-| III. System Design | 2,831 | **DONE, 2,491** |
-| IV. Experimental Results | 1,003 | stub |
-| V. Conclusion | 247 | stub |
-| References | 958 | 5 entries in `refs.bib` |
+| Abstract + I. Introduction | 1,344 | written (1,034) |
+| II. System Overview | 989 | written (1,005) |
+| III. System Design | 2,831 | complete (2,528) |
+| IV. Experimental Results | 1,003 | deferred |
+| V. Conclusion | 247 | written (256) |
+| References | 958 | 6 entries in `refs.bib`, all cited |
 | **Total** | **7,372** | |
 
 **Space is running hotter than words suggest.** P-AgNav averages ~920 words per
@@ -106,8 +106,9 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
 
 - **Cut, don't compress.** Over budget means delete a subsection, not squeeze
   every paragraph into unreadable density.
-- **Nothing is deleted, only moved** to `AIAgNav_Supplementary.md` (not yet
-  created — task 9).
+- **Nothing is deleted, only moved** to `AIAgNav_Supplementary.md`, which now
+  exists (S1 signs, S2 tuning, S3 rear-leg derivation, S4 runtime, S5 parameters,
+  S6 design history).
 - **Outline before prose** for any section over ~400 words: propose headings
   with word allocations and surviving equations, get approval, then write.
 - **One section per session**, then `/clear`. The full draft plus the codebase
@@ -151,14 +152,15 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
 
 | Path | What it is |
 |---|---|
-| `paper.tex` | **The deliverable.** IEEEtran `conference` class. Section III complete; II, IV, V, intro are `TODO` stubs. Per-section word budgets are in the comments. |
+| `paper.tex` | **The deliverable.** IEEEtran `conference` class. Everything drafted except Section IV. Per-section word budgets are in the comments. |
 | `Makefile` | `make` build, `make pages` page count, `make budget` word check, `make words` texcount, `make watch` continuous, `make clean`. |
 | `budget.py` | Per-section word count vs. budget. Parses `paper.tex` directly — no TeX, no texcount needed. Strips comments, math, and float environments. |
 | `refs.bib` | 5 verified entries (P-AgNav, P-AgBot, P-AgSLAM, Agronav, CropFollow). DINOv3 and lightly-train still missing — a TODO comment says so. |
 | `OUTLINE_III.md` | The approved Section III outline, equation inventory, and Table I draft. Still the reference for what Section III contains. |
 | `pagecheck.sh` | PostToolUse hook script: rebuilds and reports page count when `paper.tex` is edited. Parses the hook payload with `python3` (no `jq` on this box). |
 | `.gitignore` | LaTeX build artifacts + `paper.pdf`. |
-| `fig/` | Empty. Figures go here (task 10). |
+| `fig/pipeline.tex` | Fig. 1, TikZ block diagram, `\input` from `paper.tex`. |
+| `fig/fsm.tex` | Fig. 2 of III-E, TikZ mission state machine. |
 
 **Configuration**
 
@@ -171,7 +173,7 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
 
 | Path | What it is |
 |---|---|
-| `AIAgNav_Technical.md` | The 19,098-word design doc Section III was cut from. Sections II (2,274 w) and the appendices (3,784 w) are still the raw material for tasks 8 and 9. |
+| `AIAgNav_Technical.md` | The design doc the paper was cut from, now 13.3k words: history, parameters, sign conventions, the rear-leg derivation and the runtime section were moved out to `AIAgNav_Supplementary.md` (6.4k words) with pointers left in place. |
 | `4_P-AgNav_Range_View-Based_Autonomous_Navigation_System_for_Cornfields.md` | The style, density, and structure target. An exactly-8-page paper. Read its Section III before writing anything. |
 | `Wei-Wei MSRAL Summer Research Report.md` | The author's own framing and reflection. Material for the introduction. |
 | `Papers/` | P-AgBot, P-AgSLAM, Agronav, ROW-SLAM, CropFollow. |
