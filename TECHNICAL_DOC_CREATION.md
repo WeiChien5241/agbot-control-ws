@@ -1,14 +1,23 @@
 # Technical Doc Creation — AIAgNav ICRA 2027 paper
 
-Handoff updated 2026-08-13. Head commit at time of writing: `17b1e09`.
-Read this file plus `paper/OUTLINE_III.md` and you have everything.
+Handoff updated 2026-08-13 (second session). Head commit at time of writing:
+`ddb60dd`. Read this file plus `paper/OUTLINE_III.md` and you have everything.
+
+**Session 2 in one paragraph:** Section II was written, the introduction,
+abstract and conclusion were written, the design doc was split into
+`AIAgNav_Technical.md` + `AIAgNav_Supplementary.md`, and two TikZ figures were
+built. The paper is at 6/8 pages with every section drafted except IV, which the
+user deferred until field data exists. Commits: `9e243b0`, `63f3d01`, `d10aea7`,
+`17b1e09`, `ddb60dd`.
 
 ---
 
 ## 1. GOAL
 
-Turn `AIAgNav_Technical.md` (19,098 words, ~63 pages — an excellent design doc,
-not a paper) into an **8-page IEEE conference paper** for ICRA 2027, formatted
+Turn the design doc (originally `AIAgNav_Technical.md`, 19,098 words, ~63 pages
+— an excellent design doc, not a paper; now split into a 13.3k-word technical
+doc and a 6.4k-word supplementary) into an **8-page IEEE conference paper**
+for ICRA 2027, formatted
 and pitched like the lab's P-AgNav RA-L paper. The system is AIAgNav: monocular
 camera + DINOv3 semantic segmentation + image-space MPC for in-row, under-canopy
 cornfield navigation with autonomous multi-row switching. The technical section
@@ -49,16 +58,17 @@ when related work lands. `make pages` is still the arbiter.
 
 | Subsection | Words | Budget |
 |---|---:|---:|
-| III-A Semantic Segmentation | 592 | 700 |
-| III-B Corridor and Centerline Estimation | 554 | 600 |
+| III-A Semantic Segmentation | ~620 | 700 |
+| III-B Corridor and Centerline Estimation | ~560 | 600 |
 | III-C Model Predictive Row Following | 630 | 800 |
 | III-D Row Exit Detection | 450 | 400 |
 | III-E Row Switching | 313 | 331 |
-| **Section III total** | **2,491** | **2,831** |
+| **Section III total** | **2,528** | **2,831** |
 
-(`make budget` reports 2,491 for the section; summing subsections gives 2,539.
-The small delta is markup the two counters strip differently. `make budget` is
-the authority.)
+(III-A and III-B each grew slightly: III-A when the training-set count replaced
+the `\TODO`, III-B when the overlay figure got its `\ref`. Summing subsections
+does not exactly match `make budget` — the two counters strip markup
+differently, and `make budget` is the authority.)
 
 Seven numbered equations, all labelled: `eq:midpoint`, `eq:offset`, `eq:slope`,
 `eq:mpc_dynamics`, `eq:mpc_cost`, `eq:mpc_constraints`, `eq:accumulator`.
@@ -101,6 +111,37 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
    and no reviewer will question it at this length.
 3. **The leaky evidence accumulator is a contribution**, with equation
    `eq:accumulator` and ~150 words in III-D. Keep it.
+4. **Section IV is deferred until field data exists** (2026-08-13). Do not
+   fabricate results and do not quietly fill it from the simulation CSVs.
+5. **Both robots stay in the paper.** The 12x control-rate spread is the reason
+   III-C scales to the control period and III-D counts in metres and seconds;
+   removing one platform removes the motivation for two design decisions.
+6. **The III-B overlay figure stays a placeholder** until the user supplies a
+   `debug_viz.py` capture. It reserves 3.6 cm so the page count stays honest.
+
+**Framings established in Sections I and II** (keep consistent if either is
+rewritten):
+
+- The lab's lineage is stated as **solved**, not as a gap: P-AgBot (2D LiDAR
+  balancing) → P-AgSLAM (3D LiDAR state estimate) → P-AgNav (range view, full
+  multi-row navigation). AIAgNav is a **sensor-modality** contribution on top of
+  a solved navigation problem. Do not claim the problem was open.
+- The gap is **semantic, not geometric**: a range return cannot separate a rigid
+  stalk from a leaf hanging into the corridor. Cost is the secondary argument,
+  never the lead.
+- Related work is two-pronged: CropFollow puts the whole navigation state inside
+  a learned regressor and needs a filter; Agronav is segmentation + semantic
+  line but is aimed above canopy / at field roads. Neither does the full
+  multi-row mission — that framing is what earns III-E its space.
+- Section II-A states the **mirrored camera pair** as load-bearing (the rear
+  conversion assumes geometric twinning) and states that width thresholds are a
+  property of the camera pose, not of the field.
+- Section II-B keeps **one unabsorbed failure mode on the record**: a leaf on
+  the lens and a crop wall ahead produce the same mask. Reviewers reward this;
+  do not delete it to save words.
+- The conclusion's three future directions are RTK for above-canopy transit
+  only, integration with the sampling module, and using the sky class to
+  separate an occluded lens from a genuine obstruction.
 
 **Editorial rules (encoded in `.claude/skills/icra-paper/SKILL.md`):**
 
@@ -155,12 +196,13 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
 | `paper.tex` | **The deliverable.** IEEEtran `conference` class. Everything drafted except Section IV. Per-section word budgets are in the comments. |
 | `Makefile` | `make` build, `make pages` page count, `make budget` word check, `make words` texcount, `make watch` continuous, `make clean`. |
 | `budget.py` | Per-section word count vs. budget. Parses `paper.tex` directly — no TeX, no texcount needed. Strips comments, math, and float environments. |
-| `refs.bib` | 5 verified entries (P-AgNav, P-AgBot, P-AgSLAM, Agronav, CropFollow). DINOv3 and lightly-train still missing — a TODO comment says so. |
+| `refs.bib` | 6 entries, **all cited** in the body: P-AgNav, P-AgBot, P-AgSLAM, Agronav, CropFollow, DINOv3 (`simeoni2025dinov3`, arXiv:2508.10104, verified by web search rather than guessed). No `lightly-train` entry: the training framework is a tooling detail and the paper never names it. |
 | `OUTLINE_III.md` | The approved Section III outline, equation inventory, and Table I draft. Still the reference for what Section III contains. |
 | `pagecheck.sh` | PostToolUse hook script: rebuilds and reports page count when `paper.tex` is edited. Parses the hook payload with `python3` (no `jq` on this box). |
 | `.gitignore` | LaTeX build artifacts + `paper.pdf`. |
-| `fig/pipeline.tex` | Fig. 1, TikZ block diagram, `\input` from `paper.tex`. |
-| `fig/fsm.tex` | Fig. 2 of III-E, TikZ mission state machine. |
+| `fig/pipeline.tex` | Fig. 1, TikZ block diagram, `\input` from `paper.tex`. Two cameras → single-slot buffer → segmentation → corridor scan → {detector, MPC} → FSM → command, with odometry entering from the left and a "camera select" feedback edge. |
+| `fig/fsm.tex` | Fig. 3 (III-E), TikZ mission state machine: nominal chain on top, blocked-row chain below, `DONE` reached on the last row. |
+| (Fig. 2, in III-B) | A `\framebox` placeholder **inside `paper.tex`**, not a file. Replace with the real overlay capture. |
 
 **Configuration**
 
@@ -173,7 +215,8 @@ figures nearer 1.5 pages than 2. **`make pages` is the arbiter, not
 
 | Path | What it is |
 |---|---|
-| `AIAgNav_Technical.md` | The design doc the paper was cut from, now 13.3k words: history, parameters, sign conventions, the rear-leg derivation and the runtime section were moved out to `AIAgNav_Supplementary.md` (6.4k words) with pointers left in place. |
+| `AIAgNav_Technical.md` | The design doc the paper was cut from, now 13.3k words: history, parameters, sign conventions, the rear-leg derivation and the runtime section were moved out with pointers left in place. Still holds §I–§V, the notation table, and §III-A…§III-F/H in full. |
+| `AIAgNav_Supplementary.md` | **New (2026-08-13).** 6.4k words. S1 sign convention + reference-frame resets (was §III-C.7); S2 tuned values and tuning order (§III-C.9); S3 the rear-steered headland leg incl. the $\kappa$ derivation (§III-E.4) — this is what the paper's III-E defers to; S4 runtime architecture and measured timing (§III-G); S5 parameter reference (was Appendix B); S6 design history (was Appendix A). Cross-references were rewritten everywhere: "Appendix A.4" now reads "S6.4". |
 | `4_P-AgNav_Range_View-Based_Autonomous_Navigation_System_for_Cornfields.md` | The style, density, and structure target. An exactly-8-page paper. Read its Section III before writing anything. |
 | `Wei-Wei MSRAL Summer Research Report.md` | The author's own framing and reflection. Material for the introduction. |
 | `Papers/` | P-AgBot, P-AgSLAM, Agronav, ROW-SLAM, CropFollow. |
@@ -216,40 +259,47 @@ Section II or the introduction's third and fourth paragraphs when they go in.
 **D. Author block and funding line** are still `Author One, Author Two` and
 "supported by ...".
 
-Historical task list (all now complete except as noted above):
+**E. Final pass to 8 pages.** `make pages` must report ≤ 8 with the real
+overlay figure, Section IV and the full reference list in place. This is the
+last task, not an ongoing one.
 
-**8. Cut Section II System Overview to ~989 words** (from 2,274).
-Three parts: hardware; why a monocular camera and a learned mask as the
-representation (the AIAgNav analogue of P-AgNav's §II-B range-view argument —
-this is the section that must justify the whole approach); field assumptions
-and the pipeline figure. **Partially blocked** — see the open questions below.
-The representation argument and field assumptions can be written now.
+Historical task list — what was done and where it landed:
 
-**9. Create `AIAgNav_Supplementary.md`.** Move — do not delete — the design
-history, parameter tables, sign conventions, the rear-camera `rear_to_front_state`
-derivation and the $\kappa$ gain, and ROS specifics out of
-`AIAgNav_Technical.md`. Section III-E already promises this document exists.
+**1–7 (session 1).** Scaffolding, budget tooling, and all of Section III.
 
-**10. Produce figures** into `paper/fig/`. Budget ~1.5 pages:
-pipeline block diagram; segmentation mask panel with scan rows, corridor
-bounds, and midpoints overlaid (`debug_viz.py` already renders this — capture
-from a real run); FSM state diagram for III-E; a metrics plot from
-`scripts/analyze_run.py` CSVs. Add `\ref{}`s to III-E and II when they exist.
+**8. Section II System Overview** — done, 1,005 w, commit `9e243b0`. Three
+subsections: *System Hardware* (platform, mirrored camera pair, deck mount and
+its effect on corridor width, the two compute variants, the three uses of
+odometry); *Visual Representation* (the AIAgNav analogue of P-AgNav §II-B — the
+stalk-versus-leaf argument, cost, multi-depth single frame, then the three
+absorbed costs and the one that is not); *Framework Overview* (field
+assumptions, five operational stages, the pipeline figure, no state estimator,
+shared perception). Also resolved the III-A `\TODO` to 443 frames in the same
+commit.
 
-**11. Draft Section IV Experimental Results (~1,003 w).** Needs a decision on
-which runs to quote. Report in the units the field uses — distance, collisions,
-interventions, **MDBI (meters between interventions)** — never `offset_norm`,
-which is image space and mount-dependent. `scripts/analyze_run.py` produces the
-Autonomy section; `scripts/bag_distance.py` recovers distance from old rosbags.
+**9. `AIAgNav_Supplementary.md`** — done, commit `63f3d01`. Built by a script
+that extracts verbatim line ranges from `AIAgNav_Technical.md`, writes them into
+the new file under S1–S6 headings, and replaces each range in place with a
+3–6 line pointer stub. Word totals before/after (19,098 → 13,330 + 6,356)
+confirm nothing was dropped; the surplus is the stub text. The script is
+disposable and was not committed.
 
-**12. Draft Abstract + Section I Introduction (~1,344 w).** Write last, once III
-is settled. End with an explicit three-item contribution list, as P-AgNav does.
+**10. Figures** — two of four done, commit `d10aea7`. `fig/pipeline.tex` and
+`fig/fsm.tex` are hand-written TikZ, `\input` from `paper.tex`, and both were
+checked by rasterizing the built PDF (see gotchas). The segmentation-overlay
+panel is a placeholder (task B). The metrics plot was dropped with Section IV.
 
-**13. Section V Conclusion (~247 w) + finish `refs.bib`.** Add real DINOv3 and
-lightly-train entries. **Delete the `\nocite{*}`** once the body cites things.
+**11. Section IV** — deferred, see task A.
 
-**14. Final pass to 8 pages.** `make pages` must report ≤ 8 with figures and
-full references in place.
+**12. Abstract + Introduction** — done, commit `17b1e09`, 177 + 857 w. Written
+against the outline that was already in `AIAgNav_Technical.md` §I, which is why
+no separate outline approval round was needed. Seven paragraphs: problem,
+lineage, the semantic gap, camera-based related work, what AIAgNav is, the
+three contributions as an `itemize`, and the GNSS scope note.
+
+**13. Conclusion + `refs.bib`** — done, same commit. 256 w, three future
+directions. DINOv3 entry added after verifying it by web search;
+**`\nocite{*}` has been removed** and all six entries are cited in the body.
 
 **Questions answered on 2026-08-13 — do not re-ask:**
 
@@ -270,12 +320,20 @@ full references in place.
 1. **An empty bibliography is a FATAL error, not a warning.** `\bibliography{refs}`
    with zero `\cite` commands aborts the build with a confusing
    "Something's wrong--perhaps a missing \item" at `\end{thebibliography}`.
-   Fixed with `\nocite{*}` in `paper.tex` (which also keeps the reference list's
-   page cost visible while drafting). **Remove it in task 13.**
+   This was handled with `\nocite{*}`, which has now been **removed** because the
+   body cites all six entries. If you ever strip the citations again, put it back.
 2. **`latexmk -C` leaves `paper.bbl` behind.** A stale empty `.bbl` is re-read
    before bibtex can regenerate it and aborts the build. `make clean` now
    removes it unconditionally. If a build fails inexplicably, `rm -f paper.bbl`
    first.
+3. **The Makefile does not know about `fig/*.tex`.** `$(PDF)` depends only on
+   `paper.tex` and `refs.bib`, and latexmk additionally skips a rebuild when
+   `paper.tex` is unchanged by content (touching it is not enough — latexmk
+   hashes). **After editing a figure file, `rm -f paper.pdf && make`.** Half an
+   hour was lost to reviewing a stale PDF and "fixing" a figure that was already
+   correct.
+4. **A new `\cite` needs two `make` runs** (bibtex, then the reference
+   resolution). `grep -c undefined paper.log` is the check.
 
 **Environment:**
 
@@ -289,12 +347,26 @@ full references in place.
   installed here either — `segmentation_model.py` cannot be executed or tested
   in this sandbox.
 - System `matplotlib` is 3.1.2 on Python 3.8. Use `~/agbot_venv` for figures.
+- **TikZ is available** (`/usr/share/texlive/texmf-dist/tex/latex/pgf`), so
+  diagrams are written as `.tex` and need no external tool. `paper.tex` loads
+  `arrows.meta,positioning,calc`.
+- **There is no `pdftoppm` and no ImageMagick**, but **ghostscript and PIL are
+  installed**. To eyeball a figure, rasterize the built PDF and crop:
+  ```bash
+  gs -q -dNOPAUSE -dBATCH -sDEVICE=png16m -r280 \
+     -dFirstPage=5 -dLastPage=5 -sOutputFile=/tmp/pg5.png paper.pdf
+  python3 -c "from PIL import Image; im=Image.open('/tmp/pg5.png'); w,h=im.size; \
+              im.crop((int(w*.05),int(h*.03),int(w*.55),int(h*.14))).save('/tmp/crop.png')"
+  ```
+  Both TikZ figures had label collisions that only this caught — a clean build
+  says nothing about whether a diagram is readable.
 
-**The page-count hook is written and tested but NOT LIVE.** `.claude/settings.json`
-did not exist when the session started, so the settings watcher never picked it
-up; an edit to `paper.tex` produced no hook output. The script and the JSON are
-both correct and verified. **Fix: open `/hooks` once, or restart Claude Code.**
-Until then, run `make pages` manually after edits.
+**The page-count hook is still NOT FIRING.** `.claude/settings.json` exists and
+is correct (`PostToolUse` on `Write|Edit` running `paper/pagecheck.sh`), and the
+script is verified, but no hook output appeared for any `paper.tex` edit in
+session 1 or session 2. **Fix: open `/hooks` once, or restart Claude Code**, and
+check that it actually fires before relying on it. Until then, `make pages`
+manually after edits — that is what both sessions did.
 
 **Do not repeat these:**
 
@@ -308,8 +380,15 @@ Until then, run `make pages` manually after edits.
 - Do not quote `offset_norm` as a performance number anywhere. It is normalized
   image space, not meters, and it shifts with camera mount height.
 - Do not hand-write bibliographic data. `refs.bib` entries were transcribed from
-  P-AgNav's reference list; the missing DINOv3 entry is deliberately left as a
-  TODO rather than guessed.
+  P-AgNav's reference list; the DINOv3 entry was added only after checking it
+  with a web search. Do the same for the ~12 related-work entries still to come.
+- Do not treat the open questions in this file as unanswerable without the user.
+  The 2026-08-12 handoff listed the training-set size as blocked; the number
+  (443 frames, mIoU 0.8717) was sitting in the design doc's own Appendix A.2.
+  **Search the repo's own documents before asking.**
+- Do not describe the sim runs in `~/agbot_logs` as field results. They are
+  Gazebo, 0 interventions, and MDBI from them is a `>=` bound with no
+  denominator.
 - `--` is illegal inside an XML comment (it broke `vision_nav.launch` once).
   Irrelevant in `.tex`, but this repo writes `--` as an em-dash in prose
   everywhere, so watch it if you touch launch or xacro files.
@@ -336,4 +415,19 @@ PYTHONPATH=src python3 -m pytest test/ -v
 **Git:** this repo has standing authorization to commit and push after each
 meaningful unit of work. Stage files by name, never `git add .`. Present-tense
 imperative messages. Section III was written one subsection per commit
-(`c191789`, `480975a`, `d57e6d3`, `245d100`) — keep that granularity.
+(`c191789`, `480975a`, `d57e6d3`, `245d100`) — keep that granularity. Session 2
+kept it too: `9e243b0` Section II, `63f3d01` the supplementary split, `d10aea7`
+the figures, `17b1e09` intro/abstract/conclusion/DINOv3, `ddb60dd` this handoff.
+
+**To resume cold, in order:**
+
+```bash
+cd ~/agbot_control_ws/src/paper
+make && make pages && make budget     # expect 6/8 pages, 0 undefined refs
+```
+
+Then read §2 (state), §3 (decisions and framings — these are what keep a
+rewrite consistent), and pick up at §5 task A or B. Load `/icra-paper` before
+writing any prose. Nothing in the paper is half-written: every section either
+reads as final or is the single word `TODO` (Section IV) — there are no
+partial paragraphs to reconstruct.
