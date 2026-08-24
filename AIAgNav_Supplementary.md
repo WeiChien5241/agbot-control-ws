@@ -18,6 +18,12 @@ that produced each of them. Section numbers in the form §III-C refer to
 | S4 | Runtime architecture and real-time behaviour (§III-G) |
 | S5 | Parameter reference (Appendix B) |
 | S6 | Design history (Appendix A) |
+| S7 | Segmentation model configuration and inference contract (§III-A) |
+| S8 | Centerline estimation in full (§III-B) |
+| S9 | Model predictive control in full (§III-C) |
+| S10 | Row-exit detection in full (§III-D) |
+| S11 | Mission state machine in full (§III-E, §III-F) |
+| S12 | Evaluation instrumentation (§III-H) |
 
 ---
 
@@ -642,5 +648,1064 @@ section, since several are transferable beyond this system:
 9. **One home per knob.** For a period, launch-file parameters silently overrode the
    configuration file for 44 duplicated keys, so editing the configuration did nothing. It
    caused two separate misdiagnoses before it was found.
+
+---
+
+## S7. Segmentation: Model Configuration and Inference Contract
+
+*Moved from §III-A.2 and §III-A.5.* The paper states which backbone is used and why; the configuration it was trained under and the contract the rest of the pipeline relies on are here.
+
+### 2) Model configuration
+
+The model is trained through the `lightly_train` library
+(`segmentation/Train.py`), with the following configuration, quoted exactly:
+
+| Setting | Value | Note |
+|---|---|---|
+| `model` | `"dinov3/vits16-eomt"` | DINOv3 **ViT-S/16** encoder + **EoMT** (encoder-only mask transformer) segmentation head |
+| `transform_args.image_size` | `(224, 224)` | Training resolution |
+| `steps` | `2500` | Step budget ("roughly 500 steps for every 20 images") |
+| `batch_size` | `2` | Deliberately small; VRAM-constrained |
+| `precision` | `"16-mixed"` | FP16 mixed precision |
+| `ignore_classes` | `[]` | No class is excluded from the loss |
+| `out` | `out/corn_field_navigation` | Produces `exported_models/exported_best.pt`, ≈ 93 MB |
+
+The backbone is the **small** ViT variant with a **16 × 16 patch size**. At the 224 × 224
+training resolution this gives a 14 × 14 grid of patch tokens. The choice of the small
+variant over a larger one is a real-time constraint, not an accuracy preference: the model
+must run on a mobile robot inside a control loop, and on the CPU-only Jackal it must run
+at all.
+
+The **EoMT** head is an encoder-only mask transformer: rather than bolting a
+convolutional decoder onto the transformer, it produces segmentation masks from the
+encoder's own tokens using learned queries. The practical consequence is that almost all
+of the parameters and almost all of the pre-trained knowledge live in the part of the
+network that was trained on a billion images, and the part being fit to 443 images is
+small.
+
+> **[TO CONFIRM] — a genuine gap in the record.** The loss function, optimizer, learning
+> rate, learning-rate schedule, weight decay, augmentation policy, and number of epochs
+> are **not specified anywhere in this codebase.** `Train.py` calls the high-level
+> `lightly_train.train_semantic_segmentation()` API and everything below that abstraction
+> is a library default that is never overridden, logged, or printed. These values must be
+> read out of the `lightly_train` package before the paper is submitted. They are not
+> guessed here.
+
+### 5) Inference contract
+
+At run time the model is loaded once and held in evaluation mode
+(`segmentation_model.py`):
+
+$$
+M_t \;=\; \operatorname{argmax}_c \; f_\theta\big(I_t\big) \;\in\; \{0,1,2\}^{H \times W}
+\tag{1}
+$$
+
+The `lightly_train` API performs the arg-max internally: `model.predict()` returns class
+indices, not logits. The wrapper converts BGR to RGB, wraps the frame as a PIL image,
+calls `predict()`, moves the result to the CPU, squeezes singleton dimensions, and casts
+to `uint8`.
+
+> **In plain terms:** one RGB frame goes in, and one integer per pixel comes out — 0, 1 or
+> 2. There is no probability map and no threshold to tune.
+
+**One implementation detail is load-bearing.** `lightly_train`'s `predict()` may return a
+mask at its internal working resolution rather than at the input resolution. The wrapper
+therefore forces the mask back to the frame's exact $(H, W)$, and it must do so with
+**nearest-neighbour interpolation**:
+
+$$
+M_t \leftarrow \operatorname{resize}_{\text{NN}}\big(M_t,\; (H, W)\big)
+\tag{2}
+$$
+
+Mask values are *class labels, not intensities*. Bilinear interpolation between a
+traversable pixel (1) and an obstacle pixel (2) would produce values such as 1.5, which
+after casting become a class the model never predicted — inventing spurious boundaries
+exactly along the corn edges that the corridor scan depends on. Nearest-neighbour is the
+only admissible choice.
+
+**Device selection.** The model is moved to CUDA when available and otherwise stays on the
+CPU, and the node logs the device on which inference actually runs. This is a deliberate
+diagnostic: a GPU robot silently falling back to CPU is a twelvefold loss in control rate
+that is otherwise invisible until the robot behaves badly in a row.
+
+---
+
+---
+
+## S8. Centerline Estimation in Full
+
+*Moved from §III-B.1–B.7.* The paper gives the scan-row readout as a single equation and asserts that the resulting state is an invertible linear transform of the physical (lateral offset, heading error) pair. This section gives the boundary search, the validity and boundedness tests, the flank-occupancy measure, and the derivation behind that invertibility claim.
+
+### 1) Scan rows
+
+Rather than processing the entire mask, the estimator samples three horizontal scan lines
+at fixed fractions of the image height:
+
+$$
+y_i \;=\; \operatorname{round}\!\big(f_i \,(H-1)\big),
+\qquad
+f = (0.65,\; 0.78,\; 0.92)
+\tag{3}
+$$
+
+With $H = 480$ these fall at rows 311, 374 and 441. Because the camera looks forward and
+downward, a larger fraction is *closer* to the robot: $f_3 = 0.92$ images the ground
+roughly at the bumper, and $f_1 = 0.65$ images the ground several metres ahead. On the
+deployed rig the three rows image ground distances of approximately **3 m, 2 m and 1 m**
+respectively.
+
+> **In plain terms:** instead of looking at the whole picture, the robot looks along three
+> horizontal lines — one far ahead, one at middle distance, one right in front of its
+> bumper — and asks the same question on each.
+
+### 2) Corridor bounds
+
+On each scan row, the estimator scans **outward from the image centre column**
+$c_x = W/2$ through contiguous traversable pixels:
+
+$$
+\begin{aligned}
+x_{L,i} &= \min \big\{\, x \le c_x \;:\; M(y_i, x') = 1 \;\; \forall\, x' \in [x, c_x] \,\big\}\\[2pt]
+x_{R,i} &= \max \big\{\, x \ge c_x \;:\; M(y_i, x') = 1 \;\; \forall\, x' \in [c_x, x] \,\big\}
+\end{aligned}
+\tag{4}
+$$
+
+If the centre pixel itself is not traversable, the row yields no corridor and is marked
+invalid.
+
+> **In plain terms:** starting from directly in front of the robot, walk left until you
+> hit something that is not drivable ground, then walk right until you hit something that
+> is not drivable ground. Those two stopping points are the walls of the lane you are in.
+
+Two properties of this construction matter. First, it returns the **contiguous** drivable
+run containing the robot's heading, not every drivable pixel on the row — a patch of
+ground visible through a gap in the corn on the far side of a plant does not widen the
+measured corridor. Second, requiring the centre column itself to be traversable means the
+measurement is always taken along the robot's actual heading, which is what makes it
+directly comparable to the LiDAR system's $d_l$/$d_r$ readings.
+
+### 3) Lateral error
+
+The corridor midpoint and its normalized deviation from the image centre are
+
+$$
+x_{m,i} \;=\; \tfrac{1}{2}\big(x_{L,i} + x_{R,i}\big),
+\qquad
+e_i \;=\; \frac{x_{m,i} - c_x}{W/2} \;\in\; [-1, 1]
+\tag{5}
+$$
+
+and the aggregate lateral error is the weighted mean over rows that produced a corridor:
+
+$$
+e_d \;=\; \operatorname{clip}\!\left(
+\frac{\displaystyle\sum_{i \in \mathcal{V}} w_i \, e_i}{\displaystyle\sum_{i \in \mathcal{V}} w_i},\;
+-1,\; 1 \right),
+\qquad
+w = (0.2,\; 0.3,\; 0.5)
+\tag{6}
+$$
+
+where $\mathcal{V}$ is the set of scan rows on which a corridor was found.
+
+> **In plain terms:** each of the three lines reports how far the lane's middle sits from
+> the middle of the picture. Positive means the lane is off to the right, so the robot is
+> sitting too far left. The three readings are averaged, with the line nearest the robot
+> counting the most.
+
+Two details of Eq. (6) are deliberate. The weights need not sum to one because the
+denominator is the sum of the weights of *valid* rows only — an invalid row drops out of
+the numerator **and** the denominator, so losing the far row rescales the estimate rather
+than biasing it toward zero. And the near row carries weight 0.5 because it is the
+measurement the robot must act on soonest; the far rows contribute lookahead.
+
+### 4) The second state component
+
+The second element of the state is the difference between the offsets measured at the
+farthest and nearest valid scan rows:
+
+$$
+s \;=\; e_{\text{far}} - e_{\text{near}}
+\tag{7}
+$$
+
+computed **across rows within a single frame**, not across time. If fewer than two rows
+are valid, $s = 0$.
+
+This is the single cheapest part of the perception system and one of its most important
+design decisions, so it is worth being precise about what $s$ actually measures. Model the
+row axis under a pinhole camera. A scan row imaging ground distance $d_i$ observes the
+row axis displaced by
+
+$$
+e_i \;\approx\; k \left( \frac{e}{d_i} + \tan\theta \right)
+$$
+
+where $e$ is the robot's physical lateral offset from the row axis and $\theta$ its
+heading error. Substituting into Eqs. (6) and (7):
+
+$$
+\boxed{\;
+\begin{bmatrix} e_d \\ s \end{bmatrix}
+=
+\underbrace{\begin{bmatrix} c_1 & c_2 \\ -c_3 & 0 \end{bmatrix}}_{\textstyle \mathbf{C}}
+\begin{bmatrix} e \\ \tan\theta \end{bmatrix},
+\qquad
+c_1 = k\!\!\sum_i \frac{w_i}{d_i},
+\quad c_2 = k,
+\quad c_3 = k\left(\frac{1}{d_{\text{near}}} - \frac{1}{d_{\text{far}}}\right)
+\;}
+\tag{8}
+$$
+
+Note what happened in the second row: **the heading term cancelled exactly.** Taking the
+difference of two offsets measured at different depths removes $\tan\theta$, because
+heading displaces every depth by the same amount while lateral offset displaces near
+depths more than far ones. So $s$ is a *depth-difference lateral readout*, and $e_d$ mixes
+lateral and heading.
+
+Crucially, $\det \mathbf{C} = c_2 c_3 \neq 0$, so $\mathbf{C}$ is **invertible**: the state
+$[e_d,\, s]^\top$ is a linear, invertible transform of the physical pair
+$[e,\, \tan\theta]^\top$. The controller therefore has full observability of both the
+lateral and the heading error, expressed in a rotated basis, at the cost of one
+subtraction.
+
+> **In plain terms:** looking at the lane at three different distances in one photograph
+> tells you both how far sideways you are and which way you are pointing. If you are
+> parallel to the row but off to one side, the near part of the lane looks badly
+> off-centre while the far part looks nearly centred — that difference is what $s$
+> measures. If you are pointed the wrong way but centred, the whole lane tilts uniformly,
+> and the difference cancels out.
+
+The saving relative to comparable systems is direct. CropFollow trains a ResNet-18
+regression head to predict heading and distance, then filters the predictions with an
+extended Kalman filter. AIAgNav obtains an equivalent two-dimensional state from a
+subtraction of two numbers the corridor scan had already computed: **no second network, no
+extra forward pass, no filter, and no history.**
+
+> **A terminology note for the paper.** The controller's source documentation calls $s$ a
+> "heading proxy". Equation (8) shows this is loose — the heading term cancels exactly and
+> $s$ is proportional to $e$. The system works because the *pair* spans the same space as
+> $(e, \theta)$, not because $s$ alone measures heading. The paper should use the precise
+> statement. **[TO RECONCILE with the code comments before submission.]**
+
+### 5) Region fractions and validity
+
+Two scalar summaries are computed over the lower half of the mask:
+
+$$
+\rho_{\text{trav}} = \frac{1}{|\mathcal{L}|}\!\!\sum_{p \in \mathcal{L}}\!\! \mathbb{1}[M(p) = 1],
+\qquad
+\rho_{\text{obs}} = \frac{1}{|\mathcal{L}|}\!\!\sum_{p \in \mathcal{L}}\!\! \mathbb{1}[M(p) = 2],
+\qquad
+\mathcal{L} = M\!\left[\tfrac{H}{2}\!:,\; :\right]
+\tag{9}
+$$
+
+and a frame is declared usable only if a corridor was found on at least one scan row *and*
+enough drivable ground is visible:
+
+$$
+\text{valid} \;=\; \big(|\mathcal{V}| \ge 1\big) \;\wedge\; \big(\rho_{\text{trav}} \ge 0.10\big)
+\tag{10}
+$$
+
+> **In plain terms:** the robot only trusts a frame if it can actually see a lane in front
+> of it and at least a tenth of the ground ahead is drivable. Otherwise it reports "I do
+> not know", and the controller decides what to do about it (§III-C).
+
+### 6) A measurement that is not a measurement
+
+One subtlety in Eq. (4) is important enough to be its own result, because it caused two
+separate field defects.
+
+The outward scan stops when it hits a non-traversable pixel **or when it runs out of
+image**, and $x_{L,i}$, $x_{R,i}$ cannot distinguish the two. If the corridor extends past
+the left border, $x_{L,i} = 0$ is not a corn boundary — it is the edge of the sensor. The
+midpoint in Eq. (5) then averages one real boundary against one fictitious one and is
+dragged toward the image centre. A row clipped on *both* sides reports $e_i = 0$ exactly,
+regardless of where the robot actually is.
+
+The system therefore exposes a predicate that asks whether the nearest scan row's corridor
+is genuinely bounded:
+
+$$
+\text{bounded} \;=\; \big(x_{L,\text{near}} > 0\big) \;\wedge\; \big(x_{R,\text{near}} < W-1\big)
+\tag{11}
+$$
+
+> **In plain terms:** if the drivable lane runs off the side of the picture, the robot does
+> not actually know where the middle of the lane is. Eq. (11) is how it detects that, so
+> it can decline to steer instead of steering on a number it invented.
+
+The nearest row is the one checked because it clips most often and carries the largest
+weight. Measured on simulation logs, the near row is border-clipped in **22–33 % of
+in-row frames** while the far row is clipped in **0 %**. Inside a row this is a bias.
+In a headland — where the corridor genuinely does run off the frame — it is the *normal*
+case, and steering on it drove the robot in a slow circle at maximum steering rate for an
+entire headland leg (Supplementary S6.5). Note that the validity test of Eq. (10) cannot catch
+this: it counts pixels over the lower half and says nothing about whether the corridor
+left the frame.
+
+### 7) Flank occupancy
+
+Finally, for each scan row the estimator measures the traversable **occupancy** of a
+narrow strip at each border, of width $m = \max(1, \lfloor 0.05\,W \rceil)$ pixels:
+
+$$
+\phi_{L,i} = \frac{1}{m}\sum_{x=0}^{m-1} \mathbb{1}\big[M(y_i,x) = 1\big],
+\qquad
+\phi_{R,i} = \frac{1}{m}\sum_{x=W-m}^{W-1} \mathbb{1}\big[M(y_i,x) = 1\big]
+\tag{12}
+$$
+
+These feed the end-of-row test in §III-D. Occupancy is measured rather than asking how far
+the contiguous corridor reached, and the reason is robustness: a single misclassified
+pixel eight per cent of the way in from the border would truncate the outward scan and
+veto flank-clearance outright, whereas it moves an occupancy fraction by $1/m$. Given the
+known weakness of the low-mount masks toward the image sides (§III-A.4), this distinction
+is not hypothetical.
+
+---
+
+---
+
+## S9. Model Predictive Control in Full
+
+*Moved from §III-C.1–C.8, C.10.* The paper carries the cost function and the prediction model with its constraints. This section adds the problem statement, the solution step, the forward-velocity law, the behaviour on unusable frames, and the comparison with related controllers. The sign convention is in S1 and the tuned values in S2.
+
+### 1) Problem statement and why it is posed in image space
+
+The state and control are
+
+$$
+\mathbf{x}_k = \begin{bmatrix} e_{d,k} \\ s_k \end{bmatrix} \in \mathbb{R}^2,
+\qquad
+u_k = \omega_{z,k} \;\; \text{(rad/s, positive} = \text{left turn, REP-103)}
+\tag{13}
+$$
+
+with $e_d$ and $s$ exactly as delivered by §III-B — that is, in **normalized image
+coordinates**, dimensionless, on $[-1,1]$.
+
+This is a deliberate and consequential choice. P-AgNav's MPC state is a pixel column in a
+range-view image; CropFollow's is a metric heading and a metric distance ratio. AIAgNav's
+is neither: it is a dimensionless image-space error. The consequences are:
+
+- **No camera calibration is required.** No intrinsic matrix, no lens distortion model, no
+  extrinsic mounting transform. There is nothing to calibrate and therefore nothing to
+  mis-calibrate.
+- **The controller is resolution-agnostic.** Changing the camera resolution does not
+  change any gain, because the error is normalized by the image half-width.
+- **Camera mount changes do not invalidate the control law.** They change the *scale* of
+  the error signal (which is why $e_d$ must never be quoted as a distance in metres —
+  §III-H), but the loop remains well posed.
+- **The price:** the gains $\alpha$ and $\beta$ absorb the unknown image-to-world scale
+  and therefore cannot be derived analytically without intrinsics and corridor geometry.
+  They are tuned empirically. This is stated in the design record and should be stated in
+  the paper.
+
+> **In plain terms:** the robot never asks "how many centimetres am I off the row?" It
+> asks "how far off-centre does the lane look, as a fraction of the picture?" and steers
+> on that. This is why the same code runs unchanged on two robots with different cameras
+> at different heights.
+
+### 2) Prediction model
+
+The internal model is a two-state discrete linear time-invariant system:
+
+$$
+\mathbf{x}_{k+1} = \mathbf{A}\,\mathbf{x}_k + \mathbf{B}\,u_k,
+\qquad
+\mathbf{A} = \begin{bmatrix} 1 & \alpha\sigma \\[2pt] 0 & 1 \end{bmatrix},
+\qquad
+\mathbf{B} = \begin{bmatrix} 0 \\[2pt] \beta\sigma \end{bmatrix}
+\tag{14}
+$$
+
+with $\alpha = \beta = 0.10$ and the reference-period scaling
+
+$$
+\sigma \;=\; \frac{\Delta t}{0.1\,\text{s}}
+\tag{15}
+$$
+
+> **In plain terms:** the model says two things. First, if the lane is tilted (the $s$
+> state is non-zero), the robot will drift sideways over the next step — that is the
+> $\alpha$ term. Second, if the robot commands a turn, the tilt changes — that is the
+> $\beta$ term. Steering does not move the robot sideways instantly; it changes which way
+> the robot is pointing, and *that* moves it sideways over the following steps. The model
+> captures exactly this two-stage causality and nothing more.
+
+**Why Eq. (15) exists** is a fleet-management result rather than a control-theory one.
+$\alpha$, $\beta$ and the slew limit $\Delta\omega_{\max}$ are all specified at a
+*reference control period of 0.1 s*. The actual control period varies by an order of
+magnitude across the fleet: 0.1 s on the GPU robot, 0.5 s on the CPU-only robot. Scaling
+by $\sigma$ means the model's per-step drift, per-step control authority, and per-step
+slew allowance all track the real elapsed time, so a single tuning is correct on both
+machines and the slew limit stays constant in rad/s per *second* rather than per *step*.
+Before this scaling was implemented, running the tuned $\Delta t = 0.1$ dynamics on a
+robot that actually held each command for 0.5 s made every correction approximately five
+times too strong, and the controller saturated against its clamp on any non-zero offset.
+
+### 3) Cost function
+
+Over a horizon of $N = 8$ steps:
+
+$$
+J \;=\; \sum_{k=1}^{N}\Big( q_d\, e_{d,k}^2 \;+\; q_\psi\, s_k^2 \Big)
+\;+\; \sum_{k=0}^{N-1}\Big( r\, u_k^2 \;+\; r_\Delta\, (u_k - u_{k-1})^2 \Big)
+\tag{16}
+$$
+
+or equivalently, with $\mathbf{Q} = \operatorname{diag}(q_d,\, q_\psi)$,
+
+$$
+J \;=\; \sum_{k=1}^{N} \mathbf{x}_k^\top \mathbf{Q}\, \mathbf{x}_k
+\;+\; \sum_{k=0}^{N-1}\Big( r\, u_k^2 + r_\Delta\,(u_k - u_{k-1})^2 \Big),
+\qquad u_{-1} \equiv u^\star_{\text{applied}}
+\tag{17}
+$$
+
+Tuned weights (`config/params.yaml`):
+$q_d = 10.0$, $q_\psi = 1.0$, $r = 0.1$, $r_\Delta = 0.5$.
+
+> **In plain terms, term by term:**
+> - $q_d\,e_d^2$ — **stay in the middle of the row.** The dominant term, weighted ten times
+>   the next; being off-centre is the thing the robot is actually trying not to be.
+> - $q_\psi\,s^2$ — **do not sit crooked in the row.** Prevents the controller from
+>   settling into a centred-but-angled pose that will drift out.
+> - $r\,u^2$ — **do not steer harder than necessary.** A mild effort penalty; deliberately
+>   small, because in a narrow row the robot needs its steering authority.
+> - $r_\Delta\,(u_k-u_{k-1})^2$ — **do not steer *differently* from last time.** This is
+>   the one that keeps the wheels from chattering, and it is where the temporal smoothing
+>   lives.
+
+The last point deserves emphasis, because it is a structural difference from CropFollow.
+CropFollow smooths its perception with an extended Kalman filter and then controls the
+filtered estimate. AIAgNav does not filter the measurement at all; it penalises *changes
+in the command* inside the optimization. The smoothing therefore happens where the
+constraints are, and it cannot fight the controller — an aggressively tuned filter and an
+aggressively tuned controller are a classic source of instability, and this formulation
+does not have two things to tune against each other. There is no EKF and no IMU in the
+loop.
+
+Note also that $u_{-1}$ in Eq. (17) is the **last command actually applied to the robot**,
+carried across solver invocations, not the last element of the previous solution. The rate
+penalty and the rate constraint therefore act across the seam between successive solves,
+not merely inside a single horizon.
+
+### 4) Constraints
+
+$$
+|u_k| \;\le\; \omega_{\max}, \qquad k = 0,\ldots,N-1
+\tag{18}
+$$
+
+$$
+|u_k - u_{k-1}| \;\le\; \Delta\omega_{\max}\,\sigma, \qquad k = 0,\ldots,N-1,
+\qquad u_{-1} \equiv u^\star_{\text{applied}}
+\tag{19}
+$$
+
+with $\omega_{\max} = 0.175$ rad/s and $\Delta\omega_{\max} = 0.2$ rad/s per reference
+step. Equation (18) enters the solver as box bounds; Eq. (19) as $2N = 16$ inequality
+constraints. There are $N = 8$ scalar decision variables.
+
+> **In plain terms:** Eq. (18) caps how hard the robot may turn. Eq. (19) caps how fast it
+> may *change* how hard it is turning — a slew-rate limit, which is what stops the
+> commanded steering from jumping between extremes on consecutive frames.
+
+$\omega_{\max}$ was originally 0.3 rad/s. Field testing on real corn showed the robot
+wobbling and contacting plants at that limit, and it was reduced to 0.175 rad/s
+(2026-07-15). A later field session raised it back to 0.25 rad/s to test whether the
+controller was steering-limited; it changed nothing, because the controller was never
+saturating — which turned out to be positive evidence for a constant physical disturbance
+rather than insufficient control authority (Supplementary S6.3).
+
+### 5) Solution and the receding-horizon step
+
+Problem (16)–(19) is solved at every control tick by sequential least-squares quadratic
+programming (SLSQP, `scipy.optimize.minimize`) with `ftol = 1e-6`, `maxiter = 100`, and a
+cold start $u^0 = \mathbf{0} \in \mathbb{R}^8$. Only the first element of the solution is
+applied:
+
+$$
+u^\star \;=\; \operatorname{clip}\!\big( \arg\min_{u_{0:N-1}} J \;\big|_{\,0}\,,\;
+-\omega_{\max},\; \omega_{\max} \big)
+\tag{20}
+$$
+
+and the whole problem is re-solved on the next frame from the new measurement. With eight
+decision variables the solve costs well under a millisecond even on CPU, which is
+negligible beside the 16–500 ms segmentation forward pass — the optimizer is never the
+bottleneck. The redundant clip in Eq. (20) is a defence-in-depth measure against a solver
+returning a marginally infeasible point.
+
+### 6) Forward velocity
+
+$$
+v \;=\; v_{\text{cruise}} \;=\; 0.15\;\text{m/s} \quad\text{(constant)}
+\tag{21}
+$$
+
+This is a deliberate departure from P-AgNav, which couples velocity to steering as
+$v_t = \min(c/|\omega_t|,\, v_{\max})$, slowing the robot as it turns harder. AIAgNav holds
+forward speed constant during row following and lets $\alpha$ and $\beta$ carry the speed
+dependence: those two constants are tuned *for* 0.15 m/s and must be scaled proportionally
+if cruise speed is raised. The reasons for the simpler law are that the operating envelope
+is already conservative — crop monitoring and physical sampling favour slow, safe traverse
+over speed — and that a state-dependent velocity introduces a coupling between the linear
+and angular channels that the two-state image-space model does not represent, so it could
+not be reasoned about within this formulation.
+
+Different speeds are used in specific mission states — 0.10 m/s on the headland exit leg,
+0.08 m/s while reacquiring a row, −0.10 m/s while reversing — and those are set by the
+mission layer, not by the controller (§III-E, §III-F).
+
+### 7) Sign convention
+
+Image $x$ increases rightward and positive $\omega_z$ is a left turn (REP-103). The
+signs are not hard-coded: with $\alpha, \beta > 0$ they emerge from the optimization,
+so the convention is a consequence of the model rather than a separate assumption that
+could drift out of agreement with it. The full table, and the rule for resetting the
+controller when the steering reference frame changes, are in **Supplementary S1**.
+### 8) Behaviour on unusable frames
+
+When Eq. (10) reports the frame unusable, the controller does not solve. It holds the last
+command and counts consecutive failures; after $n_{\text{invalid}} = 5$ consecutive
+unusable frames it latches to a full stop:
+
+$$
+(v, \omega_z) \;=\;
+\begin{cases}
+(v_{\text{cruise}},\, u^\star) & \text{valid frame}\\[4pt]
+(v,\, \omega_z)_{\text{previous}} & \text{invalid, count} < 5\\[4pt]
+(0,\, 0) & \text{invalid, count} \ge 5
+\end{cases}
+\tag{22}
+$$
+
+> **In plain terms:** one bad frame — a leaf flicking past the lens — should not make the
+> robot lurch, so it keeps doing what it was doing. Five bad frames in a row means
+> perception is genuinely lost, and the robot stops.
+
+Separately, a 10 Hz timer republishes the most recent command regardless of the inference
+rate. This is a platform requirement, not a control decision: the Jackal's base controller
+brakes if `cmd_vel` goes silent for a few hundred milliseconds, so publishing only once
+per inference on a 2 Hz robot produced a visible surge–brake–surge gait. A watchdog on the
+same timer publishes a zero command if no successful inference has completed within
+`max_data_age_sec` (0.5 s with a GPU; 1.5–3.0 s on the CPU robot, where every frame
+otherwise arrives at the deadline and produces constant stop–go stutter).
+
+### 9) Tuned values and tuning order
+
+The tuned values, their provenance, the documented tuning order and the field
+diagnostics for each failure signature are in **Supplementary S2**.
+### 10) Relationship to comparable controllers
+
+| | P-AgNav | CropFollow | Agronav | **AIAgNav** |
+|---|---|---|---|---|
+| Sensor | 3D LiDAR range view | Monocular RGB | Monocular RGB | Monocular RGB |
+| Perception output | Blob centroid column | Regressed $(\varphi, d)$ | Two Hough boundary lines | 3-scan-row corridor midpoints |
+| Learned components | none (blob detection) | ResNet-18 regression head | Segmentation + Deep Hough | Segmentation only |
+| State estimation | none | EKF + IMU | none | **none** |
+| Control state | pixel column $x_t$ | $(\varphi, d)$, metric | centerline | $[e_d, s]$, normalized image space |
+| Controller | MPC | MPC | downstream planner | MPC ($N=8$, SLSQP) |
+| Smoothing | $(\omega_t - \omega_{t-1})^2$ in cost | EKF | — | $r_\Delta$ term + slew constraint |
+| Speed law | $v = \min(c/|\omega|, v_{\max})$ | — | — | constant $v_{\text{cruise}}$ |
+
+The distinguishing property of AIAgNav's controller is what it *does not* contain: no
+regression head to train and validate, no Hough transform to fit, no Bayesian filter to
+tune, and no calibration. The navigation state falls out of the segmentation mask by
+closed-form geometry, and every remaining degree of freedom is inside a single
+constrained optimization.
+
+---
+
+---
+
+## S10. Row-Exit Detection in Full
+
+*Moved from §III-D.1–D.5.* The paper carries the leaky evidence accumulator. This section gives the corridor-width and flank-clearance measures the two exit signatures are built from, the signatures themselves, the duty-cycle stability analysis that sets the leak ratios, the arming rule, and the back-dating of the exit pose.
+
+### 1) Corridor width and flank clearance
+
+The normalized corridor width on scan row $i$ is
+
+$$
+\mathcal{W}_i \;=\; \frac{x_{R,i} - x_{L,i} + 1}{W} \;\in\; (0, 1]
+\tag{23}
+$$
+
+and a scan row is *flank-clear* when the outer strips on **both** sides are predominantly
+drivable:
+
+$$
+\text{flank}_i \;=\; \big(\phi_{L,i} \ge 0.8\big) \;\wedge\; \big(\phi_{R,i} \ge 0.8\big)
+\tag{24}
+$$
+
+using the strip occupancies of Eq. (12) with a strip width of 5 % of the image.
+
+> **In plain terms:** Eq. (23) asks *how wide is the drivable lane?* Eq. (24) asks *is
+> there still corn immediately beside it?* Inside a row the corn walls bound the corridor
+> and it stops well short of the picture edges. At a true row end the drivable ground runs
+> edge to edge.
+
+### 2) The two exit signatures
+
+**OPEN — the row has ended into open field.** At least $n_{\text{open}} = 1$ scan row —
+**any** of them — must be simultaneously wide and flank-clear:
+
+$$
+\text{OPEN} \;=\; \Big| \big\{\, i : \mathcal{W}_i \ge 0.8 \;\wedge\; \text{flank}_i \,\big\} \Big| \;\ge\; n_{\text{open}}
+\tag{25}
+$$
+
+**BLOCKED — the way ahead is a wall of crop or an obstacle.** No scan row finds a corridor
+at all, and there is genuinely something there:
+
+$$
+\text{BLOCKED} \;=\; \big(|\mathcal{V}| = 0\big) \;\wedge\; \big(\rho_{\text{obs}} \ge 0.2\big)
+\tag{26}
+$$
+
+Three design decisions inside these two lines are worth defending explicitly, because each
+was arrived at by a field or simulation failure.
+
+**(a) ANY scan row may satisfy Eq. (25) — never a specific one.** An earlier version
+required the *farthest* rows to go wide, on the reasoning that the far rows see the open
+field first. In practice the segmentation of distant ground beyond the field edge is
+unreliable, so the far rows can remain invalid indefinitely; the criterion never fired at
+all, and the robot drove off the end of the world. Counting any row means that whichever
+row first sees open field starts the evidence streak: where the far rows do segment well,
+they fire early on approach; where they do not, the near row going wide still fires.
+
+**(b) The flank term of Eq. (24) is what prevents mid-row false exits — not the width
+threshold.** This is the correction to the system's most serious field failure
+(2026-07-24). On the GPU robot with the low camera mount, a section of row with a few
+missing plants pushed the near-row corridor width to ≈ 0.83, above the 0.8 threshold. The
+signature at the time was width-only; the robot classified a mid-row gap as a row end and
+drove into the corn. Adding the flank requirement rejects **one-sided openings**: a gap in
+one row of corn opens the corridor toward that side while corn still borders the other,
+which is precisely what Eq. (24) tests and what a width test cannot see. Simulation logs
+after the fix contain the decisive case: mid-row at $t = 209.96$, corridor width **0.97**
+— which even a 0.9 width bar would have fired on — rejected because the right-hand strip
+occupancy was only 0.38.
+
+> The paper should say this plainly: **`exit_width_threshold` is not what holds the line.
+> The edges are.**
+
+**(c) Equation (26) measures the OBSTACLE class, not the traversable class.** The gate
+exists to reject a garbage mask or a dead camera — "is anything actually there?" An earlier
+version asked "is any drivable ground still visible?", i.e. it required
+$\rho_{\text{trav}}$ to exceed a floor. That is backwards, and the reason is geometric: a
+blocker *fills the lower half of the frame* as the robot closes on it, so the traversable
+reading falls toward zero exactly when the obstacle is nearest and the detection most
+certain. The threshold was walked 0.15 → 0.08 → 0.02 chasing the resulting deadlock before
+the diagnosis landed: in front of a real blocker the correct traversable reading is
+genuinely 0.00, so **no value of that threshold could ever have worked — the measured
+quantity was wrong, not the number.** The obstacle fraction *rises* as the robot
+approaches, which is the behaviour a confirmation gate needs.
+
+This generalises into a principle worth stating in the paper: *when a threshold has been
+retuned three times against the same symptom, the quantity being measured is the thing to
+question.*
+
+### 3) Evidence accumulation in physical units
+
+Neither signature fires on a single frame. Both accumulate evidence — but **in different
+physical units, and never in frames.**
+
+**Why not frames.** A frame count means a different thing on every robot in the fleet. The
+field-proven "5 frames" is 2.5 s on the 2 Hz CPU robot and 0.2 s on the ≈ 25 Hz GPU robot.
+That single constant, unchanged, is how a momentary mid-row gap satisfied the debounce
+almost instantly on the fast robot and committed it into the crop before an operator could
+intervene.
+
+**OPEN accumulates metres.** An exit must be *driven through* to be believed:
+
+$$
+D \;\leftarrow\;
+\begin{cases}
+D + \Delta d & \text{if OPEN and armed}\\[4pt]
+\max\!\big(0,\; D - \lambda_{\text{open}}\,\Delta d\big) & \text{otherwise}
+\end{cases}
+\qquad \lambda_{\text{open}} = 0.5
+\tag{27}
+$$
+
+**BLOCKED accumulates seconds.** A blocked view stops the robot (the controller goes
+invalid, Eq. 22), so a distance counter would never fill and the recovery would deadlock:
+
+$$
+T \;\leftarrow\;
+\begin{cases}
+T + \Delta t & \text{if BLOCKED and armed}\\[4pt]
+\max\!\big(0,\; T - \lambda_{\text{blk}}\,\Delta t\big) & \text{otherwise}
+\end{cases}
+\qquad \lambda_{\text{blk}} = 1.0,\;\; \Delta t \le 2.0\,\text{s}
+\tag{28}
+$$
+
+The detector fires when
+
+$$
+\big(D \ge 0.4\,\text{m} \;\wedge\; n_{\text{frames}} \ge 2\big) \;\Rightarrow\; \text{ROW\_END\_OPEN},
+\qquad
+\big(T \ge 4.0\,\text{s}\big) \;\Rightarrow\; \text{ROW\_END\_BLOCKED}
+\tag{29}
+$$
+
+> **In plain terms:** the robot does not count frames, it counts *evidence*. To believe a
+> row has ended, it must drive 0.4 m while continuing to see open field. To believe it is
+> blocked, it must sit and watch an obstruction for 4 seconds. Both of these mean the same
+> thing on a slow robot and a fast one, which a frame count never does.
+>
+> Note the unit split is not arbitrary. Distance is the right currency for the open case
+> because if the robot stalls, *not* firing is the safe failure. Seconds are the only
+> possible currency for the blocked case, because a blocked robot is not moving and has no
+> distance to spend.
+
+**The accumulators leak; they do not reset.** A non-signature frame *subtracts* rather
+than clearing the total. Strict consecutiveness cannot be used with these units: 0.4 m at
+25 Hz is roughly 65 consecutive frames, and one flickering frame resetting the streak
+would turn the debounce into a never-fires bug. The leaky form asks for *net sustained
+evidence* instead.
+
+**The OPEN leak is deliberately asymmetric** ($\lambda_{\text{open}} = 0.5$: it drains at
+half the rate it fills). A symmetric leak sounds neutral and is not. With
+$\lambda = 1$, a signature true for a fraction $\eta$ of frames has net fill rate
+$\eta - (1-\eta) = 2\eta - 1$, which is exactly zero at $\eta = 0.5$: a real-but-marginal
+exit can then *never* fire, however far the robot drives. With $\lambda = 0.5$ the net fill
+rate is
+
+$$
+\dot{D} \;=\; \eta - \lambda_{\text{open}}(1 - \eta) \;=\; 1.5\,\eta - 0.5
+\tag{30}
+$$
+
+so anything true more than one-third of the time still climbs, while a brief mid-row gap —
+open for perhaps 0.2 m and then closed for metres — still drains away without firing. This
+was diagnosed from a simulation run in which the meter reached 0.13 of the required 0.40 m,
+drained back to zero, and the robot drove off the edge of the world. Measured duty cycles
+in later simulation runs were $\eta \approx 0.87$, with each exit banking its 0.4 m within
+about 0.5 m of driving; at $\eta = 0.5$ the same 0.4 m requires about 1.6 m of driving
+(measured: 1.45 m). The correct response to a marginal signature is to improve signal
+quality, not to loosen the leak further.
+
+The additional guards are a floor of $n_{\text{frames}} \ge 2$ contributing frames — so no
+single frame carrying a large odometry delta can fire an exit alone — and a cap of 2.0 s
+on any single time increment, so a stalled pipeline or a paused simulation clock cannot
+bank seconds of evidence in one tick.
+
+### 4) Arming
+
+Each signature is disabled until the robot has driven far enough into the row, and the two
+distances differ:
+
+| Signature | Arming distance | Reason |
+|---|---|---|
+| OPEN | 2.0 m | At row entry the robot is *looking at open field by definition*. Without this the exit would fire immediately on every row. |
+| BLOCKED | 0.3 m | An obstacle shortly after row entry must still be caught. This can safely arm early because Eq. (26) requires **zero** visible corridor at every scan row, which cannot occur at a normal row entry. |
+
+While a signature is unarmed its accumulator is held at zero, so an evidence streak cannot
+straddle the arming boundary.
+
+### 5) Back-dating the exit
+
+When OPEN fires, the detector reports not only the signal but the odometry distance at
+which the streak *began*. The mission layer uses this to back-date its reference:
+
+$$
+\delta_{\text{exit}} \;=\; \max\!\big(0,\; d_{\text{in-row}} - d_{\text{streak start}}\big)
+\tag{31}
+$$
+
+Without Eq. (31) the confirmation distance would be charged twice — the robot would drive
+0.4 m to *confirm* the exit and then a further `headland_clearance` metres to *clear* it,
+overrunning the row end by the sum of the two. Back-dating measures total travel from
+where the exit was first seen, not from where it was confirmed.
+
+---
+
+---
+
+## S11. Mission State Machine in Full
+
+*Moved from §III-E.1–E.5 and §III-F.* The paper describes the nominal cycle and the blocked-row branch in prose. This section gives the odometry-closed-loop turn termination, exit revocation, row reacquisition, and the blocked-row recovery branch in full. The rear-steered headland leg and its state conversion are in S3.
+
+### 1) The nominal cycle
+
+**FOLLOW_ROW.** The controller of §III-C drives; the detector of §III-D watches. On
+`ROW_END_OPEN` the row counter increments and the machine enters `EXIT_CLEAR`, back-dated
+by Eq. (31) — except on the final row, where it goes straight to `DONE` (there is no point
+turning into a row the robot will not drive). On `ROW_END_BLOCKED` the event is recorded
+with its row index and the machine enters the recovery branch of §III-F; **blocked rows do
+not increment the row counter**, because the robot did not drive that row.
+
+**EXIT_CLEAR.** Drive forward far enough that the robot's tail has cleared the last plants
+before rotating. This state is treated in detail in §III-E.4 because it is the most
+recently and most heavily revised part of the system. It runs at 0.10 m/s — slower than
+cruise, because this is the leg where overshoot causes contact with the end-of-row plants.
+
+**TURN_1, TURN_2.** Odometry-closed-loop 90° rotations in place at 0.4 rad/s.
+
+**TRAVERSE.** Drive sideways along the headland for `traverse_distance` = 0.6 m at cruise
+speed. This is deliberately shorter than the 0.75 m row spacing: a field near-miss showed
+that traversing the full spacing put the robot's nose too close to the next row's corn
+before the second rotation.
+
+**REACQUIRE.** Creep forward at 0.08 m/s until the view looks like the inside of a row,
+then resume following and **flip the turn direction** so the next row is driven in the
+opposite sense — the boustrophedon pattern.
+
+**DONE.** Reached after `num_rows` rows (0 means "until no rows remain"), or when
+`REACQUIRE` creeps 2.0 m without finding a row, which is how the machine concludes the
+field has run out. The mission reports the list of rows that were blocked.
+
+### 2) Odometry-closed-loop turns
+
+Turns terminate on *accumulated swept yaw*, not on an absolute heading comparison:
+
+$$
+\Psi_k \;=\; \Psi_{k-1} + \operatorname{wrap}\!\big(\psi_k - \psi_{k-1}\big),
+\qquad
+\operatorname{wrap}(a) \in (-\pi,\, \pi]
+\tag{32}
+$$
+
+$$
+\text{terminate when } \;|\Psi_k| \;\ge\; \frac{\pi}{2} - \varepsilon_\psi,
+\qquad \varepsilon_\psi = 5^\circ
+\tag{33}
+$$
+
+> **In plain terms:** the robot adds up how much it has turned since the manoeuvre began,
+> handling the ±180° wraparound correctly at each step, and stops when the total reaches a
+> right angle. It does not compare "where am I pointing now" against "where was I pointing
+> at the start", because that comparison silently breaks whenever the manoeuvre straddles
+> the wrap point of the heading representation.
+
+If odometry is unavailable, every manoeuvre state commands zero velocity. There is no
+dead-reckoning fallback: a turn executed blind in a 0.75 m row spacing is a collision.
+
+### 3) Exit revocation — making a false positive cheap
+
+The 2026-07-24 field failure was severe not because the classification was wrong but
+because the transition was a **one-way commit**. Revocation makes it reversible.
+
+For the first $0.5$ m after an exit fires, the machine keeps watching the *front* view. If
+the nearest scan row is corn-flanked — or has no corridor at all — for a continuous
+$0.25$ m of travel, the exit is withdrawn:
+
+$$
+F \leftarrow
+\begin{cases}
+0 & \text{if nearest row is flank-clear}\\
+F + \Delta d & \text{otherwise}
+\end{cases}
+\qquad
+\big(F \ge 0.25\,\text{m} \;\wedge\; d_{\text{exit}} < 0.5\,\text{m}\big) \Rightarrow \text{revoke}
+\tag{34}
+$$
+
+On revocation the row counter is decremented, the event is logged, and the machine returns
+to `FOLLOW_ROW` **without re-stamping the row-entry pose** — the row was never actually
+left, so the arming distance of §III-D.4 must not restart.
+
+> **In plain terms:** a wrong exit now costs a brief steering wobble instead of a
+> collision.
+
+Two subtleties are load-bearing. **Only the nearest scan row is consulted.** During a
+genuine exit the far rows legitimately see the corn block across the headland, so a
+global test would revoke every real exit. The near row images the ground immediately
+beside the robot and answers the right question: *is there still a corn wall right next to
+me?* And **"did not look" is not the same as "looked and saw nothing"**: a tick that
+carries no front frame must not be counted as evidence against the exit, while a frame
+that found no corridor must be. Conflating the two is a real bug that was found and pinned
+with a regression test.
+
+### 4) The rear-steered headland exit leg
+
+Once the robot is past the row end the forward camera sees only open headland, which
+contains no row axis to steer on; the rear camera is looking back down the row just
+left, which is the best available reference at that moment. `EXIT_CLEAR` therefore
+switches inference to the rear camera for its whole duration, steers on the converted
+rear state, and turns only once the rear view *also* reads open field — the tail has
+cleared the last plants.
+
+The conversion is **not a sign flip**. The 180° mirror inverts the lateral term but not
+the heading term, because both cameras rotate with the robot, so a yaw left moves the
+vanishing point to image-right in both views. The derivation, the gain $\kappa$, the
+bounded-corridor gate, the three terminators and the separate rear watcher are in
+**Supplementary S3**.
+### 5) Row reacquisition
+
+`REACQUIRE` must decide when the robot is back inside a row. The test is deliberately
+**not** a corridor-width test:
+
+$$
+\text{looks like a row} \;=\; \neg\,\text{flank}_{\text{near}}
+\tag{38}
+$$
+
+— that is, the nearest scan row has a corridor with corn on **both** sides, the exact
+logical inverse of the open-exit flank test.
+
+The previous implementation latched when the mean corridor width fell below 0.6. That is a
+camera-height constant (≈ 0.5 on the tall mount, ≈ 0.7 on the low mount) and became
+*unsatisfiable inside a row* when the cameras moved to the deck. It also required
+$\rho_{\text{trav}} \ge 0.10$ while the simulated headland measured 0.09. The machine
+therefore crept the full 2.0 m at 0.08 m/s — twenty-five seconds — with steering hard-zeroed,
+and nearly drove into the corn. The replacement is scale-free, and the state now steers
+while it creeps.
+
+The latch requires the row view to hold for 0.12 m of travel, and it is on this transition
+that the boustrophedon turn direction flips — except once, after a blocked-row recovery,
+for the reason given in §III-F.
+
+---
+
+### F. Blocked-Row Recovery
+
+AIAgNav is not designed to drive over or around an obstruction inside a row; the row is
+0.75 m wide and there is nowhere to go. When Eq. (26) confirms that the way ahead is
+impassable, the robot **reverses out the end it came in**, lane-changes to the next row,
+and continues the mission.
+
+The branch is six states: `BACKOUT` → `BACKOUT_CLEAR` → `BACKOUT_TURN_1` →
+`BACKOUT_TRAVERSE` → `BACKOUT_TURN_2` → `REACQUIRE`.
+
+**Reversing.** The robot drives at −0.10 m/s, steering from the rear camera, and stops on
+whichever comes first: unwinding the odometry distance travelled since it entered the row,
+or the rear camera reporting that the row has opened up behind it. The second terminator
+exists because the recorded distance includes the pre-row approach — on the first row the
+odometry reference begins at the spawn point, which can be metres before the row entrance —
+so unwinding it blindly overshoots well past the row end. The rear-camera terminator ends
+the reverse as soon as the row actually opens; the odometry figure remains as an upper
+bound.
+
+**Reverse steering uses the rear state UNCHANGED — no conversion, no negation.** This looks
+inconsistent with §III-E.4 and is not. Reversing flips the *lateral dynamics* as well as
+the view: with $\dot{e} = v\sin\theta$ and $v < 0$, the sign of the lateral response
+inverts, and this cancels against the mirror flip of Eq. (35). The headland leg has a
+mirrored view with *forward* motion, which is why it needs the reconstruction of Eq. (36);
+the reverse leg has a mirrored view with reversed motion, and the two cancel. **Three
+cases, three treatments** — and this is exactly why the two rear watchers are separate
+objects.
+
+| Case | View | Motion | Treatment |
+|---|---|---|---|
+| Row following | forward | forward | rear state not used |
+| Headland exit leg | mirrored | forward | reconstruct via Eq. (36) |
+| Reverse recovery | mirrored | reversed | rear state passed through unchanged |
+
+**The lane change is an S-turn.** `BACKOUT_TURN_2` counter-rotates relative to
+`BACKOUT_TURN_1`, so the robot leaves the headland pointing back into the field on the
+*same* heading it originally had. The boustrophedon direction flip is therefore suppressed
+exactly once on the following `REACQUIRE`, so the next row is driven in the same direction
+as the blocked one, as the geometry requires.
+
+**Accounting.** A blocked row does not count toward `num_rows`. The row index and the
+odometry distance at which the block occurred are recorded and reported when the mission
+completes, so a field operator learns which rows were impassable without watching the run.
+
+**Without a rear camera the branch is unreachable.** The recovery is gated on
+`rear_camera_enabled`; with no rear camera, a confirmed blocked signal stops the robot and
+ends the mission with the block reported. Reversing blind down a corn row was rejected as
+unsafe.
+
+> **A field-operations warning that belongs in the paper's discussion.** Rear frames are
+> consumed only during the recovery branch and the headland leg. A dead rear camera is
+> therefore **invisible for an entire otherwise-normal mission**, and the gap surfaces only
+> at the first blocked row — when the robot is stopped in front of an obstacle and the
+> frames it needs in order to reverse never arrive. The rear topic must be verified before
+> a run, not after.
+
+---
+
+---
+
+## S12. Evaluation Instrumentation
+
+*Moved from §III-H.* The definition of meters between interventions (MDBI) that the paper reports in §IV is repeated there; everything else about how a run is instrumented and what each recorded quantity means is here.
+
+### H. Evaluation Instrumentation
+
+Quantitative claims about a field robot require an instrument that runs during the field
+pass, because a field pass does not come round twice. Mining the console log is not an
+option: log output is rate-throttled, so on the GPU robot roughly one frame in 120 appears,
+and an RMS or a 95th percentile computed from a 5 %-duty sample is not a measurement.
+
+**Per-run CSV.** Every processed frame writes one row with 35 columns: timestamps, the full
+perception state ($e_d$, $s$, validity, region fractions, per-scan-row bounds and widths),
+the issued command, the mission state and row count, every detector accumulator, odometry
+pose, and the timing triple (inference time, end-to-end latency, buffer wait). Events —
+`BLOCKED`, `EXIT_REVOKED`, `MISSION_DONE`, `WATCHDOG_ZERO`, `INFERENCE_FAILED`,
+`INTERVENTION` — are written inline and force a flush, because field runs end by losing
+power at least as often as by a clean shutdown. The logger is written so that it can never
+raise: it runs on the inference thread, and an instrument that can kill the node it
+measures is worse than no instrument.
+
+**Tracking error statistics.** Over a set of samples $\{e_{d,j}\}$ the report gives
+
+$$
+\text{RMS} = \sqrt{\frac{1}{n}\sum_j e_{d,j}^2},
+\quad
+\overline{|e_d|} = \frac{1}{n}\sum_j |e_{d,j}|,
+\quad
+p_{95} = \text{95th percentile of } |e_{d,j}|,
+\quad
+\max_j |e_{d,j}|
+\tag{39}
+$$
+
+computed per mission state, so that row-following performance is not diluted by the
+open-loop turn and traverse legs.
+
+> **A units caveat that must appear wherever these numbers are quoted.** $e_d$ is
+> **normalized image space, not metres.** It is the correct control-loop error — it is
+> exactly the quantity the MPC minimises — but it is *not* "the robot was 8 cm off the row
+> centreline", and its scale shifts with camera mount height (≈ 0.5 tall vs. ≈ 0.7 low at
+> the near scan row). Never compare a value from one rig against a value from another;
+> always state which robot and which mount produced it, and quote the FOLLOW\_ROW rows only.
+> A figure in true metres would require either simulator ground truth against the known row
+> geometry or a per-mount pixel-to-metre calibration. **Neither has been done. [TO
+> CONFIRM before any metric claim is made in §IV.]**
+
+**The autonomy metric.** The field-robotics literature reports mean distance between
+interventions, and AIAgNav is instrumented to produce the same number. An intervention is
+defined operationally as a **joystick takeover**: the deadman button held on the
+teleoperation joystick topic. Nothing has to be pressed or remembered by the supervisor
+during a run. Activity within 3.0 s of previous activity belongs to the *same* intervention,
+so one messy rescue scores 1 rather than 5.
+
+$$
+\text{MDBI} \;=\; \frac{\text{distance driven autonomously (m)}}{\text{number of interventions}}
+\tag{40}
+$$
+
+where the numerator subtracts every path segment driven under teleoperation — those metres
+are never credited to the controller. Distance is path length from `/odometry/filtered`,
+cross-checked against $\int |v|\,dt$ from the commanded twist; a disagreement over 10 %
+indicates wheel slip or a jumpy state estimate, and the report says so rather than picking
+one silently. Neither figure is ground truth, and the paper must say which one it quotes.
+
+Unlike $e_d$, MDBI is in metres and is mount-independent, which makes it the
+paper-comparable number. Two reporting rules: a run with zero interventions has no mean,
+only a lower bound; and runs must be **pooled** (sum the distances, sum the interventions)
+before a figure is quoted.
+
+> **Status, stated honestly.** The instrument was completed on 2026-08-04. The successful
+> multi-row field mission of 2026-08-05 **produced no CSV**, because the logger had not yet
+> reached that robot. As of this revision, **no MDBI figure exists from a field run.** The
+> only intervention data on record are qualitative: "0–1 interventions per row" from the
+> first successful tall-camera field tests, and "no interventions" from 2026-08-05. See
+> §IV.
 
 ---
