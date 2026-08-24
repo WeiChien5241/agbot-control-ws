@@ -1,7 +1,18 @@
 # Technical Doc Creation — AIAgNav ICRA 2027 paper
 
-Handoff updated 2026-08-13 (second session). Head commit at time of writing:
-`ddb60dd`. Read this file plus `paper/OUTLINE_III.md` and you have everything.
+Handoff updated 2026-08-24 (third session). Read this file plus
+`paper/OUTLINE_III.md` and you have everything.
+
+**Session 3 in one paragraph:** the user converted `AIAgNav_Technical.md` to Word,
+got 37 pages, and asked for it to be cut to the shape and density of the P-AgNav
+paper. It was rewritten in place: **13,045 → 6,563 body words, 38 → 4
+equations**, Section III's eight subsections collapsed to five, all 18 "In plain
+terms" glosses deleted, every ROS topic / file path / parameter table removed, a
+reference list added (6 verified + 12 reserved slots), and both mermaid diagrams
+replaced by figure placeholders pointing at the finished TikZ sources. Everything
+cut moved to `AIAgNav_Supplementary.md` as **S7–S12** (6,334 → 14,736 words).
+`paper/paper.tex` was deliberately **not** touched and is now out of sync — see
+next steps.
 
 **Session 2 in one paragraph:** Section II was written, the introduction,
 abstract and conclusion were written, the design doc was split into
@@ -12,39 +23,67 @@ user deferred until field data exists. Commits: `9e243b0`, `63f3d01`, `d10aea7`,
 
 ---
 
+## 0. THE TWO DOCUMENTS — read this before touching either
+
+There are now **two paper-shaped artefacts**, and confusing them wasted a session:
+
+| File | What it is | Length |
+|---|---|---|
+| `paper/paper.tex` | The LaTeX **submission**. IEEEtran two-column. | 6/8 pages, 4,823 w |
+| `AIAgNav_Technical.md` | The same paper in **markdown**, for reading and for Word. | 6,563 body w |
+
+They carry the same content and the same four equations' worth of argument, but
+`paper.tex` still has the **7-equation** structure from session 2 and no
+reference list. **The markdown is now ahead.** Resync `paper.tex` from it
+(next steps, task 0) before doing anything else to the LaTeX.
+
+⚠ **Word page count is not the submission page count.** The user measured 37
+Word pages and was right to be alarmed, but Word renders single-column at 11 pt
+(~450 w/page) while IEEEtran renders two-column at 10 pt (~920 w/page). A
+correct 8-page submission is ~16 Word pages. Quote **words** when comparing the
+markdown against P-AgNav (7,372 body words); quote **pages** only from
+`make pages`.
+
+---
+
 ## 1. GOAL
 
 Turn the design doc (originally `AIAgNav_Technical.md`, 19,098 words, ~63 pages
-— an excellent design doc, not a paper; now split into a 13.3k-word technical
-doc and a 6.4k-word supplementary) into an **8-page IEEE conference paper**
-for ICRA 2027, formatted
-and pitched like the lab's P-AgNav RA-L paper. The system is AIAgNav: monocular
-camera + DINOv3 semantic segmentation + image-space MPC for in-row, under-canopy
-cornfield navigation with autonomous multi-row switching. The technical section
-is the priority; introduction, results, and references come last.
+— an excellent design doc, not a paper) into an **8-page IEEE conference paper**
+for ICRA 2027, formatted and pitched like the lab's P-AgNav RA-L paper. The
+system is AIAgNav: monocular camera + DINOv3 semantic segmentation + image-space
+MPC for in-row, under-canopy cornfield navigation with autonomous multi-row
+switching. The technical section is the priority; introduction, results, and
+references come last.
 
-The deliverable is `paper/paper.tex`, not a markdown file.
+As of 2026-08-24 that doc has itself been cut down to the paper (6,563 body
+words, 4 equations) and the overflow lives in `AIAgNav_Supplementary.md`
+(14,736 words, S1–S12). The **submission** is `paper/paper.tex`; the markdown is
+the reading and Word copy, and is currently the more current of the two. See §0.
 
 ---
 
 ## 2. CURRENT STATE
 
-**Everything except Section IV is drafted.** Sections I, II, III and V are
-written, three figures are in place (two real TikZ diagrams, one placeholder),
-and the document compiles clean with no undefined references.
+**Everything except Section IV is drafted**, in both documents. Sections I, II,
+III and V are written, three figures are in place (two real TikZ diagrams, one
+placeholder), and the LaTeX compiles clean with no undefined references.
 
 ```
-pages: 6 / 8      0 undefined references      \nocite{*} removed
+paper.tex:  pages 6 / 8    0 undefined references    \nocite{*} removed
 ```
 
-| Section | Words | Budget | Status |
-|---|---:|---:|---|
-| Abstract | 177 | 150 | written; one `\TODO` for the headline number |
-| I. Introduction | 857 | 1200 | written; 3-item contribution list; **only 6 references** |
-| II. System Overview | 1005 | 990 | written (hardware / visual representation / framework) |
-| III. System Design | 2528 | 2831 | complete |
-| IV. Experimental Results | — | 1003 | **deliberately deferred** (2026-08-13 decision) |
-| V. Conclusion | 256 | 247 | written |
+Per-section words, `paper.tex` (L) against `AIAgNav_Technical.md` (M):
+
+| Section | L | M | Budget | Status |
+|---|---:|---:|---:|---|
+| Abstract | 177 | 199 | 150 | written; one TODO for the headline number |
+| I. Introduction | 857 | 1030 | 1200 | written; 3-item contribution list |
+| II. System Overview | 1005 | 1107 | 990 | written (hardware / visual representation / framework) |
+| III. System Design | 2528 | 2966 | 2831 | complete; M is the trimmed version |
+| IV. Experimental Results | — | 457 | 1003 | **deliberately deferred** (2026-08-13 decision) |
+| V. Conclusion | 256 | 255 | 247 | written |
+| References | — | 347 | 958 | M has 6 verified + 12 reserved slots; L has none |
 
 **Figures:** `fig/pipeline.tex` (Fig. 1, TikZ block diagram) and `fig/fsm.tex`
 (Fig. 2 in III-E, TikZ state machine) are finished and readable at print size.
@@ -55,6 +94,9 @@ the user will supply a `debug_viz.py` capture (torch cannot run in this sandbox)
 with tables), the real overlay figure, and a reference list that is currently
 6 entries where a submission wants roughly 20. Expect to cut prose from I or II
 when related work lands. `make pages` is still the arbiter.
+
+Section III subsections. **These are `paper.tex` figures** — the markdown's
+trimmed equivalents are 596 / 683 / 706 / 491 / 490, totalling 2,966:
 
 | Subsection | Words | Budget |
 |---|---:|---:|
@@ -70,8 +112,10 @@ the `\TODO`, III-B when the overlay figure got its `\ref`. Summing subsections
 does not exactly match `make budget` — the two counters strip markup
 differently, and `make budget` is the authority.)
 
-Seven numbered equations, all labelled: `eq:midpoint`, `eq:offset`, `eq:slope`,
-`eq:mpc_dynamics`, `eq:mpc_cost`, `eq:mpc_constraints`, `eq:accumulator`.
+Seven numbered equations **in `paper.tex`**, all labelled: `eq:midpoint`,
+`eq:offset`, `eq:slope`, `eq:mpc_dynamics`, `eq:mpc_cost`, `eq:mpc_constraints`,
+`eq:accumulator`. The markdown has merged these down to **four** — that merge is
+the substance of the resync in next-steps task 0.
 Section labels: `sec:centerline`, `sec:mpc`, `sec:exit`, `sec:switching`.
 Notation table `tab:notation` is filled and matches the symbols actually used.
 
@@ -215,8 +259,8 @@ rewritten):
 
 | Path | What it is |
 |---|---|
-| `AIAgNav_Technical.md` | The design doc the paper was cut from, now 13.3k words: history, parameters, sign conventions, the rear-leg derivation and the runtime section were moved out with pointers left in place. Still holds §I–§V, the notation table, and §III-A…§III-F/H in full. |
-| `AIAgNav_Supplementary.md` | **New (2026-08-13).** 6.4k words. S1 sign convention + reference-frame resets (was §III-C.7); S2 tuned values and tuning order (§III-C.9); S3 the rear-steered headland leg incl. the $\kappa$ derivation (§III-E.4) — this is what the paper's III-E defers to; S4 runtime architecture and measured timing (§III-G); S5 parameter reference (was Appendix B); S6 design history (was Appendix A). Cross-references were rewritten everywhere: "Appendix A.4" now reads "S6.4". |
+| `AIAgNav_Technical.md` | **Rewritten 2026-08-24 into the paper itself** — no longer a design doc. 6,563 body words, 4 equations, §III collapsed to five subsections (A Semantic Segmentation, B Corridor and Centerline Estimation, C Model Predictive Row Following, D Row Exit Detection, E Row Switching), §IV reserved, reference list with 6 verified + 12 reserved slots. This is the current draft; `paper.tex` trails it. |
+| `AIAgNav_Supplementary.md` | 14.7k words, S1–S12. S1 sign convention + reference-frame resets; S2 tuned values and tuning order; S3 the rear-steered headland leg incl. the $\kappa$ derivation — what the paper's III-E defers to; S4 runtime architecture and measured timing; S5 parameter reference; S6 design history. **Added 2026-08-24:** S7 segmentation model configuration + inference contract; S8 centerline estimation in full (incl. the $\mathbf{C}$-matrix derivation behind the invertibility claim); S9 MPC in full; S10 row-exit detection in full (incl. the duty-cycle analysis setting $\rho$); S11 mission FSM in full + blocked-row recovery; S12 evaluation instrumentation. |
 | `4_P-AgNav_Range_View-Based_Autonomous_Navigation_System_for_Cornfields.md` | The style, density, and structure target. An exactly-8-page paper. Read its Section III before writing anything. |
 | `Wei-Wei MSRAL Summer Research Report.md` | The author's own framing and reflection. Material for the introduction. |
 | `Papers/` | P-AgBot, P-AgSLAM, Agronav, ROW-SLAM, CropFollow. |
@@ -239,6 +283,27 @@ rewritten):
 ## 5. NEXT STEPS
 
 Tasks 1–13 are done except Section IV. Remaining, in priority order:
+
+**0. Resync `paper/paper.tex` from `AIAgNav_Technical.md`** (new, 2026-08-24).
+The markdown is the current draft; the LaTeX is a session-2 snapshot. The
+delta is mechanical and specific:
+
+- **Equations 7 → 4.** Merge `eq:midpoint` + `eq:offset` + `eq:slope` into one
+  `aligned` block (markdown Eq. 1); keep `eq:mpc_cost` as Eq. 2; merge
+  `eq:mpc_dynamics` + `eq:mpc_constraints` into one `aligned` block (Eq. 3);
+  keep `eq:accumulator` as Eq. 4. Cross-references in the prose change with them.
+- **Add the reference list.** `refs.bib` has the 6 verified entries; the markdown
+  reserves `[7]`–`[18]` with a topic per slot. Fill those from real sources
+  (task C) and the LaTeX list follows.
+- **Trim Table `tab:notation`** to the ~18 rows the markdown keeps.
+- **Section IV** becomes the reserved placeholder the markdown carries
+  (evaluation criteria + MDBI definition written for real, then table skeletons).
+- Section III's prose in the markdown has been trimmed past the LaTeX in III-B
+  and III-D; port those two paragraphs.
+
+Then `rm -f paper.pdf && make && make pages`. Expect the reference list to cost
+roughly half a page, so budget a trim of Section II or the introduction's
+fourth paragraph.
 
 **A. Section IV Experimental Results (~1,003 w).** Deferred by the user on
 2026-08-13 — write it when field data exists. What is on this machine today is
