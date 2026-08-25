@@ -36,3 +36,6 @@ __pycache__/
 
 # Windows metadata files created when downloading in Windows then accessing via WSL
 *:Zone.Identifier
+
+# Derived: regenerate with `zip -j AIAgNav_Overleaf.zip AIAgNav_Overleaf.tex`
+AIAgNav_Overleaf.zip
