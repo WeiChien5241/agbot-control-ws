@@ -23,19 +23,28 @@ user deferred until field data exists. Commits: `9e243b0`, `63f3d01`, `d10aea7`,
 
 ---
 
-## 0. THE TWO DOCUMENTS — read this before touching either
+## 0. THE THREE DOCUMENTS — read this before touching any of them
 
-There are now **two paper-shaped artefacts**, and confusing them wasted a session:
+There are now **three paper-shaped artefacts**, and confusing them wasted a
+session:
 
 | File | What it is | Length |
 |---|---|---|
-| `paper/paper.tex` | The LaTeX **submission**. IEEEtran two-column. | 6/8 pages, 4,823 w |
+| `AIAgNav_Overleaf.tex` | **What the user actually submits from.** Single self-contained file: inline TikZ, `thebibliography`, pure ASCII, no external deps. Upload alone to Overleaf. | **7/8 pages** |
 | `AIAgNav_Technical.md` | The same paper in **markdown**, for reading and for Word. | 6,563 body w |
+| `paper/paper.tex` | The original multi-file LaTeX build (`\input{fig/*}` + BibTeX). **Superseded.** | 6/8 pages, 4,823 w |
 
-They carry the same content and the same four equations' worth of argument, but
-`paper.tex` still has the **7-equation** structure from session 2 and no
-reference list. **The markdown is now ahead.** Resync `paper.tex` from it
-(next steps, task 0) before doing anything else to the LaTeX.
+⚠ **`AIAgNav_Overleaf.tex` and `AIAgNav_Technical.md` are in sync** (4 equations,
+same prose, same reserved §IV). `paper/paper.tex` still has the **7-equation**
+session-2 structure and no reference list, and is now the odd one out. Prefer
+retiring it over resyncing it — the single-file version removed the two build
+traps that cost debugging cycles (the empty-bibliography fatal and the stale
+`paper.bbl`), because there is no BibTeX pass at all.
+
+**Verified 2026-08-25**: `pdflatex` twice → 0 errors, 0 undefined references,
+0 overfull boxes, 7 pages; also builds under `lualatex`. Both TikZ figures and
+all four equations were checked by rasterizing the PDF, not just by a clean exit
+code.
 
 ⚠ **Word page count is not the submission page count.** The user measured 37
 Word pages and was right to be alarmed, but Word renders single-column at 11 pt
@@ -284,9 +293,10 @@ rewritten):
 
 Tasks 1–13 are done except Section IV. Remaining, in priority order:
 
-**0. Resync `paper/paper.tex` from `AIAgNav_Technical.md`** (new, 2026-08-24).
-The markdown is the current draft; the LaTeX is a session-2 snapshot. The
-delta is mechanical and specific:
+**0. Decide what happens to `paper/paper.tex`** (2026-08-24, updated 08-25).
+`AIAgNav_Overleaf.tex` now supersedes it and is already in sync with the
+markdown, so the cheap move is to retire `paper/` rather than resync it. If it
+is kept, the delta from the markdown is mechanical and specific:
 
 - **Equations 7 → 4.** Merge `eq:midpoint` + `eq:offset` + `eq:slope` into one
   `aligned` block (markdown Eq. 1); keep `eq:mpc_cost` as Eq. 2; merge
