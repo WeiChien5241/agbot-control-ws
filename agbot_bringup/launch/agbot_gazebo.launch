@@ -7,12 +7,16 @@
   <!-- Spawn pose in the corn field. For virtual_maize_field worlds the
        correct pose is generated per-world: read it from
        ~/.ros/virtual_maize_field/robot_spawner.launch (also printed by
-       scripts/generate_small_maize_world.sh and switch_maize_world.sh) and
+       scripts/generate_maize_world.sh and switch_maize_world.sh) and
        pass x:= y:= z:= yaw:= if it differs from these defaults.
        Defaults below are for the SMALL maize world (agbot_maize_small.yaml,
        seed 42 so the pose is stable across regenerations).
-       Other worlds:
-         full maize snapshot:  x=3.16 y=-9.31 z=0.36 yaw=1.791 -->
+       Other worlds (NOT defaults; pass them explicitly):
+         full maize snapshot:  x=3.16  y=-9.31  z=0.36 yaw=1.791
+         long maize snapshot:  x=2.199 y=-5.806 z=0.35 yaw=1.600
+           (agbot_maize_long.yaml, seed 42: 8 rows x 9 m, 7 corridors,
+            451 plants, missing stand in rows 1/3/4/6. Mission arg is
+            num_rows:=7.) -->
   <arg name="x" default="0.777"/>
   <arg name="y" default="-4.331"/>
   <arg name="z" default="0.35"/>

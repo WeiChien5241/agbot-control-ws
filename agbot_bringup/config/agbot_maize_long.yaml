@@ -1,0 +1,83 @@
+# Long virtual_maize_field world: the SMALL world's visuals and cost profile,
+# scaled up for endurance testing. Same maize models, same ground texture and
+# the same coarse heightmap, so the segmentation model sees exactly what it
+# sees in the small world -- only the field geometry changes.
+#
+# Why it exists: the small world is 3 corridors x 6 m ~= 20 m of driving, which
+# is over before most failure modes have a chance to appear. This one is
+# 7 corridors x 9 m ~= 65 m and carries missing stand, so a run exercises
+# repeated headland turns and gappy rows rather than one clean pass.
+#
+# Master copy lives here (agbot_bringup is tracked in git);
+# scripts/generate_maize_world.sh copies it into virtual_maize_field/config/
+# (third-party, untracked) before generating, because generate_world.py only
+# reads configs from its own package.
+#
+#   rosrun agbot_bringup generate_maize_world.sh agbot_maize_long long
+#   rosrun agbot_bringup switch_maize_world.sh long|small|full
+#
+# Mission arg for this world: num_rows:=7  (8 plant rows -> 7 corridors).
+row_length: 9              # m (small: 6; full FRE worlds: 10-12)
+rows_count: 8              # 8 rows -> 7 corridors (mission num_rows:=7)
+row_segments:
+  - straight               # real corn fields are straight
+ground_resolution: 0.15    # coarse heightmap (the _fast preset value); this is
+                           # the biggest RTF driver -- keep it coarse. Raise it
+                           # further before shortening the field if RTF sags
+                           # under the ~520 plants this world contains.
+ground_elevation_max: 0.01 # nearly flat ground
+
+# Missing stand, per row -- the thing the small world deliberately does NOT
+# have (it uses hole_prob 0.0 so corridors are deterministic for FSM testing).
+# Real fields lose plants, and a gap in ONE side of a corridor is the exact
+# case exit_flank_edge_margin / exit_flank_min_clear_fraction exist to reject:
+# it widens the corridor to ~0.83 without being a row end. This world is where
+# that gets exercised.
+#
+# ⚠ Both keys take ONE VALUE PER ROW (world_description.py unpack_param), and
+# the generator deletes a CONTIGUOUS run of up to hole_size_max plants wherever
+# hole_prob fires (field_2d_generator.py, "generate holes in the maize field").
+# hole_size_max must be >= 2 wherever hole_prob > 0: the generator calls
+# rng.integers(1, hole_size_max[i]), which raises on low >= high. A 0 beside a
+# 0.00 probability is never reached -- that is the upstream fre21_task_* idiom.
+#
+# Rows 0 and 7 are the OUTER WALLS of the field and are kept solid on purpose:
+# a gap there opens onto the headland, which is indistinguishable from the end
+# of the row and would hand the exit detector a false positive that no amount
+# of flank checking can reject.
+hole_prob:     [0.00, 0.05, 0.00, 0.08, 0.03, 0.00, 0.10, 0.00]
+hole_size_max: [0,    4,    0,    6,    3,    0,    8,    0   ]
+
+seed: 42                   # reproducible layout AND reproducible spawn pose.
+                           # ⚠ The pose differs from the small world's despite
+                           # the shared seed -- the geometry differs, so read
+                           # the pose the generator prints; do not assume the
+                           # launch defaults apply.
+
+# --------------------------------------------------------------------------
+# WHAT SEED 42 ACTUALLY PRODUCED (dry-run of generate_world.py, 2026-09-02).
+# Recorded because hole_prob is applied PER PLANT and then deletes backwards,
+# so the realised gaps are noisy -- the table below is the ground truth, not
+# the probabilities above.
+#
+#   row  x (m)   plants  gaps > 0.5 m  max gap
+#     0  -2.70      61        0         0.21 m   <- outer wall, solid
+#     1  -1.95      54        1         0.63 m
+#     2  -1.20      60        0         0.20 m
+#     3  -0.45      59        0         0.30 m   <- 0.08 barely fired; noise
+#     4   0.30      58        1         0.50 m
+#     5   1.05      61        0         0.20 m
+#     6   1.80      37        6         1.09 m   <- the interesting row
+#     7   2.55      61        0         0.22 m   <- outer wall, solid
+#   total 451 plants (small world: 173), field 5.25 m x 9.65 m
+#
+# Row 6 is the one that earns this world: six sub-metre gaps on ONE side of
+# corridors 5 and 6 are the false-exit case that exit_flank_edge_margin and
+# exit_flank_min_clear_fraction exist to reject. A mid-row gap widens the
+# corridor to ~0.83 while leaving corn in the opposite flank strip; if the
+# robot fires EXIT_CLEAR there, the flank check is not doing its job.
+#
+# Spawn pose baked into this world (NOT the launch defaults, which are for the
+# small world) -- 0.93 m of headland run-in before the first plant, the same
+# margin the small world has:
+#   x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600
