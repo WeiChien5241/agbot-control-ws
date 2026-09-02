@@ -125,11 +125,41 @@ mpc_q_heading: 1.0       # heading error cost weight (anticipatory correction)
 mpc_r_control: 0.1       # control effort cost weight
 mpc_r_delta: 0.5         # control rate cost weight (smoothness / jerk suppression)
 
-# Speed envelope: sim-validated defaults (Gazebo demo). Raise on the real
-# robot via launch args, scaling angular_z_max, delta_angular_z_max, and
-# mpc_alpha proportionally with linear_x_cruise to preserve path curvature.
-# If steering is still too aggressive, try (in order, Gazebo first):
-# angular_z_max 0.15, delta_angular_z_max 0.1, mpc_r_delta 1.5 /
+# Speed envelope: sim-validated defaults (Gazebo demo). THESE THREE VALUES ARE
+# TUNED FOR linear_x_cruise 0.15 AND DO NOT TRANSFER. Raising the speed without
+# them is not a faster version of this controller, it is a different and worse
+# one -- do not hand-edit linear_x_cruise here for a fast run.
+#
+#     python3 scripts/speed_args.py 0.5 --control-period 0.13 --explain
+#
+# prints the whole set as roslaunch args (append them to the launch line with
+# $(...)); --explain shows the reasoning. src/agbot_vision_nav/speed_profile.py
+# holds the arithmetic and states which knobs deliberately do NOT scale.
+#
+# ⚠ WHY, because the failure is cheap to repeat. Path curvature is what keeps
+# a robot inside a row: kappa = angular_z / linear_x. An angular_z_max of 0.175
+# is a 0.86 m turn radius at 0.15 m/s and a 2.86 m radius at 0.5 m/s -- the
+# SAME clamp buying 3.3x less turning per metre driven. Row spacing is 0.75 m
+# and the robot is ~0.43 m wide, leaving ~0.16 m of clearance per side. A sim
+# run at 0.5 m/s with only linear_x_cruise raised (2026-09-02,
+# ~/agbot_logs/vision_nav_20260902_173947.csv) sat pinned at |angular_z| =
+# 0.175 for most frames, swung offset_norm -0.46 -> +0.31, and drove over every
+# plant. The controller did what it was told; the envelope was wrong.
+#
+# ⚠ mpc_dt is NOT part of the speed profile -- it is the MEASURED control
+# period of the machine (0.431 s on the laptop sim, ~0.04 s on the GPU robot).
+# That run left it at 0.1, so the MPC modelled roughly a quarter of the drift
+# actually occurring, on top of the speed error.
+#
+# ⚠ Do NOT respond to a fast run's WATCHDOG_ZERO events by raising
+# max_data_age_sec. At 0.5 m/s a 1.0 s window is half a metre of blind
+# driving, and the watchdog firing is a correct report that the loop cannot
+# keep up. In sim the answer is agbot_bringup/scripts/set_sim_rtf.sh, which
+# slows wall-clock time so the sim-time inference rate rises and every
+# threshold below stays self-consistent; on the robot it is a faster machine.
+#
+# If steering is too aggressive AT THE TUNED SPEED, try (in order, Gazebo
+# first): angular_z_max 0.15, delta_angular_z_max 0.1, mpc_r_delta 1.5 /
 # mpc_r_control 0.3, mpc_q_offset 5.0; on the CPU robot also mpc_dt 0.5.
 linear_x_cruise: 0.15        # forward speed (m/s)
 angular_z_max: 0.175         # hard clamp on |angular_z| (rad/s); was 0.3,
