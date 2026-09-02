@@ -79,14 +79,28 @@ roslaunch agbot_bringup agbot_gazebo.launch
 
 **World**: the launch includes `virtual_maize_field/launch/simulation.launch`,
 which loads whatever generated world is active in `~/.ros/virtual_maize_field/`.
-Two snapshots are kept under `~/.ros/virtual_maize_field_snapshots/` and swapped
-with `scripts/switch_maize_world.sh full|small`:
+Snapshots are kept under `~/.ros/virtual_maize_field_snapshots/` and swapped
+with `scripts/switch_maize_world.sh <name>` (it lists what exists):
 - **small** (default; matches the launch spawn-pose defaults): generated from
-  `config/agbot_maize_small.yaml` — 4 straight rows × 6 m, coarse flat
-  heightmap, seed 42. RTF ≈ 1.0 on the dev laptop. Regenerate with
-  `scripts/generate_small_maize_world.sh` (snapshots the current world first).
+  `config/agbot_maize_small.yaml` — 4 straight rows × 6 m, 173 plants, no
+  gaps, coarse flat heightmap, seed 42. RTF ≈ 1.0 on the dev laptop. 3
+  corridors ≈ 20 m of driving, `num_rows:=3`.
+- **long** (endurance): `config/agbot_maize_long.yaml` — 8 straight rows × 9 m,
+  451 plants, same models and heightmap as small so segmentation sees identical
+  visuals. 7 corridors ≈ 65 m, **`num_rows:=7`**, spawn pose
+  `x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600` (NOT the launch defaults).
+  Per-row `hole_prob` gives missing stand: rows 1/3/4 lose a little, **row 6
+  loses 24 plants in six gaps up to 1.09 m**. ⚠ The two OUTER rows are solid on
+  purpose — a gap there opens onto the headland and is indistinguishable from a
+  row end. Row 6 is the point of the world: a one-sided mid-row gap is exactly
+  what `exit_flank_edge_margin` / `exit_flank_min_clear_fraction` exist to
+  reject, so an `EXIT_CLEAR` fired mid-row-6 is a real defect, not noise.
 - **full**: the original FRE-style world (curved rows, dense heightmap).
   RTF < 0.1 on the laptop; spawn pose x:=3.16 y:=-9.31 z:=0.36 yaw:=1.791.
+
+Generate any of them with `scripts/generate_maize_world.sh <config> <snapshot>`
+(e.g. `agbot_maize_long long`); it snapshots the current world first.
+`generate_small_maize_world.sh` remains as a wrapper for the small one.
 
 A legacy lightweight `agbot_corn_rows.world` (plus its `dirt_ground` model) used
 to live in `agbot_bringup/`; it was removed on 2026-08-06 — the maize worlds are
@@ -126,7 +140,7 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 199 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 214 passed
 ```
 
 Performance report from a run (no ROS; CSVs are written automatically):
@@ -180,10 +194,37 @@ roslaunch agbot_vision_nav vision_nav.launch \
   camera_topic_is_compressed:=false
 ```
 
-Speed tuning happens on the real robot (RTX 4080), not in the laptop sim
-(RTF-limited): raise `linear_x_cruise` via launch args, scaling
-`angular_z_max`, `delta_angular_z_max`, and `mpc_alpha` proportionally with
-speed. Defaults stay at the sim-validated 0.15 m/s envelope.
+**Speed: never raise `linear_x_cruise` alone.** Defaults are the sim-validated
+0.15 m/s envelope, and `angular_z_max`, `delta_angular_z_max` and `mpc_alpha`
+are tuned *at that speed* and do not transfer. Path curvature is what keeps the
+robot in a row — `kappa = angular_z / linear_x` — so an unchanged
+`angular_z_max` of 0.175 is a 0.86 m turn radius at 0.15 m/s and a **2.86 m
+radius at 0.5 m/s**: 3.3× less turning per metre driven, against ~0.16 m of
+clearance per side in a 0.75 m row. A sim run that raised only the speed sat
+pinned at the clamp and drove over every plant (2026-09-02,
+`~/agbot_logs/vision_nav_20260902_173947.csv`; HANDOFF3 §0f). Use:
+
+```bash
+roslaunch agbot_vision_nav vision_nav.launch model_path:=... \
+  $(python3 agbot_vision_nav/scripts/speed_args.py 0.5 --control-period 0.13)
+```
+
+`src/agbot_vision_nav/speed_profile.py` holds the arithmetic and states which
+knobs deliberately do NOT scale: `mpc_beta` (a heading rate, speed-independent),
+`mpc_dt` (the MEASURED control period of the machine — 0.431 s on the laptop
+sim, ~0.04 s on the GPU robot — not a speed constant), and every
+distance-valued detector threshold (speed-invariant by design; that is what
+fixed the 2026-07-24 field failure).
+
+⚠ **Do not raise `max_data_age_sec` to silence a fast run's `WATCHDOG_ZERO`
+events** — at 0.5 m/s a 1.0 s window is half a metre of blind driving, and the
+watchdog is correctly reporting that the loop cannot keep up. In sim the answer
+is `agbot_bringup/scripts/set_sim_rtf.sh <factor>`: `use_sim_time` is on, so
+slowing wall-clock time raises the *sim-time* inference rate and leaves every
+threshold self-consistent (RTF 0.3 turns a 0.431 s wall cycle into a 0.13 s sim
+cycle, ~7.7 Hz — the same feedback-per-metre as the proven 0.15 m/s runs). The
+run then measures the controller instead of the laptop. On the robot the answer
+is a faster machine.
 
 **Where to change a parameter**: `agbot_vision_nav/config/params.yaml`. Edit a
 value there and it takes effect. Launch `<arg>`s default to EMPTY and their
@@ -212,6 +253,31 @@ roslaunch agbot_vision_nav vision_nav.launch \
   model_path:=... camera_topic:=/camera/image_raw camera_topic_is_compressed:=false \
   mission_enabled:=true num_rows:=3
 ```
+
+Endurance run on the **long** world (65 m, 7 corridors, gappy rows), at the
+proven speed and then at a scaled 0.5 m/s with the simulator throttled so the
+run measures the controller rather than the laptop:
+
+```bash
+rosrun agbot_bringup switch_maize_world.sh long
+roslaunch agbot_bringup agbot_gazebo.launch x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600
+
+# baseline, proven envelope
+roslaunch agbot_vision_nav vision_nav.launch model_path:=... sim:=true \
+  mission_enabled:=true num_rows:=7 rear_camera_enabled:=true
+
+# fast run: throttle Gazebo FIRST, then scale the coupled knobs
+rosrun agbot_bringup set_sim_rtf.sh 0.3
+roslaunch agbot_vision_nav vision_nav.launch model_path:=... sim:=true \
+  mission_enabled:=true num_rows:=7 rear_camera_enabled:=true \
+  $(python3 agbot_vision_nav/scripts/speed_args.py 0.5 --control-period 0.13)
+```
+
+Compare the two CSVs with `analyze_run.py`. The fast run passes only if
+`WATCHDOG_ZERO` is 0, `|angular_z|` p95 is strictly below the new clamp
+(0.583 — still pinned means the scaling did not take), and the FOLLOW_ROW RMS
+`offset_norm` is comparable to the baseline. Same world and mount, so that
+comparison is legitimate; across rigs it never is.
 
 Smoke-test the segmentation model on one saved image (no ROS; uses the
 `~/agbot_venv` virtualenv where `lightly_train`/`torch` are installed):

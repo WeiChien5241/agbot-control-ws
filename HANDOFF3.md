@@ -1,12 +1,191 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-08-07.
-**Read §0e first.** The rear-camera headland leg ran in sim for the first time
-today, failed three times, and ends the session **working** — a full 3-row
-mission. Everything below §0e describes the state before that.
+Handoff for the P-AgBot vision-nav work, updated end of session 2026-09-02.
+**Read §0f first.** A 0.5 m/s sim run drove over every plant; the run's metrics
+CSV says why, and the answer is arithmetic rather than opinion. Everything
+below §0f describes the state before that.
 
-⚠ **None of today's work has reached the GPU robot** (cpr-j100-0864, last
+⚠ **Nothing since 2026-08-06 has reached the GPU robot** (cpr-j100-0864, last
 updated to `0936f3b`). See the bundle flow in §0b; `catkin build` is required.
+
+---
+
+## 0f. SESSION 2026-09-02 — why 0.5 m/s ran over the corn, and a world long enough to test in
+
+### The question
+
+A sim run at `linear_x_cruise:=0.5` (and above) flattened the crop immediately.
+Was that the laptop being too slow to keep up, or a real controller failure
+that would repeat on the robot? A colleague runs a different self-centring
+method in real corn at 0.9 m/s, so "0.5 is simply too fast" was not a credible
+answer on its own.
+
+### The answer: dominantly the loop rate — but not the way it looked
+
+**The run wrote `~/agbot_logs/vision_nav_20260902_173947.csv`** (56 frames,
+24 s, 7.9 m). This is also, incidentally, the first metrics CSV ever produced
+by a real run and read back by `analyze_run.py` — §0e "Next action" item 7 is
+now CLOSED.
+
+| measurement | value | what it is at 0.5 m/s |
+|---|---|---|
+| control period | **0.431 s** mean (2.3 Hz) | **0.22 m of open-loop travel per decision** (0.065 m at 0.15 m/s) |
+| end-to-end latency | **549 ms** mean, **850 ms** p95 | the command acts on a view **0.27 m** (p95 **0.43 m**) out of date |
+| `WATCHDOG_ZERO` | **12 events** | the loop repeatedly blew `max_data_age_sec` (0.5 s) — stutter-driving |
+| \|angular_z\| | mean 0.134, **p95 0.175 = the clamp** | steering **saturated**, not merely busy |
+| \|offset_norm\| | RMS 0.238, max 0.477, swinging −0.46 → +0.31 | a saturated limit cycle, not tracking |
+| invalid frames | 25 % | a quarter of the cycles steered on the previous command |
+
+Row spacing is 0.75 m and the Jackal is ~0.43 m wide → **~0.16 m of clearance
+per side.** The latency term alone (0.27 m) is bigger than the entire one-side
+margin. That is the crash.
+
+**But it is NOT "the node hadn't finished calculating and the robot took off".**
+It calculated on every frame and published every time. Three speed-coupled
+things were left at their 0.15 m/s values while the speed was tripled:
+
+**1. `angular_z_max` was never scaled — this is the biggest one.** Path
+curvature is what keeps a robot inside a row:
+
+```
+kappa = angular_z / linear_x        [1/m]
+```
+
+`angular_z_max` 0.175 is a **0.86 m** turn radius at 0.15 m/s and a **2.86 m**
+turn radius at 0.5 m/s. The same clamp buys **3.3× less turning per metre
+driven**. That is why `angular_z` sits pinned at the limit while the offset
+keeps growing: the authority to correct was not there. ⚠ **The controller did
+exactly what it was told.** This is the same shape of mistake as §0e defect 2 —
+do not respond to it by retuning the MPC.
+
+**2. `mpc_dt` was 0.1 s while the real period was 0.431 s.** `controller.py`
+scales `alpha` by `dt/0.1`, so the model of lateral drift was ~4.3× too small;
+`mpc_alpha` is itself a 0.15 m/s constant, another 3.3×. **The MPC was
+modelling roughly 1/14th of the drift actually happening** — it under-corrects
+early, then saturates once it is too late. `mpc_dt` is a property of the
+MACHINE, not of the speed: ~0.04 s on the GPU robot, 0.431 s here.
+
+**3. `max_data_age_sec` = 0.5 s is a distance at speed** — 0.25 m of blind
+driving before the watchdog even notices.
+
+### ⚠ The colleague's 0.9 m/s is not evidence against any of this
+
+On the GPU robot (16 ms inference, ~24 Hz) the latency term collapses to ~5 cm
+at 0.9 m/s, so the dominant term here is simply absent there. That is why the
+comparison felt contradictory. **The clamp and `mpc_alpha` scaling are still
+required on that robot** — nothing in this pipeline scales them for you, and a
+0.86 m tightest radius at 0.9 m/s needs `angular_z_max` ≈ 1.05.
+
+### What was built
+
+**`speed_profile.py` + `scripts/speed_args.py`.** Scales `angular_z_max`,
+`delta_angular_z_max` and `mpc_alpha` proportionally with `linear_x_cruise`,
+holding `kappa_max` invariant. Output is roslaunch args, so `params.yaml` stays
+the source of truth (a second rosparam file would recreate the pre-2026-07-30
+two-files-in-charge bug):
+
+```bash
+roslaunch agbot_vision_nav vision_nav.launch model_path:=... sim:=true \
+  mission_enabled:=true num_rows:=7 rear_camera_enabled:=true \
+  $(python3 agbot_vision_nav/scripts/speed_args.py 0.5 --control-period 0.13)
+```
+
+⚠ **What deliberately does NOT scale, and why** (the durable half —
+`test_speed_profile.py` pins each one):
+- **`mpc_beta`** — control effectiveness is a heading rate, `theta_dot =
+  angular_z`, independent of forward speed. Scaling it would tell the MPC that
+  driving faster makes it turn harder.
+- **`mpc_dt`** — the measured control period, not a speed constant. Passed
+  separately, and omitted entirely when not measured: guessing is worse than
+  leaving the yaml alone.
+- **Every distance-valued detector threshold.** They are speed-invariant BY
+  DESIGN — moving debounce from frames to metres is exactly what fixed the
+  2026-07-24 field failure. Scaling them here would undo it.
+
+**`agbot_bringup/scripts/set_sim_rtf.sh <factor>`.** This is the part worth
+internalising, because it changes what a fast sim run means.
+
+⚠ **Do NOT raise `max_data_age_sec` to stop the `WATCHDOG_ZERO` events.** At
+0.5 m/s a 1.0 s window is half a metre of blind driving, and the watchdog was
+issuing a correct report that the loop could not keep up. Throttle the
+simulator instead: `use_sim_time` is already true, so `max_data_age_sec`,
+`blocked_confirm_seconds`, `mpc_dt`, every detector distance and every metrics
+timestamp are in **sim** seconds. At RTF 0.3 the 0.431 s wall cycle becomes a
+**0.13 s cycle in sim time** — ~7.7 Hz, the same feedback-per-metre as the
+field-proven 0.15 m/s runs — **without changing one tuning value.** The run
+then tests the controller at 0.5 m/s instead of testing the laptop.
+
+**The long maize world** (`config/agbot_maize_long.yaml`, snapshot `long`).
+The small world is 3 corridors × 6 m ≈ 20 m, over before most failure modes
+appear. This one is 8 rows / **7 corridors × 9 m ≈ 65 m**, 451 plants, same
+models and the same coarse heightmap so segmentation sees identical visuals.
+
+Per-row `hole_prob` gives missing stand. What seed 42 actually produced (the
+probabilities are applied per plant, so the realised gaps are noisy — the table
+is the ground truth):
+
+| row | plants | gaps > 0.5 m | max gap | |
+|---|---|---|---|---|
+| 0 | 61 | 0 | 0.21 m | outer wall, solid |
+| 1 | 54 | 1 | 0.63 m | |
+| 2 | 60 | 0 | 0.20 m | |
+| 3 | 59 | 0 | 0.30 m | 0.08 barely fired |
+| 4 | 58 | 1 | 0.50 m | |
+| 5 | 61 | 0 | 0.20 m | |
+| 6 | **37** | **6** | **1.09 m** | the interesting row |
+| 7 | 61 | 0 | 0.22 m | outer wall, solid |
+
+⚠ **The outer rows are solid on purpose.** A gap in row 0 or 7 opens onto the
+headland, which is indistinguishable from a row end — a false positive no
+amount of flank checking can reject. Row 6 is what earns the world: six
+sub-metre gaps on ONE side of corridors 5 and 6 are precisely the case
+`exit_flank_edge_margin` / `exit_flank_min_clear_fraction` exist to reject. **If
+the robot fires `EXIT_CLEAR` in the middle of row 6, the flank check is not
+doing its job** — that is a finding, not a nuisance.
+
+```bash
+rosrun agbot_bringup generate_maize_world.sh agbot_maize_long long
+rosrun agbot_bringup switch_maize_world.sh long|small|full
+roslaunch agbot_bringup agbot_gazebo.launch \
+  x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600        # NOT the launch defaults
+```
+
+`generate_small_maize_world.sh` is now a wrapper over the generalised
+`generate_maize_world.sh <config> <snapshot>`; `switch_maize_world.sh` already
+took any snapshot name and is unchanged.
+
+### 199 → 214 tests
+
+### Next action
+
+Two runs on the long world, in this order. **The pass conditions are written
+down first, so the run cannot be argued into a success afterwards.**
+
+1. **Control run** — long world, proven 0.15 m/s envelope, `num_rows:=7`.
+   Confirms the world is drivable and gives a same-world baseline. Watch row 6:
+   an `EXIT_CLEAR` fired mid-row there is a real flank-check defect.
+2. **Speed run** — `set_sim_rtf.sh 0.3`, then the `speed_args.py 0.5` line
+   above. Read the startup config block to confirm the scaled values resolved.
+
+Then `analyze_run.py` on both CSVs side by side:
+
+- **`WATCHDOG_ZERO` → 0.** Anything left means the loop still cannot keep up in
+  sim time; lower the RTF further before touching tuning.
+- **`|angular_z|` p95 strictly below the new clamp (0.583).** Still pinned at
+  the clamp means the scaling did not take.
+- **FOLLOW_ROW RMS `offset_norm` comparable to the control run.** Same world,
+  same mount, so this comparison is legitimate — unlike across rigs.
+- **No plants knocked over.**
+
+⚠ If the speed run still runs over corn *with* zero watchdog events and
+unsaturated steering, then loop rate was not the whole story, and the next
+suspect is the border-clipped scan rows of §0d defect #1 candidate (a), which
+bias the midpoint harder as the error grows. **Do not respond by raising
+`angular_z_max` past the scaled value.**
+
+Still open and unchanged: **the flat tire and its two drift tests come before
+reading anything into row hugging**, and §0d defects #3, #4, #5 remain
+diagnosed but deliberately unfixed. The GPU robot still has none of this.
 
 ---
 
@@ -251,8 +430,9 @@ thing: `sim:=true` on the vision-nav launch.
 5. The debug view switches to the rear ONCE at the start of the leg and back at
    the end — no flipping.
 6. Pause mid-row, wait 30 s, resume (still never exercised).
-7. **A metrics CSV exists afterwards** and `analyze_run.py` reads it — still
-   never produced from a real run.
+7. **A metrics CSV exists afterwards** and `analyze_run.py` reads it. ✅ **CLOSED
+   2026-09-02** — `~/agbot_logs/vision_nav_20260902_173947.csv` is the first
+   one produced by a real run and read back by the report; §0f is built on it.
 
 `exit_clear_rear_steering:=false` gives the old open-loop leg for an A/B.
 
@@ -603,9 +783,11 @@ plus an unticked box is equally valid.
 - **The panel itself HAS now been run** and both bugs the first run exposed are
   fixed. Still unexercised: Start mission end to end, pause/resume, and Stop
   on a vision-nav launch (only Stop-on-Gazebo has been tried).
-- **Still no metrics CSV from the field.** The 2026-08-05 run produced none, so
+- **Still no metrics CSV from the FIELD.** The 2026-08-05 run produced none, so
   every number about row hugging remains unmeasured. Confirm the `metrics:`
-  path in the startup config block BEFORE rolling.
+  path in the startup config block BEFORE rolling. (A SIM run has since
+  produced one — see §0f — so the logger itself is proven end to end; what is
+  missing is a field run, which is what the hugging number needs.)
 - Everything in §0c's, §0b's and §0a's "Still open" lists, unchanged.
 
 ### Agreed test order for the next session
