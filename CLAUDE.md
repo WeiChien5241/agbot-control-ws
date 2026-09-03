@@ -85,16 +85,25 @@ with `scripts/switch_maize_world.sh <name>` (it lists what exists):
   `config/agbot_maize_small.yaml` — 4 straight rows × 6 m, 173 plants, no
   gaps, coarse flat heightmap, seed 42. RTF ≈ 1.0 on the dev laptop. 3
   corridors ≈ 20 m of driving, `num_rows:=3`.
-- **long** (endurance): `config/agbot_maize_long.yaml` — 8 straight rows × 9 m,
-  451 plants, same models and heightmap as small so segmentation sees identical
-  visuals. 7 corridors ≈ 65 m, **`num_rows:=7`**, spawn pose
-  `x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600` (NOT the launch defaults).
-  Per-row `hole_prob` gives missing stand: rows 1/3/4 lose a little, **row 6
-  loses 24 plants in six gaps up to 1.09 m**. ⚠ The two OUTER rows are solid on
-  purpose — a gap there opens onto the headland and is indistinguishable from a
-  row end. Row 6 is the point of the world: a one-sided mid-row gap is exactly
-  what `exit_flank_edge_margin` / `exit_flank_min_clear_fraction` exist to
-  reject, so an `EXIT_CLEAR` fired mid-row-6 is a real defect, not noise.
+- **long** (endurance): `config/agbot_maize_long.yaml` — 6 straight rows × 9 m,
+  342 plants, same models and heightmap as small so segmentation sees identical
+  visuals. 5 corridors ≈ 45 m, **`num_rows:=5`**, spawn pose
+  `x:=1.531 y:=-5.830 z:=0.35 yaw:=1.575` (NOT the launch defaults — and read
+  the pose the generator PRINTS; that one wins). Per-row `hole_prob` gives
+  light missing stand in the four inner rows; **every hole is exactly ONE
+  plant** (`hole_size_max: 2`, and `rng.integers(1, n)` is half-open), so the
+  widest gap in the world is 0.38 m against 0.75 m row spacing. ⚠ The two
+  OUTER rows are solid on purpose — a gap there opens onto the headland and is
+  indistinguishable from a row end.
+  ⚠ **Revised 2026-09-02 (second pass).** This world was 8 rows × 451 plants
+  with holes up to 7 plants (1.09 m) wide, and it was not usable: the dev
+  laptop's RTF sagged until Gazebo stalled in bursts and the debug overlay
+  stopped tracking in real time, and the wide holes read as row ends often
+  enough that a crash could not be attributed to any one cause. It is now a
+  clean endurance baseline — no gap in it is ambiguous, so an `EXIT_CLEAR`
+  fired mid-row here is a detector defect with nothing to hide behind. The
+  8-row flank-check stress world is recoverable from git history; if that case
+  is wanted back it belongs in its OWN config, not in the endurance baseline.
 - **full**: the original FRE-style world (curved rows, dense heightmap).
   RTF < 0.1 on the laptop; spawn pose x:=3.16 y:=-9.31 z:=0.36 yaw:=1.791.
 
@@ -254,22 +263,22 @@ roslaunch agbot_vision_nav vision_nav.launch \
   mission_enabled:=true num_rows:=3
 ```
 
-Endurance run on the **long** world (65 m, 7 corridors, gappy rows), at the
+Endurance run on the **long** world (45 m, 5 corridors, light gaps), at the
 proven speed and then at a scaled 0.5 m/s with the simulator throttled so the
 run measures the controller rather than the laptop:
 
 ```bash
 rosrun agbot_bringup switch_maize_world.sh long
-roslaunch agbot_bringup agbot_gazebo.launch x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600
+roslaunch agbot_bringup agbot_gazebo.launch x:=1.531 y:=-5.830 z:=0.35 yaw:=1.575
 
 # baseline, proven envelope
 roslaunch agbot_vision_nav vision_nav.launch model_path:=... sim:=true \
-  mission_enabled:=true num_rows:=7 rear_camera_enabled:=true
+  mission_enabled:=true num_rows:=5 rear_camera_enabled:=true
 
 # fast run: throttle Gazebo FIRST, then scale the coupled knobs
 rosrun agbot_bringup set_sim_rtf.sh 0.3
 roslaunch agbot_vision_nav vision_nav.launch model_path:=... sim:=true \
-  mission_enabled:=true num_rows:=7 rear_camera_enabled:=true \
+  mission_enabled:=true num_rows:=5 rear_camera_enabled:=true \
   $(python3 agbot_vision_nav/scripts/speed_args.py 0.5 --control-period 0.13)
 ```
 

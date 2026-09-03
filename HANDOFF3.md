@@ -86,7 +86,7 @@ two-files-in-charge bug):
 
 ```bash
 roslaunch agbot_vision_nav vision_nav.launch model_path:=... sim:=true \
-  mission_enabled:=true num_rows:=7 rear_camera_enabled:=true \
+  mission_enabled:=true num_rows:=5 rear_camera_enabled:=true \
   $(python3 agbot_vision_nav/scripts/speed_args.py 0.5 --control-period 0.13)
 ```
 
@@ -117,37 +117,64 @@ then tests the controller at 0.5 m/s instead of testing the laptop.
 
 **The long maize world** (`config/agbot_maize_long.yaml`, snapshot `long`).
 The small world is 3 corridors × 6 m ≈ 20 m, over before most failure modes
-appear. This one is 8 rows / **7 corridors × 9 m ≈ 65 m**, 451 plants, same
+appear. This one is 6 rows / **5 corridors × 9 m ≈ 45 m**, 342 plants, same
 models and the same coarse heightmap so segmentation sees identical visuals.
 
-Per-row `hole_prob` gives missing stand. What seed 42 actually produced (the
-probabilities are applied per plant, so the realised gaps are noisy — the table
-is the ground truth):
+⚠ **REVISED LATER THE SAME DAY — read this instead of the paragraph it
+replaces.** The world was first built as 8 rows / 451 plants with per-row
+`hole_size_max` up to 8. It was not usable on the dev laptop and the user
+stopped the endurance run to say so, in three specific symptoms worth keeping
+because each has a different cause:
 
-| row | plants | gaps > 0.5 m | max gap | |
-|---|---|---|---|---|
-| 0 | 61 | 0 | 0.21 m | outer wall, solid |
-| 1 | 54 | 1 | 0.63 m | |
-| 2 | 60 | 0 | 0.20 m | |
-| 3 | 59 | 0 | 0.30 m | 0.08 barely fired |
-| 4 | 58 | 1 | 0.50 m | |
-| 5 | 61 | 0 | 0.20 m | |
-| 6 | **37** | **6** | **1.09 m** | the interesting row |
-| 7 | 61 | 0 | 0.22 m | outer wall, solid |
+1. **Gazebo stalled in bursts** — "as if someone pressed pause". 451 plants,
+   each a separate SDF model with collision geometry, is what a 2.6× plant
+   count over the small world costs. Plant count, not field length, is the
+   physics driver.
+2. **The debug overlay stopped updating in real time.** That is the §0f loop
+   rate seen from the outside: at RTF well under 1 the 2.3 Hz pipeline drops
+   to a slideshow. Nothing was wrong with `debug_viz.py`.
+3. **Crashes into corn could not be attributed.** This is the one that
+   actually mattered. Row 6's holes deleted up to **7 consecutive plants
+   (1.09 m)** — wider than the 0.75 m row spacing — so a mid-row gap was
+   genuinely indistinguishable from a row end. With a laggy sim AND ambiguous
+   geometry in the same run, a crash had two sufficient explanations and the
+   run proved nothing.
 
-⚠ **The outer rows are solid on purpose.** A gap in row 0 or 7 opens onto the
-headland, which is indistinguishable from a row end — a false positive no
-amount of flank checking can reject. Row 6 is what earns the world: six
-sub-metre gaps on ONE side of corridors 5 and 6 are precisely the case
-`exit_flank_edge_margin` / `exit_flank_min_clear_fraction` exist to reject. **If
-the robot fires `EXIT_CLEAR` in the middle of row 6, the flank check is not
-doing its job** — that is a finding, not a nuisance.
+Fixed by removing two rows (8 → 6, `num_rows:=5`) and capping every hole at
+**exactly one plant**: `hole_size_max: 2`, because `rng.integers(1, n)` is
+half-open and therefore always returns 1. Realised worst gap is now **0.38 m**,
+against 0.75 m row spacing — visible missing stand that cannot be read as a row
+end. Seed-42 dry run:
+
+| row | x (m) | plants | gaps > 0.5 m | max gap | |
+|---|---|---|---|---|---|
+| 0 | −1.87 | 60 | 0 | 0.20 m | outer wall, solid |
+| 1 | −1.13 | 55 | 0 | 0.37 m | |
+| 2 | −0.37 | 58 | 0 | 0.34 m | |
+| 3 | 0.38 | 52 | 0 | 0.37 m | |
+| 4 | 1.12 | 56 | 0 | 0.38 m | |
+| 5 | 1.87 | 61 | 0 | 0.22 m | outer wall, solid |
+
+342 plants, field 3.75 m × 9.65 m, spawn `x:=1.531 y:=-5.830 z:=0.35
+yaw:=1.575`.
+
+⚠ **What this world can no longer do, on purpose.** The 8-row version existed
+to feed `exit_flank_edge_margin` / `exit_flank_min_clear_fraction` a one-sided
+mid-row gap wide enough to be tempting. That case is real and still untested —
+but it does not belong in the endurance baseline, because a baseline whose
+failures are ambiguous is not a baseline. If it is wanted back, give it its own
+config (`agbot_maize_gappy.yaml`, one row with `hole_size_max: 8`, short field)
+rather than reverting this one. The 8-row config is in git history.
+
+⚠ **The outer rows are still solid on purpose.** A gap in row 0 or 5 opens onto
+the headland, which is indistinguishable from a row end — a false positive no
+amount of flank checking can reject.
 
 ```bash
 rosrun agbot_bringup generate_maize_world.sh agbot_maize_long long
 rosrun agbot_bringup switch_maize_world.sh long|small|full
 roslaunch agbot_bringup agbot_gazebo.launch \
-  x:=2.199 y:=-5.806 z:=0.35 yaw:=1.600        # NOT the launch defaults
+  x:=1.531 y:=-5.830 z:=0.35 yaw:=1.575        # NOT the launch defaults
 ```
 
 `generate_small_maize_world.sh` is now a wrapper over the generalised
@@ -161,9 +188,11 @@ took any snapshot name and is unchanged.
 Two runs on the long world, in this order. **The pass conditions are written
 down first, so the run cannot be argued into a success afterwards.**
 
-1. **Control run** — long world, proven 0.15 m/s envelope, `num_rows:=7`.
-   Confirms the world is drivable and gives a same-world baseline. Watch row 6:
-   an `EXIT_CLEAR` fired mid-row there is a real flank-check defect.
+1. **Control run** — long world, proven 0.15 m/s envelope, `num_rows:=5`.
+   ⚠ **Regenerate first** (`generate_maize_world.sh agbot_maize_long long`) —
+   the snapshot on disk is still the old 8-row world. Confirms the world is
+   drivable and gives a same-world baseline. No gap in this world exceeds
+   0.38 m, so an `EXIT_CLEAR` fired mid-row is a detector defect outright.
 2. **Speed run** — `set_sim_rtf.sh 0.3`, then the `speed_args.py 0.5` line
    above. Read the startup config block to confirm the scaled values resolved.
 
