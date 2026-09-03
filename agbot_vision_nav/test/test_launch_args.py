@@ -86,6 +86,54 @@ def test_unknown_field_raises_rather_than_being_dropped():
         mission_launch_args(MODEL, linear_x_cruse="0.2")
 
 
+def test_cameras_launch_args_wdr_front_passes_nothing():
+    """"wdr" is cameras.launch's own default (front:=true brio_front:=false),
+    so the default call and an explicit wdr call must be identical -- that is
+    what keeps every existing caller (and the test above) working unchanged."""
+    assert cameras_launch_args(front_source="wdr") == cameras_launch_args()
+
+
+def test_cameras_launch_args_brio_front_overrides_both_toggles():
+    argv = cameras_launch_args(front_source="brio_front")
+    assert args_of(argv) == {"front": "false", "brio_front": "true"}
+
+
+def test_cameras_launch_args_rejects_unknown_front_source():
+    with pytest.raises(ValueError):
+        cameras_launch_args(front_source="gopro")
+
+
+def test_mission_launch_args_brio_front_sets_camera_topic():
+    """The Brio swap changes which topic vision_nav_node must subscribe to,
+    not just which node cameras.launch starts -- the two launch files share
+    no state, so mission_launch_args has to carry this too."""
+    argv = mission_launch_args(MODEL, front_source="brio_front")
+    assert args_of(argv)["camera_topic"] == "/brio_front/image_raw/compressed"
+    assert args_of(argv)["camera_topic_is_compressed"] == "true"
+
+
+def test_mission_launch_args_wdr_front_passes_no_camera_topic():
+    """wdr is vision_nav.launch's own default (/usb_cam/.../compressed), so
+    it must not be passed explicitly -- passing it would silently stop a
+    camera_topic:= override on the roslaunch command line (if anyone ever
+    added one) from winning, same as any other blank-field rule in this repo.
+    """
+    argv = mission_launch_args(MODEL, front_source="wdr")
+    assert "camera_topic" not in args_of(argv)
+
+
+def test_mission_launch_args_sim_ignores_front_source():
+    """There is no Brio in Gazebo -- sim always wins the camera_topic."""
+    argv = mission_launch_args(MODEL, sim=True, front_source="brio_front")
+    assert "camera_topic" not in args_of(argv)
+    assert "sim:=true" in argv
+
+
+def test_mission_launch_args_rejects_unknown_front_source():
+    with pytest.raises(ValueError):
+        mission_launch_args(MODEL, front_source="gopro")
+
+
 def test_frame_source_is_always_the_real_cameras():
     """The panel never starts Gazebo.
 

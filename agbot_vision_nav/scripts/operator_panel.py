@@ -182,6 +182,14 @@ class OperatorPanel(QWidget):
     def _build_cameras_box(self):
         box = QGroupBox("1. Frame source")
         row = QHBoxLayout(box)
+        self._front_source = QComboBox()
+        # userData is what launch_args.py expects ("wdr"/"brio_front"); the
+        # label is just what the operator reads. Restart cameras after
+        # switching this -- it only takes effect on the next Start, same as
+        # every other field here.
+        self._front_source.addItem("front: WDR", "wdr")
+        self._front_source.addItem("front: Brio (spare)", "brio_front")
+        row.addWidget(self._front_source)
         self._cameras_btn = QPushButton("Start cameras")
         self._cameras_btn.clicked.connect(self._toggle_cameras)
         row.addWidget(self._cameras_btn)
@@ -261,7 +269,9 @@ class OperatorPanel(QWidget):
             return
         # Real-robot USB bringup only. In simulation this button is disabled
         # (see _refresh) because Gazebo belongs in its own terminal.
-        ok, message = self._cameras.start(cameras_launch_args())
+        ok, message = self._cameras.start(
+            cameras_launch_args(front_source=self._front_source.currentData())
+        )
         self._log(message)
 
     def _mission_args(self):
@@ -270,6 +280,7 @@ class OperatorPanel(QWidget):
         return mission_launch_args(
             self._model_path.text(),
             sim=self._sim.isChecked(),
+            front_source=self._front_source.currentData(),
             mission_enabled=self._mission_enabled.isChecked(),
             rear_camera_enabled=self._rear_enabled.isChecked(),
             num_rows=self._num_rows.text(),
@@ -348,10 +359,15 @@ class OperatorPanel(QWidget):
         self._cameras_btn.setText(
             "Stop cameras" if self._cameras.running() else "Start cameras"
         )
+        # Switching this while cameras.launch is up would desync it from the
+        # camera_topic already baked into a running (or about to start)
+        # mission -- lock it until Stop cameras.
+        self._front_source.setEnabled(not self._cameras.running())
+        front_label = self._front_source.currentText()
         self._cameras_label.setText(
             "simulation: start Gazebo in its own terminal --\n"
             "roslaunch agbot_bringup agbot_gazebo.launch" if sim else
-            "real robot: front WDR + rear Brio (cameras.launch)"
+            "real robot: %s + rear Brio (cameras.launch)" % front_label
         )
         self._mission_btn.setText(
             "Stop mission" if self._mission.running() else "Start mission"
