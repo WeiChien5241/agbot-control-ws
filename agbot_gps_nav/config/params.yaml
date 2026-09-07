@@ -41,10 +41,46 @@ turn_in_place_deg: 30.0
 turn_in_place_rate: 0.4    # rad/s while turning in place
 
 # ---- arrival ----------------------------------------------------------------
-approach_distance: 2.0     # m: switch to approach_speed inside this
+approach_distance: 2.0     # m: speed ramps from cruise down to approach_speed
+                           # over this last stretch
 goal_tolerance: 0.3        # m: ARRIVED, and LATCHED. Roughly the Jackal's own
                            # width; tighter than this and GPS noise decides when
                            # the robot stops.
+
+# ---- arriving on a bearing (row entrances) ----------------------------------
+# A row entrance is a point PLUS a direction -- arriving sideways is useless
+# because vision nav picks up in FOLLOW_ROW and needs the corridor already in
+# view. Given an approach bearing, the follower inserts a staging point
+# staging_distance back along that bearing, drives there, turns to the bearing,
+# and only then runs the final leg ON THE ROW AXIS. Arrival heading is then
+# forced by geometry rather than trusted from the heading estimate -- which
+# matters, because that estimate drifts unbounded at rest and was measured 74
+# degrees wrong on a cold start (HANDOFF3 0g).
+staging_distance: 3.0      # m back along the bearing. Long enough that arriving
+                           # slightly off-axis still leaves room to converge,
+                           # short enough not to be a detour.
+staging_tolerance: 0.25    # m: close enough to the staging point to start ALIGN
+# The final leg tracks the row AXIS, not the goal point. ⚠ Steering at the point
+# means any lateral offset is corrected in the last metre and the robot SWINGS as
+# it arrives: measured in sim, a leg aimed at the point arrived 41 deg off a
+# bearing it had aligned to correctly moments before. Tracking the line makes the
+# heading error decay to zero along with the offset.
+axis_gain: 1.0             # rad of correction per metre of cross-track (atan'd)
+max_axis_correction_deg: 45.0   # the approach never departs further than this
+                                # from the axis, however far off the line it is
+
+align_tolerance_deg: 5.0   # deg: ALIGN holds until heading is this close to the
+                           # bearing. Tighter than turn_in_place_deg (30) on
+                           # purpose -- starting the final leg 30 deg off would
+                           # leave residual heading error at the goal, which is
+                           # the one thing the bearing exists to prevent.
+
+# RViz's 2D Nav Goal carries an orientation, but only if you DRAG; a plain click
+# sends a meaningless one. Honouring that by default would impose "arrive facing
+# east" on every casual click, plus the staging detour it implies. Set true to
+# steer by dragging in RViz. The supervisor does not need this -- it publishes
+# to ~goal_pose, where the orientation is ALWAYS the approach bearing.
+use_goal_orientation: false
 
 # ---- safety -----------------------------------------------------------------
 # This robot drives across open ground unattended. Every gate below stops it.

@@ -52,6 +52,7 @@ from agbot_gps_nav import geo
 
 STATE_IDLE = "IDLE"
 STATE_GOTO = "GOTO"
+STATE_ALIGN = "ALIGN"
 STATE_APPROACH = "APPROACH"
 STATE_ARRIVED = "ARRIVED"
 
@@ -72,7 +73,12 @@ class WaypointFollower(object):
                  turn_in_place_rate=0.4,
                  approach_distance=2.0,
                  goal_tolerance=0.3,
-                 slow_down_deg=60.0):
+                 slow_down_deg=60.0,
+                 staging_distance=3.0,
+                 staging_tolerance=0.25,
+                 align_tolerance_deg=5.0,
+                 axis_gain=1.0,
+                 max_axis_correction_deg=45.0):
         self.linear_x_cruise = float(linear_x_cruise)
         # Clamped to cruise: approach_speed above cruise would invert the ramp
         # below and make the robot SPEED UP into the goal.
@@ -84,28 +90,63 @@ class WaypointFollower(object):
         self.approach_distance = float(approach_distance)
         self.goal_tolerance = float(goal_tolerance)
         self.slow_down_rad = math.radians(float(slow_down_deg))
+        # How far before the goal the on-axis leg begins, when a goal carries an
+        # approach bearing. Long enough that arriving at the staging point
+        # slightly off-axis still leaves room to converge; short enough not to
+        # be a detour.
+        self.staging_distance = float(staging_distance)
+        self.staging_tolerance = float(staging_tolerance)
+        self.align_tolerance_rad = math.radians(float(align_tolerance_deg))
+        self.axis_gain = float(axis_gain)
+        self.max_axis_correction_rad = math.radians(float(max_axis_correction_deg))
 
         self.state = STATE_IDLE
         self._goal = None
+        self._approach_bearing = None
+        self._staging = None
         self._last_distance = None
         self._last_heading_error = None
 
     # ---- goal handling ---------------------------------------------------
 
-    def set_goal(self, goal_xy):
+    def set_goal(self, goal_xy, approach_bearing=None, approach_distance=None):
         """Accept a new goal (x, y) in the map frame, and start driving.
 
         A new goal always restarts from GOTO, including out of ARRIVED -- that
         is what makes ARRIVED's latch safe to have.
+
+        `approach_bearing` (radians, ENU, CCW from east) turns the goal from a
+        POINT into a point plus a DIRECTION. A row entrance is exactly that: it
+        is no use arriving there sideways, because vision nav has to pick up
+        with the corridor in view.
+
+        Given a bearing, the follower inserts a STAGING POINT
+        `approach_distance` metres back along it, drives there first, turns to
+        the bearing, and only then runs the final leg ON THE ROW AXIS. Arrival
+        heading is then forced by geometry rather than trusted from the heading
+        estimate -- which matters, because that estimate is unbounded at rest
+        and was measured 74 degrees wrong on a cold start (HANDOFF3 0g).
         """
         self._goal = (float(goal_xy[0]), float(goal_xy[1]))
-        self.state = STATE_GOTO
         self._last_distance = None
         self._last_heading_error = None
+        if approach_bearing is None:
+            self._approach_bearing = None
+            self._staging = None
+        else:
+            bearing = geo.wrap_angle(float(approach_bearing))
+            back = (float(approach_distance) if approach_distance is not None
+                    else self.staging_distance)
+            self._approach_bearing = bearing
+            self._staging = (self._goal[0] - back * math.cos(bearing),
+                             self._goal[1] - back * math.sin(bearing))
+        self.state = STATE_GOTO
 
     def clear_goal(self):
         """Drop the current goal and stop. Used by the node's pause path."""
         self._goal = None
+        self._approach_bearing = None
+        self._staging = None
         self.state = STATE_IDLE
         self._last_distance = None
         self._last_heading_error = None
@@ -113,6 +154,15 @@ class WaypointFollower(object):
     @property
     def goal(self):
         return self._goal
+
+    @property
+    def approach_bearing(self):
+        return self._approach_bearing
+
+    @property
+    def staging_point(self):
+        """The inserted on-axis waypoint, or None when the goal has no bearing."""
+        return self._staging
 
     # ---- telemetry, for the node's status line ---------------------------
 
@@ -144,25 +194,103 @@ class WaypointFollower(object):
         if pose is None:
             return 0.0, 0.0, self.state, False
 
-        x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
-        distance = geo.distance((x, y), self._goal)
-        heading_error = geo.wrap_angle(geo.bearing_to((x, y), self._goal) - yaw)
-        self._last_distance = distance
-        self._last_heading_error = heading_error
+        pose = (float(pose[0]), float(pose[1]), float(pose[2]))
+        self._last_distance = geo.distance(pose[:2], self._goal)
+        if self._staging is not None:
+            return self._update_on_axis(pose)
+        return self._update_direct(pose)
 
+    # ---- goal with no bearing: drive straight at it -----------------------
+
+    def _update_direct(self, pose):
+        x, y, _yaw = pose
+        distance = geo.distance((x, y), self._goal)
         if distance <= self.goal_tolerance:
             self.state = STATE_ARRIVED
+            self._last_heading_error = 0.0
             return 0.0, 0.0, STATE_ARRIVED, True
 
         self.state = STATE_APPROACH if distance <= self.approach_distance else STATE_GOTO
+        return self._drive_toward(self._goal, pose)
+
+    # ---- goal with a bearing: staging point, align, then the axis ---------
+
+    def _update_on_axis(self, pose):
+        """GOTO(staging) -> ALIGN -> APPROACH(on-axis) -> ARRIVED.
+
+        ALIGN is a real state rather than leaning on the turn-in-place rule,
+        because that rule tolerates up to `turn_in_place_deg` (30) of error
+        before it fires. Starting the final leg 30 degrees off would leave
+        residual heading error at the goal, and the whole point of the bearing
+        is that the arrival heading is tight.
+        """
+        x, y, yaw = pose
+
+        if self.state == STATE_GOTO:
+            if geo.distance((x, y), self._staging) > self.staging_tolerance:
+                return self._drive_toward(self._staging, pose)
+            self.state = STATE_ALIGN
+
+        if self.state == STATE_ALIGN:
+            error = geo.wrap_angle(self._approach_bearing - yaw)
+            self._last_heading_error = error
+            if abs(error) > self.align_tolerance_rad:
+                return (0.0, math.copysign(self.turn_in_place_rate, error),
+                        STATE_ALIGN, False)
+            self.state = STATE_APPROACH
+
+        distance = geo.distance((x, y), self._goal)
+        if distance <= self.goal_tolerance:
+            self.state = STATE_ARRIVED
+            return 0.0, 0.0, STATE_ARRIVED, True
+        return self._drive_along_axis(pose)
+
+    # ---- the shared steering and speed law --------------------------------
+
+    def _drive_toward(self, target, pose):
+        """Steer and pace straight at `target`. Does NOT decide state."""
+        distance = geo.distance(pose[:2], target)
+        heading_error = geo.wrap_angle(
+            geo.bearing_to(pose[:2], target) - pose[2])
+        linear_x, angular_z = self._command(distance, heading_error)
+        return linear_x, angular_z, self.state, False
+
+    def _drive_along_axis(self, pose):
+        """Track the row AXIS, not the goal point.
+
+        ⚠ This is the difference between arriving on the requested bearing and
+        merely arriving. Steering at the goal point means any lateral offset is
+        corrected in the last metre, so the robot swings as it arrives: measured
+        in sim, a final leg aimed at the point arrived 41 degrees off a bearing
+        it had aligned to correctly moments earlier. Tracking the line instead
+        makes the heading error decay to zero as the offset does, because the
+        commanded heading IS the bearing once the robot is on the line.
+        """
+        x, y, yaw = pose
+        bearing = self._approach_bearing
+        # Signed cross-track: positive means the robot is LEFT of the axis.
+        dx, dy = x - self._goal[0], y - self._goal[1]
+        cross = -dx * math.sin(bearing) + dy * math.cos(bearing)
+        # Turn back toward the line, saturating so the approach never departs
+        # more than max_axis_correction from the axis even far off it.
+        correction = -math.atan(self.axis_gain * cross)
+        correction = max(-self.max_axis_correction_rad,
+                         min(self.max_axis_correction_rad, correction))
+        heading_error = geo.wrap_angle(bearing + correction - yaw)
+        linear_x, angular_z = self._command(
+            geo.distance((x, y), self._goal), heading_error)
+        return linear_x, angular_z, self.state, False
+
+    def _command(self, distance, heading_error):
+        """(distance to goal, heading error) -> (linear_x, angular_z)."""
+        self._last_heading_error = heading_error
 
         # Badly misaligned: turn in place. Driving forward while 90 deg off
         # covers ground in the wrong direction, and near the goal it produces
         # the classic orbit -- circling a point it can never turn tightly
         # enough to reach.
         if abs(heading_error) > self.turn_in_place_rad:
-            rate = math.copysign(self.turn_in_place_rate, heading_error)
-            return 0.0, rate, self.state, False
+            return 0.0, math.copysign(self.turn_in_place_rate, heading_error)
 
         angular_z = self.heading_gain * heading_error
         angular_z = max(-self.angular_z_max, min(self.angular_z_max, angular_z))
@@ -187,4 +315,4 @@ class WaypointFollower(object):
         # slow_down_deg, so this cannot approach zero while still driving.
         linear_x = base * max(0.0, 1.0 - abs(heading_error) / self.slow_down_rad)
 
-        return linear_x, angular_z, self.state, False
+        return linear_x, angular_z

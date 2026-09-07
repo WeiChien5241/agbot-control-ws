@@ -41,6 +41,12 @@
   <arg name="turn_in_place_rate" default=""/>
   <arg name="approach_distance"  default=""/>
   <arg name="goal_tolerance"     default=""/>
+  <arg name="staging_distance"   default=""/>
+  <arg name="staging_tolerance"  default=""/>
+  <arg name="align_tolerance_deg" default=""/>
+  <arg name="axis_gain"          default=""/>
+  <arg name="max_axis_correction_deg" default=""/>
+  <arg name="use_goal_orientation" default=""/>
   <arg name="control_rate"       default=""/>
   <arg name="max_pose_age_sec"   default=""/>
   <arg name="max_fix_age_sec"    default=""/>
@@ -76,6 +82,12 @@
     <param name="turn_in_place_rate" value="$(arg turn_in_place_rate)" if="$(eval arg('turn_in_place_rate') != '')"/>
     <param name="approach_distance"  value="$(arg approach_distance)"  if="$(eval arg('approach_distance') != '')"/>
     <param name="goal_tolerance"     value="$(arg goal_tolerance)"     if="$(eval arg('goal_tolerance') != '')"/>
+    <param name="staging_distance"   value="$(arg staging_distance)"   if="$(eval arg('staging_distance') != '')"/>
+    <param name="staging_tolerance"  value="$(arg staging_tolerance)"  if="$(eval arg('staging_tolerance') != '')"/>
+    <param name="align_tolerance_deg" value="$(arg align_tolerance_deg)" if="$(eval arg('align_tolerance_deg') != '')"/>
+    <param name="axis_gain"          value="$(arg axis_gain)"          if="$(eval arg('axis_gain') != '')"/>
+    <param name="max_axis_correction_deg" value="$(arg max_axis_correction_deg)" if="$(eval arg('max_axis_correction_deg') != '')"/>
+    <param name="use_goal_orientation" value="$(arg use_goal_orientation)" if="$(eval arg('use_goal_orientation') != '')"/>
     <param name="control_rate"       value="$(arg control_rate)"       if="$(eval arg('control_rate') != '')"/>
     <param name="max_pose_age_sec"   value="$(arg max_pose_age_sec)"   if="$(eval arg('max_pose_age_sec') != '')"/>
     <param name="max_fix_age_sec"    value="$(arg max_fix_age_sec)"    if="$(eval arg('max_fix_age_sec') != '')"/>

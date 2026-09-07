@@ -13,8 +13,10 @@ import math
 
 import pytest
 
+from agbot_gps_nav import geo
 from agbot_gps_nav.waypoint_follower import (
-    STATE_APPROACH, STATE_ARRIVED, STATE_GOTO, STATE_IDLE, WaypointFollower,
+    STATE_ALIGN, STATE_APPROACH, STATE_ARRIVED, STATE_GOTO, STATE_IDLE,
+    WaypointFollower,
 )
 
 
@@ -326,3 +328,177 @@ def test_approach_speed_above_cruise_is_clamped_not_inverted():
     far, _az, _s, _d = f.update((0.0, 0.0, 0.0))
     near, _az, _s, _d = f.update((9.0, 0.0, 0.0))
     assert near <= far + 1e-9
+
+
+# ---- approach bearing: arrive pointing the right way ---------------------
+
+def drive_on_axis(follower, goal, bearing, start, dt=0.05, max_steps=40000,
+                  approach_distance=None):
+    """Closed loop for a goal that carries an approach bearing.
+
+    Returns (arrived, pose, seconds, state_sequence).
+    """
+    follower.set_goal(goal, approach_bearing=bearing,
+                      approach_distance=approach_distance)
+    x, y, yaw = start
+    states = []
+    for step in range(max_steps):
+        linear_x, angular_z, state, done = follower.update((x, y, yaw))
+        if not states or states[-1] != state:
+            states.append(state)
+        if done:
+            return True, (x, y, yaw), step * dt, states
+        yaw += angular_z * dt
+        x += linear_x * math.cos(yaw) * dt
+        y += linear_x * math.sin(yaw) * dt
+    return False, (x, y, yaw), max_steps * dt, states
+
+
+def test_a_bearing_inserts_a_staging_point_back_along_the_axis():
+    f = WaypointFollower()
+    f.set_goal((0.704, -3.40), approach_bearing=math.pi / 2, approach_distance=3.0)
+    assert f.staging_point == pytest.approx((0.704, -6.40), abs=1e-6)
+    assert f.approach_bearing == pytest.approx(math.pi / 2)
+
+
+def test_no_bearing_means_no_staging_point():
+    f = WaypointFollower()
+    f.set_goal((10.0, 0.0))
+    assert f.staging_point is None
+    assert f.approach_bearing is None
+
+
+@pytest.mark.parametrize("start", [
+    (0.7, -12.0, math.pi / 2),      # already lined up, from far back
+    (-6.0, -9.0, 0.0),              # off to one side
+    (8.0, -8.0, math.pi),           # off to the other, facing away
+    (0.7, -12.0, -math.pi / 2),     # lined up but facing backwards
+    (-5.0, -14.0, 1.0),
+    (6.0, -2.0, 3.0),               # starts PAST the goal
+])
+def test_arrives_on_the_requested_bearing_from_any_start(start):
+    """The row-entrance case. Rows in the maize worlds run along +Y, so the
+    bearing is +pi/2. Arriving sideways is useless: vision nav picks up in
+    FOLLOW_ROW and needs the corridor already in view."""
+    goal, bearing = (0.704, -3.40), math.pi / 2
+    f = WaypointFollower()
+    arrived, pose, _t, _states = drive_on_axis(f, goal, bearing, start)
+    assert arrived
+    error = geo.wrap_angle(pose[2] - bearing)
+    assert abs(error) < math.radians(6), (
+        "arrived %.1f deg off the requested bearing" % math.degrees(error))
+    assert math.hypot(pose[0] - goal[0], pose[1] - goal[1]) <= f.goal_tolerance + 1e-6
+
+
+def test_the_bearing_is_what_fixes_the_arrival_heading():
+    """Contrast test. Without a bearing the robot arrives pointing however it
+    happened to approach -- which for a goal reached from the side is nowhere
+    near down the row."""
+    goal, bearing = (0.704, -3.40), math.pi / 2
+    start = (-8.0, -3.4, 0.0)                 # due west of the goal
+
+    without = WaypointFollower()
+    arrived, pose, _steps = drive(without, goal, start=start)
+    assert arrived
+    naive_error = abs(geo.wrap_angle(pose[2] - bearing))
+
+    with_bearing = WaypointFollower()
+    arrived, pose, _t, _s = drive_on_axis(with_bearing, goal, bearing, start)
+    assert arrived
+    guided_error = abs(geo.wrap_angle(pose[2] - bearing))
+
+    assert naive_error > math.radians(60), "the contrast case is not a contrast"
+    assert guided_error < math.radians(6)
+
+
+def test_the_state_sequence_is_goto_align_approach_arrived():
+    f = WaypointFollower()
+    _arrived, _pose, _t, states = drive_on_axis(
+        f, (0.704, -3.40), math.pi / 2, (-6.0, -9.0, 0.0))
+    assert states == [STATE_GOTO, STATE_ALIGN, STATE_APPROACH, STATE_ARRIVED]
+
+
+def test_align_turns_in_place_and_does_not_drive():
+    """ALIGN exists because turn-in-place tolerates up to turn_in_place_deg
+    (30) before it fires, and starting the final leg 30 degrees off would leave
+    residual heading error at the goal."""
+    f = WaypointFollower(align_tolerance_deg=5.0)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    # sitting exactly on the staging point, facing east instead of north
+    linear_x, angular_z, state, done = f.update((0.0, -3.0, 0.0))
+    assert state == STATE_ALIGN
+    assert linear_x == 0.0
+    assert angular_z > 0                       # turn left, toward +pi/2
+    assert not done
+
+
+def test_align_releases_once_inside_its_tolerance():
+    f = WaypointFollower(align_tolerance_deg=5.0)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    _lx, _az, state, _d = f.update((0.0, -3.0, math.radians(88)))
+    assert state == STATE_APPROACH
+
+
+def test_a_new_plain_goal_clears_a_previous_bearing():
+    """Otherwise a stale staging point silently steers the next goal."""
+    f = WaypointFollower()
+    f.set_goal((5.0, 5.0), approach_bearing=0.0)
+    assert f.staging_point is not None
+    f.set_goal((10.0, 0.0))
+    assert f.staging_point is None and f.approach_bearing is None
+
+
+def test_clear_goal_drops_the_bearing_too():
+    f = WaypointFollower()
+    f.set_goal((5.0, 5.0), approach_bearing=0.0)
+    f.clear_goal()
+    assert f.staging_point is None and f.approach_bearing is None
+
+
+def test_the_final_leg_tracks_the_axis_not_the_goal_point():
+    """⚠ The regression this exists for. Steering at the goal POINT corrects any
+    lateral offset in the last metre, so the robot swings as it arrives: a leg
+    aimed at the point arrived 41 deg off a bearing it had aligned to correctly
+    moments earlier (sim, 2026-09-07). Tracking the LINE makes the commanded
+    heading equal the bearing once the robot is on it, so the error decays to
+    zero along with the offset. Fixing it took 41.2 deg to 0.4 deg."""
+    f = WaypointFollower()
+    goal, bearing = (0.0, 0.0), math.pi / 2
+
+    # On the axis, short of the goal: steer straight along the bearing.
+    f.set_goal(goal, approach_bearing=bearing, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    _lx, angular_z, _s, _d = f._drive_along_axis((0.0, -1.0, bearing))
+    assert angular_z == pytest.approx(0.0, abs=1e-9)
+
+    # Left of the axis: turn RIGHT to get back on it.
+    _lx, angular_z, _s, _d = f._drive_along_axis((-0.5, -1.0, bearing))
+    assert angular_z < 0
+
+    # Right of the axis: turn LEFT.
+    _lx, angular_z, _s, _d = f._drive_along_axis((0.5, -1.0, bearing))
+    assert angular_z > 0
+
+
+def test_axis_correction_saturates():
+    """Far off the line the approach must not turn perpendicular to the axis
+    and drive across the row."""
+    f = WaypointFollower(max_axis_correction_deg=45.0, turn_in_place_deg=90.0)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    f._drive_along_axis((50.0, -1.0, math.pi / 2))
+    assert abs(f.heading_error()) <= math.radians(45) + 1e-9
+
+
+def test_cross_track_converges_over_the_final_leg():
+    """Closed loop: start the approach deliberately off the line and check the
+    robot is ON it, and pointing along it, by the time it arrives."""
+    goal, bearing = (0.0, 0.0), math.pi / 2
+    f = WaypointFollower()
+    # start beside the staging point, already roughly aligned
+    arrived, pose, _t, _states = drive_on_axis(
+        f, goal, bearing, (0.8, -3.0, bearing), approach_distance=3.0)
+    assert arrived
+    cross = -(pose[0] - goal[0]) * math.sin(bearing) + (pose[1] - goal[1]) * math.cos(bearing)
+    assert abs(cross) < 0.35
+    assert abs(geo.wrap_angle(pose[2] - bearing)) < math.radians(6)

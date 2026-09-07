@@ -94,7 +94,19 @@ class GpsNavNode(object):
             approach_distance=rospy.get_param("~approach_distance", 2.0),
             goal_tolerance=rospy.get_param("~goal_tolerance", 0.3),
             slow_down_deg=rospy.get_param("~slow_down_deg", 60.0),
+            staging_distance=rospy.get_param("~staging_distance", 3.0),
+            staging_tolerance=rospy.get_param("~staging_tolerance", 0.25),
+            align_tolerance_deg=rospy.get_param("~align_tolerance_deg", 5.0),
+            axis_gain=rospy.get_param("~axis_gain", 1.0),
+            max_axis_correction_deg=rospy.get_param(
+                "~max_axis_correction_deg", 45.0),
         )
+        # RViz's 2D Nav Goal carries an orientation (you drag to set it), but a
+        # plain click sends a meaningless one, and honouring that would impose
+        # "arrive facing east" on every casual click plus the staging detour it
+        # implies. Off by default; ~goal_pose below is the unambiguous channel.
+        self._use_goal_orientation = bool(
+            rospy.get_param("~use_goal_orientation", False))
 
         self._control_rate = float(rospy.get_param("~control_rate", 20.0))
         self._max_fix_age_sec = float(rospy.get_param("~max_fix_age_sec", 2.0))
@@ -130,6 +142,7 @@ class GpsNavNode(object):
         rospy.Subscriber("/move_base_simple/goal", PoseStamped, self._rviz_goal_cb,
                          queue_size=1)
         rospy.Subscriber("~goal_wgs84", PointStamped, self._wgs84_goal_cb, queue_size=1)
+        rospy.Subscriber("~goal_pose", PoseStamped, self._pose_goal_cb, queue_size=1)
 
         rospy.Service("~pause", SetBool, self._pause_srv)
 
@@ -168,10 +181,14 @@ class GpsNavNode(object):
                           frame, frame)
             return
         goal = (msg.pose.position.x, msg.pose.position.y)
+        bearing = (_quaternion_to_yaw(msg.pose.orientation)
+                   if self._use_goal_orientation else None)
         lat, lon = geo.enu_to_latlon(goal[0], goal[1], self._datum)
-        rospy.loginfo("goal from RViz: map (%.2f, %.2f) = %.7f, %.7f",
-                      goal[0], goal[1], lat, lon)
-        self._accept_goal(goal)
+        rospy.loginfo("goal from RViz: map (%.2f, %.2f) = %.7f, %.7f%s",
+                      goal[0], goal[1], lat, lon,
+                      "" if bearing is None
+                      else "  approach bearing %.0f deg" % math.degrees(bearing))
+        self._accept_goal(goal, approach_bearing=bearing)
 
     def _wgs84_goal_cb(self, msg):
         """mapviz click, or a hand-published lat/lon.
@@ -190,7 +207,27 @@ class GpsNavNode(object):
                       lat, lon, goal[0], goal[1])
         self._accept_goal(goal, hint=self._swap_hint(lat, lon))
 
-    def _accept_goal(self, goal_xy, hint=None):
+    def _pose_goal_cb(self, msg):
+        """A goal whose ORIENTATION IS ALWAYS the approach bearing.
+
+        This is the channel the mission supervisor uses, and it is deliberately
+        separate from /move_base_simple/goal: there, the orientation is a UI
+        artefact that may or may not mean anything, so honouring it is opt-in.
+        Here it is the entire point, and a caller that publishes to this topic
+        has said so by choosing it.
+        """
+        frame = msg.header.frame_id.lstrip("/")
+        if frame and frame != "map":
+            rospy.logwarn("ignoring goal_pose in frame '%s' -- this topic is "
+                          "map-frame only.", frame)
+            return
+        goal = (msg.pose.position.x, msg.pose.position.y)
+        bearing = _quaternion_to_yaw(msg.pose.orientation)
+        rospy.loginfo("goal from ~goal_pose: map (%.2f, %.2f), approach bearing "
+                      "%.0f deg", goal[0], goal[1], math.degrees(bearing))
+        self._accept_goal(goal, approach_bearing=bearing)
+
+    def _accept_goal(self, goal_xy, hint=None, approach_bearing=None):
         """Common goal entry point. Refuses anything outside the geofence."""
         distance = math.hypot(goal_xy[0], goal_xy[1])
         if distance > self._geofence_radius_m:
@@ -203,7 +240,7 @@ class GpsNavNode(object):
                             ("; " + hint) if hint else ""))
             return
         with self._state_lock:
-            self._follower.set_goal(goal_xy)
+            self._follower.set_goal(goal_xy, approach_bearing=approach_bearing)
             self._block_reason = None
             self._refusal = None
 
@@ -315,7 +352,8 @@ class GpsNavNode(object):
         elif distance is None:
             self._set_status(state)
         else:
-            self._set_status("%s %.1f m to goal" % (state, distance))
+            axis = "" if self._follower.approach_bearing is None else " (on-axis)"
+            self._set_status("%s%s %.1f m to goal" % (state, axis, distance))
 
     def _publish_twist(self, linear_x, angular_z):
         msg = Twist()
@@ -349,6 +387,11 @@ class GpsNavNode(object):
             rospy.loginfo("arrival:  approach_dist=%.2f m tolerance=%.2f m "
                           "turn_in_place=%.0f deg", f.approach_distance,
                           f.goal_tolerance, math.degrees(f.turn_in_place_rad))
+            rospy.loginfo("on-axis:  staging=%.2f m (tol %.2f) align=%.0f deg | "
+                          "RViz goal orientation %s",
+                          f.staging_distance, f.staging_tolerance,
+                          math.degrees(f.align_tolerance_rad),
+                          "USED" if self._use_goal_orientation else "ignored")
             rospy.loginfo("topics:   pose=%s fix=%s cmd=%s",
                           odom_topic, fix_topic, cmd_vel_topic)
             rospy.loginfo("safety:   geofence=%.0f m fix_age<%.1f s pose_age<%.1f s "
