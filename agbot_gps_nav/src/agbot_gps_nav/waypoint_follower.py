@@ -82,7 +82,11 @@ class WaypointFollower(object):
                  axis_gain=1.0,
                  max_axis_correction_deg=45.0,
                  max_goal_distance_growth=5.0,
-                 heading_init_distance=0.0):
+                 heading_init_distance=0.0,
+                 heading_init_max_distance=8.0,
+                 heading_init_tolerance_deg=12.0,
+                 arrival_cross_tolerance=0.35,
+                 max_approach_attempts=3):
         self.linear_x_cruise = float(linear_x_cruise)
         # Clamped to cruise: approach_speed above cruise would invert the ramp
         # below and make the robot SPEED UP into the goal.
@@ -120,6 +124,35 @@ class WaypointFollower(object):
         # decision depends on it. 0.0 disables it (blank-world testing, or a
         # robot whose heading is already trusted).
         self.heading_init_distance = float(heading_init_distance)
+        # ⚠ The bootstrap ends on a MEASUREMENT, not on a distance. A fixed 4 m
+        # was tried first and was not enough: from a 92 deg error the robot
+        # thrashed through the transit and entered the final approach 1.0 m off
+        # the axis, too far to null in 3 m, and drove past the row entrance
+        # (sim, 2026-09-07). How far the estimate needs is a property of how
+        # wrong it started, which nothing knows in advance.
+        #
+        # The test is course over ground: while driving straight, the direction
+        # the robot ACTUALLY moved (from GPS-fused positions) is the truth its
+        # yaw estimate should agree with. When they agree, the estimate has
+        # converged and steering on it is safe. heading_init_distance is the
+        # MINIMUM to drive first (a course computed over a few centimetres is
+        # noise); the max is the backstop, and must fit the open ground ahead.
+        self.heading_init_max_distance = float(heading_init_max_distance)
+        self.heading_init_tolerance_rad = math.radians(
+            float(heading_init_tolerance_deg))
+        self._heading_init_error = None
+        # ⚠ Arrival on a DIRECTED approach is crossing the goal's plane, not
+        # getting within a radius of the point. Euclidean distance was tried
+        # first and it fails in a way that looks like nothing: the robot passed
+        # 0.46 m to the side of a row entrance, so the distance bottomed out at
+        # 0.47 m, never reached the 0.30 m tolerance, and the follower drove
+        # calmly on up the field (sim, 2026-09-07). Crossing the plane is a
+        # thing that definitely happens; getting within a radius is not.
+        # The cross tolerance is what makes it safe: half a row spacing, so
+        # "arrived" cannot mean "arrived at the next corridor".
+        self.arrival_cross_tolerance = float(arrival_cross_tolerance)
+        self.max_approach_attempts = int(max_approach_attempts)
+        self._approach_attempts = 0
         self.axis_gain = float(axis_gain)
         self.max_axis_correction_rad = math.radians(float(max_axis_correction_deg))
 
@@ -155,6 +188,7 @@ class WaypointFollower(object):
         self._last_heading_error = None
         self._closest_distance = None
         self._init_start_xy = None
+        self._approach_attempts = 0
         if approach_bearing is None:
             self._approach_bearing = None
             self._staging = None
@@ -198,6 +232,15 @@ class WaypointFollower(object):
     def heading_error(self):
         return self._last_heading_error
 
+    def heading_init_error(self):
+        """Last course-over-ground vs estimated-yaw disagreement, or None.
+
+        This is the number that decides when the bootstrap has done its job,
+        and it is worth logging: a bootstrap that ends on its max distance with
+        this still large means the heading never converged.
+        """
+        return self._heading_init_error
+
     # ---- the tick --------------------------------------------------------
 
     def update(self, pose, now=None):
@@ -233,7 +276,16 @@ class WaypointFollower(object):
             if self._init_start_xy is None:
                 self._init_start_xy = pose[:2]
             gone = geo.distance(pose[:2], self._init_start_xy)
-            if gone < self.heading_init_distance:
+            if gone >= self.heading_init_distance:
+                # Course over ground: the direction the robot ACTUALLY went.
+                # That is the truth the yaw estimate has to agree with.
+                course = geo.bearing_to(self._init_start_xy, pose[:2])
+                self._heading_init_error = geo.wrap_angle(course - pose[2])
+                converged = (abs(self._heading_init_error)
+                             <= self.heading_init_tolerance_rad)
+            else:
+                converged = False
+            if not converged and gone < self.heading_init_max_distance:
                 self._last_heading_error = 0.0
                 return self.approach_speed, 0.0, STATE_HEADING_INIT, False
             self.state = STATE_GOTO
@@ -294,10 +346,28 @@ class WaypointFollower(object):
                         STATE_ALIGN, False)
             self.state = STATE_APPROACH
 
-        distance = geo.distance((x, y), self._goal)
-        if distance <= self.goal_tolerance:
-            self.state = STATE_ARRIVED
-            return 0.0, 0.0, STATE_ARRIVED, True
+        # Arrival is crossing the plane through the goal perpendicular to the
+        # approach bearing -- see arrival_cross_tolerance in __init__.
+        bearing = self._approach_bearing
+        dx, dy = x - self._goal[0], y - self._goal[1]
+        along = dx * math.cos(bearing) + dy * math.sin(bearing)
+        cross = -dx * math.sin(bearing) + dy * math.cos(bearing)
+
+        if along >= -self.goal_tolerance:
+            if abs(cross) <= self.arrival_cross_tolerance:
+                self.state = STATE_ARRIVED
+                return 0.0, 0.0, STATE_ARRIVED, True
+            # Crossed the plane, but too far off the axis to call it arrived.
+            # Go round again from the staging point rather than driving on:
+            # continuing is what sent the robot up the field last time.
+            self._approach_attempts += 1
+            if self._approach_attempts >= self.max_approach_attempts:
+                self.state = STATE_FAILED
+                return 0.0, 0.0, STATE_FAILED, False
+            self.state = STATE_GOTO
+            self._closest_distance = None
+            return 0.0, 0.0, STATE_GOTO, False
+
         return self._drive_along_axis(pose)
 
     # ---- the shared steering and speed law --------------------------------

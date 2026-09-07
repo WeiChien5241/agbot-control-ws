@@ -17,11 +17,12 @@
            (agbot_maize_long.yaml, seed 42: 6 rows x 9 m, 5 corridors,
             342 plants, single-plant gaps in the four inner rows. Mission
             arg is num_rows:=5.)
-         gps maize snapshot:   x=0.702 y=-4.329 z=0.35 yaw=1.569
-           (agbot_maize_gps.yaml: the small world with an 8 m headland, so
-            there is open ground to drive across before the rows. For the
-            GPS transit start pose, see
-            agbot_gps_nav/config/waypoints_maize_gps.yaml.)
+         gps maize snapshot:   x=0.710 y=-4.340 z=0.35 yaw=1.529
+           (agbot_maize_gps.yaml: the small world with a 20 m headland, so
+            there is open ground for the heading bootstrap AND the transit.
+            For the trailer start pose used by the GPS mission, see
+            start_pose in agbot_gps_nav/config/waypoints_maize_gps.yaml
+            (currently x=-0.798 y=-21.361 yaw=1.5708).)
        Read the pose the generator PRINTS; that one wins. -->
   <arg name="x" default="0.777"/>
   <arg name="y" default="-4.331"/>

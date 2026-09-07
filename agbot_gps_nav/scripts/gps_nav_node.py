@@ -62,7 +62,7 @@ from std_srvs.srv import SetBool, SetBoolResponse
 
 from agbot_gps_nav import geo
 from agbot_gps_nav.waypoint_follower import (
-    STATE_ARRIVED, STATE_FAILED, STATE_IDLE, WaypointFollower)
+    STATE_ARRIVED, STATE_FAILED, STATE_HEADING_INIT, STATE_IDLE, WaypointFollower)
 
 
 def _quaternion_to_yaw(q):
@@ -104,6 +104,13 @@ class GpsNavNode(object):
             max_goal_distance_growth=rospy.get_param(
                 "~max_goal_distance_growth", 5.0),
             heading_init_distance=rospy.get_param("~heading_init_distance", 0.0),
+            heading_init_max_distance=rospy.get_param(
+                "~heading_init_max_distance", 8.0),
+            heading_init_tolerance_deg=rospy.get_param(
+                "~heading_init_tolerance_deg", 12.0),
+            arrival_cross_tolerance=rospy.get_param(
+                "~arrival_cross_tolerance", 0.35),
+            max_approach_attempts=rospy.get_param("~max_approach_attempts", 3),
         )
         # RViz's 2D Nav Goal carries an orientation (you drag to set it), but a
         # plain click sends a meaningless one, and honouring that would impose
@@ -373,6 +380,8 @@ class GpsNavNode(object):
             # touching the goal: the drive resumes when the gate clears.
             linear_x, angular_z, state, done = self._follower.update(pose, now.to_sec())
             distance = self._follower.distance_remaining()
+            init_done = (self._last_state == STATE_HEADING_INIT
+                         and state != STATE_HEADING_INIT)
             arrived_now = done and self._last_state != STATE_ARRIVED
             failed_now = state == STATE_FAILED and self._last_state != STATE_FAILED
             self._last_state = state
@@ -382,6 +391,11 @@ class GpsNavNode(object):
 
         self._publish_twist(linear_x, angular_z)
 
+        if init_done:
+            error = self._follower.heading_init_error()
+            rospy.loginfo("heading bootstrap done: yaw vs course driven = %s",
+                          "%.1f deg" % math.degrees(error) if error is not None
+                          else "not measured")
         if arrived_now:
             rospy.loginfo("ARRIVED (%.2f m from goal). Stopped.", distance or 0.0)
         if failed_now:
@@ -451,14 +465,19 @@ class GpsNavNode(object):
             rospy.loginfo("arrival:  approach_dist=%.2f m tolerance=%.2f m "
                           "turn_in_place=%.0f deg", f.approach_distance,
                           f.goal_tolerance, math.degrees(f.turn_in_place_rad))
+            rospy.loginfo("          on a bearing, arrival is CROSSING THE GOAL "
+                          "PLANE within %.2f m of the axis, up to %d attempts",
+                          f.arrival_cross_tolerance, f.max_approach_attempts)
             rospy.loginfo("on-axis:  staging=%.2f m (tol %.2f) align=%.0f deg | "
                           "RViz goal orientation %s",
                           f.staging_distance, f.staging_tolerance,
                           math.degrees(f.align_tolerance_rad),
                           "USED" if self._use_goal_orientation else "ignored")
             rospy.loginfo("bootstrap: %s",
-                          ("%.1f m straight before any steering decision"
-                           % f.heading_init_distance)
+                          ("straight %.1f-%.1f m until the yaw agrees with the "
+                           "course driven to within %.0f deg"
+                           % (f.heading_init_distance, f.heading_init_max_distance,
+                              math.degrees(f.heading_init_tolerance_rad)))
                           if f.heading_init_distance > 0
                           else "DISABLED (heading_init_distance 0) -- fine in a "
                                "blank world, NOT on the robot")

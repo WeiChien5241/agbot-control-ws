@@ -41,6 +41,8 @@
   <arg name="turn_in_place_rate" default=""/>
   <arg name="approach_distance"  default=""/>
   <arg name="goal_tolerance"     default=""/>
+  <arg name="arrival_cross_tolerance" default=""/>
+  <arg name="max_approach_attempts" default=""/>
   <arg name="staging_distance"   default=""/>
   <arg name="staging_tolerance"  default=""/>
   <arg name="align_tolerance_deg" default=""/>
@@ -57,6 +59,8 @@
   <arg name="geofence_radius_m"  default=""/>
   <arg name="max_goal_distance_growth" default=""/>
   <arg name="heading_init_distance" default=""/>
+  <arg name="heading_init_max_distance" default=""/>
+  <arg name="heading_init_tolerance_deg" default=""/>
   <arg name="odom_topic"         default=""/>
   <arg name="cmd_vel_topic"      default=""/>
 
@@ -85,6 +89,8 @@
     <param name="turn_in_place_rate" value="$(arg turn_in_place_rate)" if="$(eval arg('turn_in_place_rate') != '')"/>
     <param name="approach_distance"  value="$(arg approach_distance)"  if="$(eval arg('approach_distance') != '')"/>
     <param name="goal_tolerance"     value="$(arg goal_tolerance)"     if="$(eval arg('goal_tolerance') != '')"/>
+    <param name="arrival_cross_tolerance" value="$(arg arrival_cross_tolerance)" if="$(eval arg('arrival_cross_tolerance') != '')"/>
+    <param name="max_approach_attempts" value="$(arg max_approach_attempts)" if="$(eval arg('max_approach_attempts') != '')"/>
     <param name="staging_distance"   value="$(arg staging_distance)"   if="$(eval arg('staging_distance') != '')"/>
     <param name="staging_tolerance"  value="$(arg staging_tolerance)"  if="$(eval arg('staging_tolerance') != '')"/>
     <param name="align_tolerance_deg" value="$(arg align_tolerance_deg)" if="$(eval arg('align_tolerance_deg') != '')"/>
@@ -101,6 +107,8 @@
     <param name="geofence_radius_m"  value="$(arg geofence_radius_m)"  if="$(eval arg('geofence_radius_m') != '')"/>
     <param name="max_goal_distance_growth" value="$(arg max_goal_distance_growth)" if="$(eval arg('max_goal_distance_growth') != '')"/>
     <param name="heading_init_distance" value="$(arg heading_init_distance)" if="$(eval arg('heading_init_distance') != '')"/>
+    <param name="heading_init_max_distance" value="$(arg heading_init_max_distance)" if="$(eval arg('heading_init_max_distance') != '')"/>
+    <param name="heading_init_tolerance_deg" value="$(arg heading_init_tolerance_deg)" if="$(eval arg('heading_init_tolerance_deg') != '')"/>
     <param name="odom_topic"         value="$(arg odom_topic)"         if="$(eval arg('odom_topic') != '')"/>
     <param name="cmd_vel_topic"      value="$(arg cmd_vel_topic)"      if="$(eval arg('cmd_vel_topic') != '')"/>
   </node>

@@ -38,8 +38,17 @@ hole_size_max: 0
 seed: 42                   # reproducible layout AND reproducible spawn pose
 
 # ⚠ THE ONE CHANGE FROM agbot_maize_small.yaml, and the reason for this file.
-# Default is 2.0 m. This pads the heightmap beyond the plants at BOTH ends, so
-# it buys ~8 m of drivable approach before the rows and ~8 m past them. It costs
-# only heightmap area, not plant count, so the RTF hit is small -- plants are
-# the physics driver (HANDOFF3 0f), and this world has the same 173 of them.
-ground_headland: 8.0
+# Default is 2.0 m; this pads the heightmap beyond the plants at BOTH ends.
+#
+# ⚠ 8.0 was tried first and was NOT ENOUGH, for a reason worth writing down: the
+# transit is not the only thing that needs room. The heading bootstrap drives
+# STRAIGHT for several metres before any steering (map-frame yaw is wrong at
+# boot and only motion fixes it), and with only ~7 m between the trailer and the
+# rows that straight leg nearly reached the goal before the estimate converged.
+# The robot then had to turn back to its staging point, and the approach fell
+# apart from there. Budget: bootstrap (up to ~10 m) + a staging leg + a 3 m
+# on-axis approach, so ~20 m of open ground before the first plants.
+#
+# It costs only heightmap area, not plant count, so the RTF hit is small --
+# plants are the physics driver (HANDOFF3 0f) and this world still has 173.
+ground_headland: 20.0

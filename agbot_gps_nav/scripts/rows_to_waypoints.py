@@ -75,8 +75,17 @@ def corridors(rows, entry_offset):
         # measure it rather than assume it.
         span = max(y for _, y in left) - min(y for _, y in left)
         bearing = math.atan2(span, 0.0)
+        # ⚠ Which way the boustrophedon must turn out of THIS corridor. Rows
+        # are ordered by increasing x and the robot enters heading along the
+        # bearing (+Y), so the next corridor is to its RIGHT (+x) from the
+        # leftmost one and to its LEFT from the rightmost. Turning the wrong
+        # way out of an edge corridor drives straight out of the field: seen in
+        # sim 2026-09-07, where corridor_0 with the default "left" ended the
+        # mission at rows=1/3 in open ground.
+        turn = "right" if index == 0 else "left"
         out.append({
             "name": "corridor_%d" % index,
+            "first_turn_direction": turn,
             "map_xy": [round(centre_x, 3), round(mouth_y - entry_offset, 3)],
             "approach_bearing_deg": round(math.degrees(bearing), 1),
             "row_x": [round(left[0][0], 3), round(right[0][0], 3)],
@@ -125,6 +134,10 @@ def main():
         "# entrance is a point PLUS a direction, because vision nav picks up in",
         "# FOLLOW_ROW and needs the corridor already in view.",
         "#",
+        "# ⚠ first_turn_direction must be passed to vision nav to MATCH the",
+        "# corridor. Turning the wrong way out of an edge corridor drives",
+        "# straight out of the field.",
+        "#",
         "# Regenerate whenever the world is regenerated -- the layout is seeded",
         "# and procedural, so plants move and hand-copied numbers go quietly",
         "# stale.",
@@ -154,6 +167,7 @@ def main():
             "    lat: %.8f" % lat,
             "    lon: %.8f" % lon,
             "    approach_bearing_deg: %.1f" % entry["approach_bearing_deg"],
+            "    first_turn_direction: %s" % entry["first_turn_direction"],
             "    # map (%.3f, %.3f); between rows at x=%.3f and x=%.3f; first"
             % (entry["map_xy"][0], entry["map_xy"][1],
                entry["row_x"][0], entry["row_x"][1]),
@@ -164,9 +178,9 @@ def main():
 
     print("%d rows -> %d corridors; wrote %s" % (len(rows), len(entries), args.output))
     for entry in entries:
-        print("  %-12s map (%7.3f, %7.3f)  bearing %5.1f deg"
+        print("  %-12s map (%7.3f, %7.3f)  bearing %5.1f deg  first turn %s"
               % (entry["name"], entry["map_xy"][0], entry["map_xy"][1],
-                 entry["approach_bearing_deg"]))
+                 entry["approach_bearing_deg"], entry["first_turn_direction"]))
 
 
 if __name__ == "__main__":

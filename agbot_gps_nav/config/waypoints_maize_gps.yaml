@@ -7,18 +7,22 @@
 # entrance is a point PLUS a direction, because vision nav picks up in
 # FOLLOW_ROW and needs the corridor already in view.
 #
+# ⚠ first_turn_direction must be passed to vision nav to MATCH the
+# corridor. Turning the wrong way out of an edge corridor drives
+# straight out of the field.
+#
 # Regenerate whenever the world is regenerated -- the layout is seeded
 # and procedural, so plants move and hand-copied numbers go quietly
 # stale.
 datum: [40.494928, -86.996323, 0.0]
 rows_detected: 4
 
-# Simulated trailer: 7.0 m back from the first corridor's mouth, on its
+# Simulated trailer: 18.0 m back from the first corridor's mouth, on its
 # axis. Spawn the robot here to give the GPS transit somewhere to start.
 start_pose:
-  map_xy: [-0.798, -10.361]
+  map_xy: [-0.798, -21.361]
   yaw_deg: 90.0
-  lat: 40.49483469
+  lat: 40.49473564
   lon: -86.99633241
 
 waypoints:
@@ -26,17 +30,20 @@ waypoints:
     lat: 40.49489323
     lon: -86.99633241
     approach_bearing_deg: 90.0
+    first_turn_direction: right
     # map (-0.798, -3.861); between rows at x=-1.191 and x=-0.440; first
     # plants at y=-3.361
   - name: corridor_1
     lat: 40.49489290
     lon: -86.99632355
     approach_bearing_deg: 90.0
+    first_turn_direction: left
     # map (-0.047, -3.898); between rows at x=-0.440 and x=0.309; first
     # plants at y=-3.398
   - name: corridor_2
     lat: 40.49489329
     lon: -86.99631471
     approach_bearing_deg: 90.0
+    first_turn_direction: left
     # map (0.703, -3.854); between rows at x=0.309 and x=1.060; first
     # plants at y=-3.354

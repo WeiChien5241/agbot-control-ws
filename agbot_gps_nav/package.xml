@@ -30,6 +30,8 @@
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!-- gps_vision_mission.launch includes vision_nav.launch -->
+  <exec_depend>agbot_vision_nav</exec_depend>
 
   <export></export>
 </package>

@@ -589,15 +589,49 @@ def test_heading_init_drives_straight_without_steering():
     assert angular_z == 0.0, "must not steer during the bootstrap"
 
 
-def test_heading_init_ends_after_the_configured_distance():
-    f = WaypointFollower(heading_init_distance=4.0)
+def test_heading_init_ends_once_the_yaw_agrees_with_the_course_driven():
+    """It ends on a MEASUREMENT, not a distance: whether the estimate has
+    converged depends on how wrong it started, which nothing knows up front."""
+    f = WaypointFollower(heading_init_distance=4.0, heading_init_tolerance_deg=12.0)
     f.set_goal((20.0, 0.0))
     _lx, _az, state, _d = f.update((0.0, 0.0, 0.0))
     assert state == STATE_HEADING_INIT
+    # Short of the minimum, it keeps going whatever the heading says.
     _lx, _az, state, _d = f.update((3.9, 0.0, 0.0))
     assert state == STATE_HEADING_INIT
+    # Past the minimum, and the yaw agrees with the course actually driven.
     _lx, _az, state, _d = f.update((4.1, 0.0, 0.0))
     assert state == STATE_GOTO
+    assert abs(f.heading_init_error()) < math.radians(1)
+
+
+def test_heading_init_keeps_driving_while_the_yaw_still_disagrees():
+    """⚠ The failure this replaced: a fixed 4 m ended the bootstrap with the
+    estimate still 90 deg wrong, and the robot then entered the final approach
+    1.0 m off the axis and drove past the row entrance (sim, 2026-09-07)."""
+    f = WaypointFollower(heading_init_distance=4.0, heading_init_max_distance=20.0,
+                         heading_init_tolerance_deg=12.0)
+    f.set_goal((30.0, 0.0))
+    # Robot really travels along +x, but believes it is pointing 90 deg off.
+    for x in (0.0, 2.0, 4.1, 6.0, 8.0):
+        _lx, _az, state, _d = f.update((x, 0.0, math.pi / 2))
+        assert state == STATE_HEADING_INIT, "gave up at x=%.1f with yaw 90 deg wrong" % x
+    assert abs(f.heading_init_error()) == pytest.approx(math.pi / 2, abs=1e-6)
+    # Once the estimate agrees with the course driven, it releases.
+    _lx, _az, state, _d = f.update((10.0, 0.0, 0.0))
+    assert state == STATE_GOTO
+
+
+def test_heading_init_gives_up_at_its_max_distance():
+    """The backstop. Must fit the open ground ahead -- this drives STRAIGHT."""
+    f = WaypointFollower(heading_init_distance=2.0, heading_init_max_distance=6.0,
+                         heading_init_tolerance_deg=5.0)
+    f.set_goal((30.0, 0.0))
+    for x in (0.0, 3.0, 5.9):
+        _lx, _az, state, _d = f.update((x, 0.0, math.pi / 2))
+        assert state == STATE_HEADING_INIT
+    _lx, _az, state, _d = f.update((6.1, 0.0, math.pi / 2))
+    assert state == STATE_GOTO, "must not drive straight for ever"
 
 
 def test_heading_init_does_not_trip_the_receding_goal_abort():
@@ -616,3 +650,63 @@ def test_still_converges_with_the_bootstrap_enabled():
     arrived, pose, _steps = drive(f, (20.0, 8.0))
     assert arrived
     assert math.hypot(pose[0] - 20.0, pose[1] - 8.0) <= f.goal_tolerance + 1e-6
+
+
+# ---- arrival on a directed approach is crossing the goal PLANE -----------
+
+def test_arrival_is_crossing_the_plane_not_entering_a_radius():
+    """⚠ The regression. A Euclidean radius fails in a way that looks like
+    nothing at all: the robot passed 0.46 m to the side of a row entrance, so
+    the distance bottomed out at 0.47 m, never reached the 0.30 m tolerance,
+    and the follower drove calmly on up the field (sim, 2026-09-07). Crossing
+    the plane is a thing that definitely happens; entering a radius is not."""
+    f = WaypointFollower(goal_tolerance=0.3, arrival_cross_tolerance=0.35)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    # 0.3 m off the axis and level with the goal: Euclidean distance is 0.30,
+    # right on the boundary, but the plane has been crossed and the offset is
+    # inside the corridor.
+    _lx, _az, state, done = f.update((0.3, 0.0, math.pi / 2))
+    assert state == STATE_ARRIVED and done
+
+
+def test_crossing_the_plane_too_far_off_axis_restages_instead_of_driving_on():
+    f = WaypointFollower(arrival_cross_tolerance=0.35, max_approach_attempts=3)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    linear_x, _az, state, _d = f.update((1.2, 0.0, math.pi / 2))   # 1.2 m off
+    assert state == STATE_GOTO, "must go round again, not carry on up the field"
+    assert linear_x == 0.0
+
+
+def test_repeated_misses_fail_rather_than_looping_for_ever():
+    f = WaypointFollower(arrival_cross_tolerance=0.35, max_approach_attempts=3)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    for _ in range(2):
+        f.state = STATE_APPROACH
+        f.update((1.2, 0.0, math.pi / 2))
+    f.state = STATE_APPROACH
+    _lx, _az, state, _d = f.update((1.2, 0.0, math.pi / 2))
+    assert state == STATE_FAILED
+
+
+def test_the_cross_tolerance_is_under_half_a_row_spacing():
+    """Otherwise 'arrived' could mean 'arrived at the next corridor along'."""
+    f = WaypointFollower()
+    assert f.arrival_cross_tolerance < 0.75 / 2
+
+
+def test_approaching_short_of_the_plane_keeps_driving():
+    f = WaypointFollower()
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    linear_x, _az, state, done = f.update((0.0, -1.0, math.pi / 2))
+    assert state == STATE_APPROACH and not done and linear_x > 0
+
+
+def test_on_axis_runs_still_converge_end_to_end():
+    for start in [(0.7, -12.0, math.pi / 2), (-6.0, -9.0, 0.0), (8.0, -8.0, math.pi)]:
+        f = WaypointFollower()
+        arrived, pose, _t, _states = drive_on_axis(f, (0.704, -3.40), math.pi / 2, start)
+        assert arrived, "regressed for start %s" % (start,)
+        assert abs(geo.wrap_angle(pose[2] - math.pi / 2)) < math.radians(8)

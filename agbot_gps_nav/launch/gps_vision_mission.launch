@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- The whole capability: drive to a row entrance under GPS, arrive pointing
+       down the row, hand over to vision nav, run the multi-row mission.
+
+       Simulation, in three terminals:
+         1. rosrun agbot_bringup switch_maize_world.sh gps
+            roslaunch agbot_bringup agbot_gazebo.launch gps:=true \
+              x:=-0.798 y:=-21.361 z:=0.35 yaw:=1.5708
+              (the trailer start pose; see
+               agbot_gps_nav/config/waypoints_maize_gps.yaml)
+         2. roslaunch agbot_gps_nav gps_vision_mission.launch sim:=true
+         3. rostopic echo /mission_supervisor/status
+
+       ⚠ Gazebo goes in its own terminal. Its output is noisy enough to bury
+       both nodes' startup config blocks, which are the part worth reading. -->
+
+  <arg name="sim" default="false"/>
+  <arg name="waypoint" default="corridor_0"/>
+  <arg name="waypoint_file"
+       default="$(find agbot_gps_nav)/config/waypoints_maize_gps.yaml"/>
+  <arg name="num_rows" default="3"/>
+
+  <!-- ⚠ MUST MATCH THE CORRIDOR. Rows are ordered by increasing x and the robot
+       enters heading along the approach bearing, so out of the LEFTMOST
+       corridor the next one is to its RIGHT, and out of the rightmost it is to
+       its LEFT. Turning the wrong way out of an edge corridor drives straight
+       out of the field: with corridor_0 and the default "left" the mission
+       ended at rows=1/3 in open ground (sim 2026-09-07). Each waypoint in the
+       waypoints file records the direction that goes with it. -->
+  <arg name="first_turn_direction" default="right"/>
+
+  <!-- ⚠ On by default here, unlike vision_nav.launch. Without a rear camera the
+       BACKOUT states are unreachable, so a blocked-ahead signal STOPS THE ROBOT
+       AND ENDS THE MISSION, which in a 3-row run reads as a mission that
+       quietly finished at rows=1/3 (sim 2026-09-07). The sim URDF has a rear
+       camera; the robot has a Logitech Brio on the back. -->
+  <arg name="rear_camera_enabled" default="true"/>
+  <arg name="model_path" default=""/>
+
+  <!-- ⚠ Metres to drive STRAIGHT before any steering decision. Map-frame yaw is
+       gyro-integrated from zero at boot, so it is wrong by however far the
+       robot happens to be pointing, and the EKF can only fix it from MOTION.
+       Without this the robot missed the row entrance by 5.9 m from a 92 deg
+       start; with 4 m it arrived 0.29 m out and 1.2 deg off the row axis.
+       Needs clear ground ahead, which is what the headland in the `gps` maize
+       world is for. -->
+  <arg name="heading_init_distance" default="3.0"/>
+  <arg name="heading_init_max_distance" default="10.0"/>
+
+  <!-- A longer on-axis leg gives the cross-track term more distance to null a
+       residual offset before the goal plane. -->
+  <arg name="staging_distance" default="5.0"/>
+
+  <arg name="transit_timeout_sec" default="300.0"/>
+  <arg name="mission_timeout_sec" default="1800.0"/>
+
+  <!-- GPS nav. Enabled at startup: it drives the first leg. -->
+  <include file="$(find agbot_gps_nav)/launch/gps_nav.launch">
+    <arg name="sim"                   value="$(arg sim)"/>
+    <arg name="localization"          value="false"/>
+    <arg name="heading_init_distance" value="$(arg heading_init_distance)"/>
+    <arg name="heading_init_max_distance" value="$(arg heading_init_max_distance)"/>
+    <arg name="staging_distance"      value="$(arg staging_distance)"/>
+  </include>
+
+  <!-- Vision nav, held OFF until the robot reaches the row entrance. Its
+       mission state is reset when it is enabled, so the exit detector arms
+       from the row entrance rather than from wherever the transit began. -->
+  <include file="$(find agbot_vision_nav)/launch/vision_nav.launch">
+    <arg name="sim"              value="$(arg sim)"/>
+    <arg name="start_enabled"    value="false"/>
+    <arg name="mission_enabled"  value="true"/>
+    <arg name="num_rows"         value="$(arg num_rows)"/>
+    <arg name="first_turn_direction" value="$(arg first_turn_direction)"/>
+    <arg name="rear_camera_enabled"  value="$(arg rear_camera_enabled)"/>
+    <arg name="model_path"       value="$(arg model_path)"
+         if="$(eval arg('model_path') != '')"/>
+  </include>
+
+  <node name="mission_supervisor" pkg="agbot_gps_nav"
+        type="mission_supervisor.py" output="screen">
+    <param name="waypoint_file"       value="$(arg waypoint_file)"/>
+    <param name="waypoint"            value="$(arg waypoint)"/>
+    <param name="transit_timeout_sec" value="$(arg transit_timeout_sec)"/>
+    <param name="mission_timeout_sec" value="$(arg mission_timeout_sec)"/>
+  </node>
+
+</launch>

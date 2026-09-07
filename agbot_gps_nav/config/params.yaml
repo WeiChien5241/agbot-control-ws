@@ -43,6 +43,19 @@ turn_in_place_rate: 0.4    # rad/s while turning in place
 # ---- arrival ----------------------------------------------------------------
 approach_distance: 2.0     # m: speed ramps from cruise down to approach_speed
                            # over this last stretch
+# ⚠ On a goal WITH an approach bearing, arrival is crossing the PLANE through
+# the goal perpendicular to that bearing, within arrival_cross_tolerance of the
+# axis -- not entering a radius. A radius fails in a way that looks like
+# nothing: the robot passed 0.46 m to the side of a row entrance, so the
+# distance bottomed out at 0.47 m, never reached the 0.30 m tolerance, and the
+# follower drove calmly on up the field (sim 2026-09-07). Crossing a plane is a
+# thing that definitely happens; entering a radius is not.
+# The cross tolerance must stay UNDER half a row spacing (0.375 m), or "arrived"
+# could mean the next corridor along. Crossing further off than this re-stages
+# and tries again, up to max_approach_attempts, then fails cleanly.
+arrival_cross_tolerance: 0.35
+max_approach_attempts: 3
+
 goal_tolerance: 0.3        # m: ARRIVED, and LATCHED. Roughly the Jackal's own
                            # width; tighter than this and GPS noise decides when
                            # the robot stops.
@@ -136,6 +149,17 @@ max_goal_distance_growth: 5.0
 # clear ground ahead -- it is why GPS_plan calls it "expected behaviour, not a
 # bug". Set per-launch where the ground is known to be open.
 heading_init_distance: 0.0
+# The bootstrap ends on a MEASUREMENT, not a distance: course over ground (the
+# direction the robot actually moved, from GPS-fused positions) compared against
+# the yaw estimate. When they agree the estimate has converged. A fixed 4 m was
+# tried first and was not enough -- from a 92 deg error the robot thrashed
+# through the transit, entered the final approach 1.0 m off the axis and drove
+# past the row entrance. How far it needs depends on how wrong it started, which
+# nothing knows in advance.
+# ⚠ heading_init_max_distance is a backstop and the robot drives STRAIGHT for
+# it, so it must fit the open ground ahead.
+heading_init_max_distance: 8.0
+heading_init_tolerance_deg: 12.0
 
 # Whether the node drives on startup. true is today's behaviour and the default.
 # Set false when vision nav owns the robot first and the supervisor will hand

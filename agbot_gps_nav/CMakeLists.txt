@@ -22,6 +22,7 @@ include_directories(${catkin_INCLUDE_DIRS})
 
 catkin_install_python(PROGRAMS
   scripts/gps_nav_node.py
+  scripts/mission_supervisor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
