@@ -55,6 +55,11 @@ max_fix_age_sec: 2.0       # no fresh GNSS fix -> stop. At 0.4 m/s this is 0.8 m
                            # of blind driving, which is the budget.
 require_fix: true          # false only for bench tests with no GNSS at all
 
+# How long a refusal stays on ~status. A refusal is a one-shot event and
+# ~status is rewritten every control tick, so without a hold the reason a goal
+# was rejected is overwritten within 50 ms and the operator sees nothing.
+refusal_hold_sec: 5.0
+
 # ⚠ 0 = STATUS_FIX, 1 = STATUS_SBAS_FIX, 2 = STATUS_GBAS_FIX (RTK).
 # The Gazebo hector plugin reports 0 and has no way to report anything else
 # (jackal.gazebo:24-38 sets no <status> tag), so a gate written for the field

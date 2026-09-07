@@ -45,6 +45,7 @@
   <arg name="max_pose_age_sec"   default=""/>
   <arg name="max_fix_age_sec"    default=""/>
   <arg name="require_fix"        default=""/>
+  <arg name="refusal_hold_sec"   default=""/>
   <arg name="min_fix_status"     default=""/>
   <arg name="geofence_radius_m"  default=""/>
   <arg name="odom_topic"         default=""/>
@@ -79,6 +80,7 @@
     <param name="max_pose_age_sec"   value="$(arg max_pose_age_sec)"   if="$(eval arg('max_pose_age_sec') != '')"/>
     <param name="max_fix_age_sec"    value="$(arg max_fix_age_sec)"    if="$(eval arg('max_fix_age_sec') != '')"/>
     <param name="require_fix"        value="$(arg require_fix)"        if="$(eval arg('require_fix') != '')"/>
+    <param name="refusal_hold_sec"   value="$(arg refusal_hold_sec)"   if="$(eval arg('refusal_hold_sec') != '')"/>
     <param name="min_fix_status"     value="$(arg min_fix_status)"     if="$(eval arg('min_fix_status') != '')"/>
     <param name="geofence_radius_m"  value="$(arg geofence_radius_m)"  if="$(eval arg('geofence_radius_m') != '')"/>
     <param name="odom_topic"         value="$(arg odom_topic)"         if="$(eval arg('odom_topic') != '')"/>

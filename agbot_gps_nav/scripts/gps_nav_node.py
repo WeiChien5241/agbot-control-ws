@@ -102,6 +102,7 @@ class GpsNavNode(object):
         self._min_fix_status = int(rospy.get_param("~min_fix_status", 0))
         self._geofence_radius_m = float(rospy.get_param("~geofence_radius_m", 200.0))
         self._require_fix = bool(rospy.get_param("~require_fix", True))
+        self._refusal_hold_sec = float(rospy.get_param("~refusal_hold_sec", 5.0))
 
         self._state_lock = threading.Lock()
         self._pose = None                 # (x, y, yaw) in map
@@ -111,6 +112,12 @@ class GpsNavNode(object):
         self._paused = False
         self._block_reason = None
         self._last_state = STATE_IDLE
+        # A refusal is a one-shot event, but ~status is republished at
+        # control_rate, so without a hold the message is overwritten within
+        # 50 ms and the operator never sees why nothing happened.
+        # (text, stamp) as ONE field: the control thread reads this without the
+        # lock, and two separate fields can be seen half-written.
+        self._refusal = None
 
         cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/cmd_vel")
         self._cmd_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
@@ -177,23 +184,46 @@ class GpsNavNode(object):
                           msg.point.x, msg.point.y)
             return
         goal = geo.latlon_to_enu(lat, lon, self._datum)
-        rospy.loginfo("goal from WGS84: %.7f, %.7f = map (%.2f, %.2f)",
+        rospy.loginfo("goal from WGS84: lat %.7f, lon %.7f = map (%.2f, %.2f)",
                       lat, lon, goal[0], goal[1])
-        self._accept_goal(goal)
+        self._accept_goal(goal, hint=self._swap_hint(lat, lon))
 
-    def _accept_goal(self, goal_xy):
+    def _accept_goal(self, goal_xy, hint=None):
         """Common goal entry point. Refuses anything outside the geofence."""
         distance = math.hypot(goal_xy[0], goal_xy[1])
         if distance > self._geofence_radius_m:
             rospy.logerr("REFUSING goal %.1f m from the datum; geofence is %.1f m. "
-                         "Either the datum is wrong or the goal is.",
-                         distance, self._geofence_radius_m)
-            self._set_status("REFUSED goal %.1f m out (geofence %.1f m)"
-                             % (distance, self._geofence_radius_m))
+                         "Either the datum is wrong or the goal is.%s",
+                         distance, self._geofence_radius_m,
+                         (" " + hint) if hint else "")
+            self._refuse("REFUSED: goal %.0f m out, geofence %.0f m%s"
+                         % (distance, self._geofence_radius_m,
+                            ("; " + hint) if hint else ""))
             return
         with self._state_lock:
             self._follower.set_goal(goal_xy)
             self._block_reason = None
+            self._refusal = None
+
+    def _refuse(self, text):
+        """Record a refusal so it survives on ~status long enough to be read."""
+        with self._state_lock:
+            self._refusal = (text, rospy.Time.now())
+        self._set_status(text)
+
+    def _swap_hint(self, lat, lon):
+        """If reading this pair the other way round would land inside the
+        geofence, say so. A swapped lat/lon whose latitude happens to be a
+        legal one (|lat| <= 90) cannot be caught by a range check -- this is
+        the check that actually names the mistake."""
+        try:
+            east, north = geo.latlon_to_enu(lon, lat, self._datum)
+        except (ValueError, TypeError):
+            return None
+        if math.hypot(east, north) <= self._geofence_radius_m:
+            return ("swapping them lands inside the geofence -- this message "
+                    "carries x=LONGITUDE, y=latitude")
+        return None
 
     def _pause_srv(self, req):
         with self._state_lock:
@@ -268,6 +298,15 @@ class GpsNavNode(object):
 
         if arrived_now:
             rospy.loginfo("ARRIVED (%.2f m from goal). Stopped.", distance or 0.0)
+
+        # A recent refusal outranks the routine state line: it is the answer
+        # to "why is nothing happening", and it is only true for an instant.
+        refusal = self._refusal
+        if refusal is not None:
+            if (now - refusal[1]).to_sec() <= self._refusal_hold_sec:
+                self._set_status(refusal[0])
+                return
+            self._refusal = None
 
         if reason is not None:
             self._set_status("HOLD %s" % reason)
