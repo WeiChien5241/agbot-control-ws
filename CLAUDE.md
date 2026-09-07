@@ -160,13 +160,13 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 230 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 240 passed
 cd ../agbot_gps_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 93 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 149 passed
 ```
 `agbot_vision_nav/test/test_launch_files.py` walks the WHOLE workspace, so it
 covers `agbot_gps_nav`'s and `agbot_bringup`'s launch files too — which is why
-its count rose from 214 to 230 when the GPS package landed.
+its count rose from 214 to 240 as the GPS package grew.
 
 Performance report from a run (no ROS; CSVs are written automatically):
 ```bash
@@ -206,7 +206,52 @@ roslaunch agbot_gps_nav gps_nav.launch sim:=true
 # then: RViz "2D Nav Goal" (Fixed Frame MUST be map), or a lat/lon:
 rostopic pub -1 /gps_nav_node/goal_wgs84 geometry_msgs/PointStamped \
   '{header: {frame_id: wgs84}, point: {x: -86.9910, y: 40.4695}}'   # x=LON, y=LAT
+
+# THE WHOLE CAPABILITY: trailer -> row entrance -> hand off -> 3-row mission
+rosrun agbot_bringup switch_maize_world.sh gps
+roslaunch agbot_bringup agbot_gazebo.launch gps:=true \
+  x:=-0.798 y:=-21.361 z:=0.35 yaw:=1.5708     # the trailer, 18 m out
+roslaunch agbot_gps_nav gps_vision_mission.launch sim:=true num_rows:=3
+rostopic echo /mission_supervisor/status
 ```
+
+**The handoff.** `mission_supervisor.py` sequences it; the decisions live in
+the rospy-free `handoff_fsm.py`. ⚠ **A disabled node goes SILENT, not zeros.**
+Both nodes publish `/cmd_vel`, which twist_mux takes as ONE input at priority 1
+and arbitrates by **priority, not rate** — two publishers on it are not
+arbitrated at all, they interleave, and zeros from a "stopped" node shred the
+active one's commands. So `~set_enabled` false emits one zero then goes quiet,
+while `~pause` keeps emitting zeros (a paused node is still in charge and should
+hold the robot immediately). Measured: driving 19.8 Hz non-zero, paused 19.8 Hz
+zero, disabled **0.0 Hz**. ⚠ Opposite polarity: `~pause` true = stop,
+`~set_enabled` true = go. Enabling vision nav **resets** the mission
+(`MissionFSM.reset()`) so the exit detector arms from the row entrance and not
+from wherever the transit began.
+
+**Arriving on a bearing.** A row entrance is a point *plus a direction*. Given
+`approach_bearing`, the follower stages back along the axis, turns to it
+(`ALIGN`), and runs the final leg tracking the **axis line, not the goal
+point** — steering at the point corrects lateral offset in the last metre and
+swings the robot as it arrives (measured: 41.2° → 0.4°). ⚠ And arrival is
+**crossing the goal plane** within half a row spacing of the axis, never
+entering a radius: a radius let the robot pass 0.46 m to the side and drive on
+up the field with the distance stuck at 0.47 m.
+
+⚠ **`first_turn_direction` must match the corridor.** Out of the leftmost
+corridor the next one is to the robot's RIGHT. Turning left out of `corridor_0`
+drives out of the field and ends the mission at `rows=1/3`.
+`scripts/rows_to_waypoints.py` generates the waypoints (and the matching turn
+direction) from the world's own `gt_map.csv`, because the layout is seeded and
+procedural — regenerate them whenever the world is regenerated.
+
+⚠ **Not bugs**, recorded so nobody chases them: the ~1/s `Transform from ...
+unavailable ... Using latest instead` warnings are throttled upstream behaviour
+(`navsat_transform` has no `transform_timeout` at all; measured position
+agreement is 2 cm), and `World frame->cartesian transform is Origin:
+(-501151.9, ...)` is an internal cartesian origin, not a datum error. ⚠ **Do not
+teleport the robot with `/gazebo/set_model_state`** and expect the map-frame
+heading to follow — the EKF's yaw is dead-reckoned and a teleport is invisible
+to it. Restart the sim at the pose you want.
 
 - `src/agbot_gps_nav/geo.py` — WGS84 ↔ local ENU about a datum. Local tangent
   plane using the WGS84 meridional **and** prime-vertical radii at the datum
@@ -247,7 +292,8 @@ field run fail, so `use_odometry_yaw: true` is mandatory and `imu0_config`
 leaves absolute yaw `false`.
 
 The expectation was that this blocks everything until a heading estimator
-exists. **It does not.** Measured in the blank world:
+exists. **It does not** — but it is not free either, and 2026-09-07 measured
+where the line falls. Measured in the blank world:
 
 | condition | heading error vs Gazebo ground truth |
 |---|---|
@@ -265,12 +311,23 @@ therefore works at **any** spawn yaw today:
 roslaunch agbot_bringup agbot_gps_sim.launch yaw:=1.2   # still arrives
 ```
 
-What it costs, and why Phase 3 is still wanted: converging from 74° took a
-**6.2 m lateral excursion** on a 20 m leg. Near a row entrance that is a
-collision. So a dedicated `heading_estimator.py` is now a **quality and
-robustness** item (kill the opening excursion, bound the at-rest drift), not a
-prerequisite. ⚠ Do not "fix" the at-rest drift by fusing the IMU's absolute
-yaw — that is the sim-only signal above.
+What it costs: converging from 74° took a **6.2 m lateral excursion** on a 20 m
+leg. Near a row entrance that is a collision — and in the maize world it was: a
+92° start with no bootstrap missed the row entrance by **5.9 m**.
+
+So `heading_init_distance` (a **bootstrap**, not the full estimator) is now
+required for the maize transit and is on by default in
+`gps_vision_mission.launch`. It drives STRAIGHT — deliberately not steering,
+since steering on the estimate is the circularity being broken — until **course
+over ground** agrees with the yaw estimate. ⚠ It ends on that MEASUREMENT, not
+a distance: a fixed 4 m was tried and was not enough, because how far it needs
+depends on how wrong the estimate started. It needs clear ground ahead, which is
+why the `gps` maize world has a 20 m headland.
+
+A full `heading_estimator.py` (Phase 3) is still unbuilt and still wanted: the
+bootstrap fixes the start of a run, not the unbounded at-rest drift. ⚠ Do not
+"fix" that drift by fusing the IMU's absolute yaw — that is the sim-only signal
+above.
 
 ## Commands
 

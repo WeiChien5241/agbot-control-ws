@@ -1,16 +1,128 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot work, updated end of session 2026-09-06.
-**Read §0g first** — GPS waypoint navigation now drives A to B in simulation,
-and the heading measurement in it contradicts what both this file and
-`GPS_plan.md` previously assumed. §0f (0.5 m/s ran over the corn) is the
-vision-nav state and is unchanged; everything below it is older still.
+Handoff for the P-AgBot work, updated end of session 2026-09-07.
+**Read §0h first** — the GPS module now drives trailer → row entrance → hands
+off to vision nav → three corridors → DONE, end to end in simulation, and §0h
+lists the five defects that integration exposed. §0g is the GPS module's first
+increment and the heading measurement that corrected `GPS_plan.md`'s premise.
+§0f (0.5 m/s ran over the corn) is the vision-nav state and is unchanged;
+everything below it is older still.
 
 ⚠ **The dev machine IS the ROS1 Noetic box** — see §0g. Earlier sessions
 believed otherwise and handed every ROS command to the user.
 
 ⚠ **Nothing since 2026-08-06 has reached the GPU robot** (cpr-j100-0864, last
 updated to `0936f3b`). See the bundle flow in §0b; `catkin build` is required.
+
+---
+
+## 0h. SESSION 2026-09-07 — trailer to row to vision nav, end to end in sim
+
+### The result
+
+**The whole capability runs in simulation.** From a trailer 18 m out: heading
+bootstrap → GPS transit → arrive at the row entrance *on the row axis* → hand
+over to vision nav → three corridors driven boustrophedon → `rows=3/3`,
+`state=DONE`, supervisor `FINISHED`.
+
+```bash
+rosrun agbot_bringup switch_maize_world.sh gps
+roslaunch agbot_bringup agbot_gazebo.launch gps:=true \
+  x:=-0.798 y:=-21.361 z:=0.35 yaw:=1.5708
+roslaunch agbot_gps_nav gps_vision_mission.launch sim:=true num_rows:=3
+```
+
+`agbot_gps_nav` 119 → 149 tests, `agbot_vision_nav` 230 → 240.
+
+### ⚠ Five things the integration found. Every one was invisible in the blank world.
+
+**1. Arrival on a directed approach is crossing the goal PLANE, not entering a
+radius.** A radius fails in a way that looks like nothing at all: the robot
+passed **0.46 m to the side** of the row entrance, so Euclidean distance
+bottomed out at 0.47 m, never reached the 0.30 m tolerance, and the follower
+drove calmly on up the field reporting a growing "distance to goal". Crossing a
+plane is a thing that definitely happens; entering a radius is not. Crossing
+further off-axis than half a row spacing now re-stages and retries, then fails.
+
+**2. The heading bootstrap must end on a MEASUREMENT, not a distance.** A fixed
+4 m was tried first. From a 92° error the robot thrashed through the entire
+transit. The bootstrap now drives straight until **course over ground** — the
+direction the robot actually moved — agrees with its yaw estimate. How far that
+takes depends on how wrong the estimate started, which nothing knows in advance.
+
+**3. A receding-goal abort, because nothing else notices.** In one run the robot
+drove **100 m away from a goal 6.5 m distant**, off the heightmap, and was still
+falling minutes later at z = −464 km. The geofence is measured from the datum,
+so 100 m sat well inside it. The follower now aborts when the goal recedes past
+the closest approach — *closest*, not starting distance, because getting within
+2 m and wandering 8 m off is a failure too. Re-tested: stops at 5.7 m.
+
+**4. The world needed 20 m of headland, not 8.** The transit is not the only
+thing that needs room. The bootstrap drives STRAIGHT before any steering, and
+with 7 m between trailer and rows that leg nearly reached the goal before
+converging; the robot then turned back and the approach fell apart. Headland
+costs heightmap area, not plant count, so the RTF hit is small.
+
+**5. `first_turn_direction` must match the corridor.** Rows are ordered by
+increasing x and the robot enters along the bearing, so out of the LEFTMOST
+corridor the next one is to its RIGHT. Turning left out of `corridor_0` drove
+straight out of the field and ended the mission at `rows=1/3` in open ground.
+`rows_to_waypoints.py` now emits the direction that belongs with each corridor.
+
+⚠ And one that is documented behaviour rather than a defect, but reads as a
+silent failure: **without `rear_camera_enabled` a blocked-ahead signal ends the
+mission**, which in a 3-row run looks like a mission that quietly finished at
+`rows=1/3`. `gps_vision_mission.launch` defaults it ON.
+
+### The handoff rule: disabled means SILENT, not zero
+
+Both nodes publish `/cmd_vel`, which twist_mux takes as **one** input at
+priority 1 — it arbitrates by PRIORITY, not rate, so two publishers on it are
+not arbitrated at all, they interleave. A "stopped" node emitting zeros at
+10-20 Hz would shred the active node's commands.
+
+So `~set_enabled` false publishes ONE zero and goes quiet, while `~pause` keeps
+publishing zeros — a paused node is still in charge and should hold the robot
+immediately rather than wait out the mux's 0.5 s timeout. Measured on the GPS
+node: driving 19.8 Hz all non-zero, paused 19.8 Hz all zero, **disabled 0.0 Hz**.
+⚠ Opposite polarity too: `~pause` true = stop, `~set_enabled` true = go.
+
+Enabling vision nav **resets** the mission (new `MissionFSM.reset()`) rather than
+resuming it — after a transit under another controller the row-entry pose is
+wrong, not stale, and `min_in_row_distance` arms off it.
+
+### ⚠ Two things that are NOT bugs, recorded so nobody chases them
+
+- **`Transform from ... was unavailable for the time requested. Using latest
+  instead`**, ~1/s from `ekf_map` and `navsat_transform`. Throttled, the
+  fallback is at most one TF period stale (~8 mm at 0.4 m/s), and measured
+  position agreement with ground truth is **2 cm**. `navsat_transform` has no
+  `transform_timeout` parameter at all and upstream's own dual-EKF example ships
+  `0.0` on both EKFs.
+- **`World frame->cartesian transform is Origin: (-501151.9, ...)`** is an
+  internal cartesian origin, not a datum error. Verified: the robot at map
+  `(0.003, 0.000)` reports exactly the datum lat/lon.
+
+⚠ **You cannot teleport the robot with `/gazebo/set_model_state` and expect the
+map-frame heading to follow.** The EKF's yaw is dead-reckoned; a teleport is
+invisible to it, so the estimate stays at the old heading and the robot drives
+off in that direction. Two confusing runs came from exactly this. Restart the
+sim at the pose you want instead.
+
+### Next action
+
+1. **The datum is ACRE but approximate** (40.494928, −86.996323, read off a map).
+   Replace with a surveyed fix before any field waypoint is recorded.
+2. **None of this has run on the robot.** The rear-camera BACKOUT path is
+   field-proven, the GPS stack is not; Phase 1 (Reach M2 + NTRIP) is untouched.
+3. **The full course-over-ground heading estimator (Phase 3) is still not
+   built.** The bootstrap is its cheap half and it is enough in sim. On the real
+   robot the at-rest drift (measured 10-20°/min in §0g) is still unbounded.
+4. mapviz is installed and `mapviz_agbot.mvc` is written, but has **never been
+   opened**.
+5. `GPS_plan.md` Part A (`headland_clearance` 0.75 → 1.0) remains open.
+
+Everything in §0g and §0f is unchanged.
 
 ---
 

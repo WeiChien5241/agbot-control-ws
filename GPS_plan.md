@@ -4,13 +4,19 @@
 > known to be WRONG. Read `HANDOFF3.md` §0g before acting on this file.**
 >
 > **Done:** Phase 0 (sim-first), Phase 2 (dual EKF + `navsat_transform`),
-> Phase 4 (waypoint follower + `gps_nav_node`), Phase 5 (RViz + mapviz configs;
-> mapviz still needs its apt install). Package `agbot_gps_nav` exists and drives
-> A→B in a blank Gazebo world.
+> Phase 4 (waypoint follower + `gps_nav_node`, now with approach bearings),
+> Phase 5 (RViz + mapviz configs; mapviz installed but never opened), and
+> **Phase 6 (the vision handoff)** — `mission_supervisor.py` runs trailer → row
+> entrance → vision nav → 3 corridors → DONE, end to end in simulation
+> (2026-09-07, HANDOFF3 §0h).
 >
-> **Not done:** Phase 1 (Reach M2 hardware), Phase 3 (heading estimator),
-> Phase 6 (vision handoff), **and Part A below** (`headland_clearance`
-> 0.75 → 1.0), which was deliberately skipped and is still open.
+> **Partly done:** Phase 3. The *bootstrap* half exists as
+> `heading_init_distance` and the maize transit needs it; the full
+> course-over-ground estimator does not, and the unbounded at-rest drift is
+> still unaddressed.
+>
+> **Not done:** Phase 1 (Reach M2 hardware) **and Part A below**
+> (`headland_clearance` 0.75 → 1.0), still open.
 >
 > ⚠ **"The one hard constraint: heading" (below) overstates the case.** It is
 > true that GPS gives no orientation and that the sim's absolute IMU heading
@@ -20,8 +26,10 @@
 > robot started 74° wrong converged to 5–10° over one 20 m leg and reached its
 > goal to 0.29 m. Phase 3 is therefore a QUALITY item — it removes a 6.2 m
 > opening excursion and bounds an unbounded ~10–20°/min at-rest drift — not a
-> prerequisite. The datum in `agbot_gps_nav/config/gps_datum.yaml` is still a
-> `TODO(datum)` placeholder.
+> prerequisite — but it is not free: in the MAIZE world a 92° start with no
+> bootstrap missed the row entrance by 5.9 m, so a straight-drive bootstrap is
+> now required there and is on by default. The datum is Purdue ACRE
+> (40.494928, −86.996323) but still approximate, read off a map, not surveyed.
 
 ## Context
 

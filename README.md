@@ -180,6 +180,39 @@ it drives there and stops. No maize, no camera, so it loads in seconds.
     rostopic echo /gps_nav_node/status
     ```
 
-The field origin lives in `agbot_gps_nav/config/gps_datum.yaml` and is currently
-a placeholder — replace it with surveyed coordinates before saving any real
-waypoint.
+#### Trailer to row, with handoff to vision nav:
+
+The whole capability: the robot starts away from the corn, drives to a row
+entrance under GPS arriving pointing down the row, hands over to vision nav, and
+runs the multi-row mission.
+
+- Switch to the world that has room for the approach, and start it:
+
+    ```jsx
+    rosrun agbot_bringup switch_maize_world.sh gps
+    roslaunch agbot_bringup agbot_gazebo.launch gps:=true \
+      x:=-0.798 y:=-21.361 z:=0.35 yaw:=1.5708
+    ```
+
+- Run the sequence (in its own terminal — Gazebo's output would bury the
+  startup config blocks):
+
+    ```jsx
+    roslaunch agbot_gps_nav gps_vision_mission.launch sim:=true num_rows:=3
+    ```
+
+- Watch it:
+
+    ```jsx
+    rostopic echo /mission_supervisor/status
+    ```
+
+  It goes `TRANSIT` → `ROW_MISSION` → `FINISHED`.
+
+The row entrances come from `agbot_gps_nav/config/waypoints_maize_gps.yaml`,
+which is generated from the world by `scripts/rows_to_waypoints.py` —
+regenerate it whenever the world is regenerated.
+
+The field origin lives in `agbot_gps_nav/config/gps_datum.yaml`. It is Purdue
+ACRE but approximate, read off a map — replace it with surveyed coordinates
+before saving any real waypoint.
