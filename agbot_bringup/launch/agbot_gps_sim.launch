@@ -1,0 +1,89 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- Empty-world GPS simulation: a bare Jackal on flat ground with the
+       simulated GNSS receiver placed at the datum. No maize, no camera, no
+       heightmap, so it loads in seconds and runs at RTF 1.0 - which is the
+       point, because this world exists to test navigation arithmetic rather
+       than perception.
+
+       Run:
+         roslaunch agbot_bringup agbot_gps_sim.launch
+         roslaunch agbot_gps_nav gps_nav.launch sim:=true
+
+       The maize worlds are still the only place vision nav is tested; see
+       agbot_gazebo.launch for those. -->
+
+  <!-- Show the Gazebo GUI window; pass gui:=false for headless runs -->
+  <arg name="gui" default="true"/>
+
+  <!-- Spawn pose. Flat ground, so z only has to clear the wheels.
+
+       IMPORTANT - yaw is load-bearing here, and 0.0 is not an arbitrary
+       default. hector's GPS plugin uses referenceHeading=90
+       (jackal.gazebo:34), which maps Gazebo +X to EAST. The Jackal's stock EKF
+       deliberately does NOT fuse absolute yaw
+       (jackal_control/config/robot_localization.yaml:14-18), so its heading is
+       gyro-integrated from zero at boot - a robot-relative heading, not an
+       earth-referenced one. At yaw=0 the two coincide by construction, which is
+       what lets navsat_transform run honestly on use_odometry_yaw:true with no
+       heading estimator yet.
+
+       Spawning at any other yaw breaks that coincidence, and that is a FEATURE:
+         roslaunch agbot_bringup agbot_gps_sim.launch yaw:=1.2
+       reproduces the real robot's heading problem exactly, for free, in a world
+       where nothing can be damaged. It is the acceptance test for the heading
+       estimator that has not been written yet. Until then, expect the robot to
+       drive off in the wrong direction at any nonzero yaw. -->
+  <arg name="x"   default="0.0"/>
+  <arg name="y"   default="0.0"/>
+  <arg name="z"   default="0.2"/>
+  <arg name="yaw" default="0.0"/>
+
+  <!-- Set false to disable teleop (also silences joy_node when no pad is
+       plugged in) -->
+  <arg name="joystick" default="true"/>
+
+  <!-- The single definition of where this world sits on Earth. Read below by
+       load_robot_description.sh, and by navsat_transform in
+       agbot_gps_nav/launch/gps_localization.launch. -->
+  <arg name="datum_file" default="$(find agbot_gps_nav)/config/gps_datum.yaml"/>
+
+  <!-- 1. World: gazebo_ros' stock empty world - a ground plane and a sun. -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name"   value="$(find gazebo_ros)/worlds/empty.world"/>
+    <arg name="gui"          value="$(arg gui)"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="paused"       value="false"/>
+    <arg name="headless"     value="false"/>
+  </include>
+
+  <!-- 2. Jackal description, controllers, teleop, and the model spawn. This is
+       also what brings in jackal_control/control.launch, and with it the stock
+       EKF (odom -> base_link, /odometry/filtered) and twist_mux. Both are left
+       exactly as they are; the GPS stack only ADDS a second EKF on a different
+       frame and a different topic.
+       Note: this sets /robot_description without the datum; the <param> below
+       overrides it. -->
+  <include file="$(find jackal_gazebo)/launch/spawn_jackal.launch">
+    <arg name="x"        value="$(arg x)"/>
+    <arg name="y"        value="$(arg y)"/>
+    <arg name="z"        value="$(arg z)"/>
+    <arg name="yaw"      value="$(arg yaw)"/>
+    <arg name="joystick" value="$(arg joystick)"/>
+  </include>
+
+  <!-- 3. Override /robot_description so the simulated GPS is referenced to OUR
+       datum rather than hector's factory default of 49.9 / 8.9 (Darmstadt).
+       Placed AFTER spawn_jackal so this param wins: ROS1 runs every <param>
+       command, in order, before any node starts, so robot_state_publisher and
+       spawn_model both read this version.
+       "none" means no JACKAL_URDF_EXTRAS - a bare Jackal with no camera, since
+       nothing in this world would be worth looking at. -->
+  <param name="robot_description"
+         command="$(find agbot_bringup)/scripts/load_robot_description.sh
+                  none
+                  $(find jackal_description)/urdf/jackal.urdf.xacro
+                  $(arg datum_file)" />
+
+</launch>
