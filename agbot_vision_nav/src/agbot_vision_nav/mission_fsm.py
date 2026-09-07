@@ -340,8 +340,37 @@ class MissionFSM:
         # lower it if the leg under-corrects.
         self.exit_clear_rear_offset_gain = exit_clear_rear_offset_gain
 
-        # +1 = left (positive angular.z, REP-103), -1 = right
-        self._turn_sign = 1 if first_turn_direction == "left" else -1
+        self._first_turn_direction = first_turn_direction
+        self.reset()
+
+    def reset(self, first_turn_direction=None):
+        """Return to a clean mission: row 1, FOLLOW_ROW, nothing accumulated.
+
+        ⚠ THIS IS NOT PAUSE, AND THE DIFFERENCE IS THE WHOLE POINT. `~pause`
+        exists so a mission SURVIVES an operator interruption -- rows_driven,
+        the boustrophedon turn direction, the exit detector's arming distance
+        and the row-entry pose all stay exactly as they were. reset() is for
+        the opposite case: the robot has been somewhere else entirely (driven
+        to a row entrance under GPS, say) and the previous mission's state is
+        not merely stale, it is wrong.
+
+        ⚠ The row-entry pose is cleared rather than set, because update() stamps
+        it lazily on the first FOLLOW_ROW tick when it is None. That is what
+        makes the exit detector arm over min_in_row_distance from WHERE THE
+        ROBOT IS NOW instead of from wherever the node happened to start. Get
+        this wrong and a node enabled after a 40 m transit has already "driven"
+        far more than the arming distance, so the very first frame can fire an
+        exit in the middle of row 1.
+
+        The constructor calls this, so the field list cannot drift out of sync
+        with initial state -- there is only one definition of "a fresh mission".
+        """
+        if first_turn_direction is not None:
+            self._first_turn_direction = first_turn_direction
+        # +1 = left (positive angular.z, REP-103), -1 = right. Restored from the
+        # configured direction, not from whatever the last row left it at, or a
+        # reset mission turns the wrong way out of row 1.
+        self._turn_sign = 1 if self._first_turn_direction == "left" else -1
 
         self.state = STATE_FOLLOW_ROW
         self.rows_driven = 0
@@ -368,6 +397,14 @@ class MissionFSM:
         self._reacquire_last = None      # previous REACQUIRE distance sample
         self._backout_target = None    # meters to reverse in BACKOUT
         self._suppress_flip = False    # skip one turn-sign flip at REACQUIRE
+
+        # Every distance- and time-debounced accumulator lives in these, and
+        # each works on the DELTA between consecutive samples. Left alone, the
+        # first frame after a reset credits the whole transit at once.
+        self._controller.reset()
+        self._detector.reset()
+        self.rear_exit_detector.reset()
+        self.exit_clear_detector.reset()
 
     # ------------------------------------------------------------ helpers --
     @property

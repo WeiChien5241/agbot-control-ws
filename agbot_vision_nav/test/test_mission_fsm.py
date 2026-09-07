@@ -1389,3 +1389,116 @@ def test_rear_steered_exit_clear_does_not_disturb_the_backout_branch():
     assert state == STATE_BACKOUT
     assert fsm.rows_driven == 0
     assert len(fsm.blocked_events) == 1
+
+
+# ---------------------------------------------------------------- reset() --
+# reset() exists so a GPS supervisor can drive the robot to a row entrance and
+# then hand over to a CLEAN mission. It is the opposite of ~pause, which exists
+# so a mission survives an interruption unchanged.
+
+
+def test_reset_returns_to_a_clean_row_one():
+    fsm = make_fsm(num_rows=3)
+    pose = drive_row_to_exit(fsm)
+    fsm.rows_driven = 2
+    fsm.blocked_events.append((1, 3.0))
+    fsm.revoked_exits.append((2, 1.5))
+
+    fsm.reset()
+
+    assert fsm.state == STATE_FOLLOW_ROW
+    assert fsm.rows_driven == 0
+    assert fsm.blocked_events == []
+    assert fsm.revoked_exits == []
+    assert pose is not None          # the drive really did happen
+
+
+def test_reset_restamps_the_row_entry_pose_where_the_robot_IS():
+    """⚠ The load-bearing one, and the inverse of the reverted
+    `resume_after_override` (commit 291e0db), which deliberately KEPT the
+    row-entry pose because the robot was still in the same row.
+
+    Here the robot has been driven somewhere else entirely -- to a row entrance
+    under GPS -- so keeping the old reference would mean the exit detector
+    counts the whole transit as in-row distance and can fire an exit on the
+    first frame of row 1.
+    """
+    fsm = make_fsm()
+    update(fsm, corridor_result(), (0.0, 0.0, 0.0), WIDTH)
+    assert fsm._row_entry_xy == (0.0, 0.0)
+
+    fsm.reset()
+    assert fsm._row_entry_xy is None, "must be re-stamped lazily, not carried"
+
+    # ... and the next tick stamps it at the CURRENT pose, 40 m away.
+    update(fsm, corridor_result(), (40.0, 0.0, 0.0), WIDTH)
+    assert fsm._row_entry_xy == (40.0, 0.0)
+    assert fsm._distance_in_row((40.0, 0.0, 0.0)) == pytest.approx(0.0)
+
+
+def test_reset_does_not_bank_the_transit_as_in_row_distance():
+    """The consequence of the above, stated as behaviour: a reset mission must
+    still have to DRIVE min_in_row_distance before an exit can fire."""
+    fsm = make_fsm()
+    fsm.reset()
+    pose = (40.0, 0.0, 0.0)
+    update(fsm, corridor_result(), pose, WIDTH)
+
+    # Open field immediately, from a standstill at the handover point.
+    for _ in range(20):
+        _lx, _az, state, done = update(fsm, open_result(), pose, WIDTH)
+    assert state == STATE_FOLLOW_ROW, "fired an exit without driving the row"
+    assert not done
+
+
+def test_reset_restores_the_configured_turn_direction():
+    """A mission that ended mid-boustrophedon leaves _turn_sign flipped. A
+    reset mission must turn out of row 1 the way it was configured to."""
+    fsm = make_fsm(first_turn_direction="left")
+    assert fsm._turn_sign == 1
+    fsm._turn_sign = -1                      # as if a previous row flipped it
+    fsm.reset()
+    assert fsm._turn_sign == 1
+
+    fsm = make_fsm(first_turn_direction="right")
+    fsm._turn_sign = 1
+    fsm.reset()
+    assert fsm._turn_sign == -1
+
+
+def test_reset_can_change_the_turn_direction():
+    fsm = make_fsm(first_turn_direction="left")
+    fsm.reset(first_turn_direction="right")
+    assert fsm._turn_sign == -1
+    fsm.reset()                              # sticks without re-passing it
+    assert fsm._turn_sign == -1
+
+
+def test_reset_clears_the_detectors_and_the_controller():
+    fsm = make_fsm()
+    controller = fsm._controller
+    before = controller.reset_calls
+    drive_row_to_exit(fsm)
+    fsm.reset()
+    assert controller.reset_calls > before
+    assert fsm._detector._open_distance == 0.0
+    assert fsm._revoke_last_distance is None
+    assert fsm._reacquire_last is None
+
+
+def test_the_constructor_and_reset_agree_on_what_a_fresh_mission_is():
+    """They share one implementation on purpose; this pins that they cannot
+    drift apart if someone adds a field to only one of them."""
+    fresh = make_fsm()
+    used = make_fsm()
+    drive_row_to_exit(used)
+    used.rows_driven = 2
+    used.reset()
+
+    for field in ("state", "rows_driven", "blocked_events", "revoked_exits",
+                  "_entry_xy", "_row_entry_xy", "_exit_clear_offset",
+                  "_exit_clear_rear_open_at", "_exit_clear_rear_frames",
+                  "_revoke_fail", "_revoke_last_distance", "_last_yaw",
+                  "_swept", "_reacquire_distance", "_reacquire_last",
+                  "_backout_target", "_suppress_flip", "_turn_sign"):
+        assert getattr(used, field) == getattr(fresh, field), field
