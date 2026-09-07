@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- GPS waypoint navigation: localization + the waypoint follower.
+
+       Simulation (blank world):
+         roslaunch agbot_bringup agbot_gps_sim.launch
+         roslaunch agbot_gps_nav gps_nav.launch sim:=true
+
+       Then give it a goal, any of these three ways:
+         - RViz: set Fixed Frame to `map`, press "2D Nav Goal", click.
+         - mapviz: click on the map (needs ros-noetic-mapviz + tile-map).
+         - by hand, as a lat/lon (note x=LONGITUDE, y=latitude):
+             rostopic pub -1 /gps_nav_node/goal_wgs84 \
+               geometry_msgs/PointStamped \
+               '{header: {frame_id: wgs84}, point: {x: -86.9910, y: 40.4695}}'
+
+       ⚠ WITH NO HEADING ESTIMATOR YET this is only correct when the robot
+       starts facing EAST. See gps_localization.launch. -->
+
+  <!-- true selects the Gazebo GNSS topic, false the real receiver's. -->
+  <arg name="sim" default="false"/>
+  <arg name="gps_fix_topic"
+       default="$(eval '/navsat/fix' if arg('sim') else '/gps/fix')"/>
+
+  <arg name="datum_file" default="$(find agbot_gps_nav)/config/gps_datum.yaml"/>
+
+  <!-- Set false to run the follower against a localization stack that is
+       already up (e.g. started by agbot_bringup). -->
+  <arg name="localization" default="true"/>
+
+  <!-- Every tunable below defaults to EMPTY and its <param> is conditional, so
+       config/params.yaml stays the source of truth and passing nothing changes
+       nothing. See the header of that file. -->
+  <arg name="linear_x_cruise"    default=""/>
+  <arg name="approach_speed"     default=""/>
+  <arg name="angular_z_max"      default=""/>
+  <arg name="heading_gain"       default=""/>
+  <arg name="slow_down_deg"      default=""/>
+  <arg name="turn_in_place_deg"  default=""/>
+  <arg name="turn_in_place_rate" default=""/>
+  <arg name="approach_distance"  default=""/>
+  <arg name="goal_tolerance"     default=""/>
+  <arg name="control_rate"       default=""/>
+  <arg name="max_pose_age_sec"   default=""/>
+  <arg name="max_fix_age_sec"    default=""/>
+  <arg name="require_fix"        default=""/>
+  <arg name="min_fix_status"     default=""/>
+  <arg name="geofence_radius_m"  default=""/>
+  <arg name="odom_topic"         default=""/>
+  <arg name="cmd_vel_topic"      default=""/>
+
+  <include file="$(find agbot_gps_nav)/launch/gps_localization.launch"
+           if="$(arg localization)">
+    <arg name="sim"           value="$(arg sim)"/>
+    <arg name="gps_fix_topic" value="$(arg gps_fix_topic)"/>
+    <arg name="datum_file"    value="$(arg datum_file)"/>
+  </include>
+
+  <node name="gps_nav_node" pkg="agbot_gps_nav" type="gps_nav_node.py"
+        output="screen">
+    <rosparam file="$(find agbot_gps_nav)/config/params.yaml" command="load"/>
+    <!-- The datum, from the one file that defines it. -->
+    <rosparam file="$(arg datum_file)" command="load"/>
+
+    <!-- Launch-owned: computed from sim, so it has no params.yaml entry. -->
+    <param name="gps_fix_topic" value="$(arg gps_fix_topic)"/>
+
+    <param name="linear_x_cruise"    value="$(arg linear_x_cruise)"    if="$(eval arg('linear_x_cruise') != '')"/>
+    <param name="approach_speed"     value="$(arg approach_speed)"     if="$(eval arg('approach_speed') != '')"/>
+    <param name="angular_z_max"      value="$(arg angular_z_max)"      if="$(eval arg('angular_z_max') != '')"/>
+    <param name="heading_gain"       value="$(arg heading_gain)"       if="$(eval arg('heading_gain') != '')"/>
+    <param name="slow_down_deg"      value="$(arg slow_down_deg)"      if="$(eval arg('slow_down_deg') != '')"/>
+    <param name="turn_in_place_deg"  value="$(arg turn_in_place_deg)"  if="$(eval arg('turn_in_place_deg') != '')"/>
+    <param name="turn_in_place_rate" value="$(arg turn_in_place_rate)" if="$(eval arg('turn_in_place_rate') != '')"/>
+    <param name="approach_distance"  value="$(arg approach_distance)"  if="$(eval arg('approach_distance') != '')"/>
+    <param name="goal_tolerance"     value="$(arg goal_tolerance)"     if="$(eval arg('goal_tolerance') != '')"/>
+    <param name="control_rate"       value="$(arg control_rate)"       if="$(eval arg('control_rate') != '')"/>
+    <param name="max_pose_age_sec"   value="$(arg max_pose_age_sec)"   if="$(eval arg('max_pose_age_sec') != '')"/>
+    <param name="max_fix_age_sec"    value="$(arg max_fix_age_sec)"    if="$(eval arg('max_fix_age_sec') != '')"/>
+    <param name="require_fix"        value="$(arg require_fix)"        if="$(eval arg('require_fix') != '')"/>
+    <param name="min_fix_status"     value="$(arg min_fix_status)"     if="$(eval arg('min_fix_status') != '')"/>
+    <param name="geofence_radius_m"  value="$(arg geofence_radius_m)"  if="$(eval arg('geofence_radius_m') != '')"/>
+    <param name="odom_topic"         value="$(arg odom_topic)"         if="$(eval arg('odom_topic') != '')"/>
+    <param name="cmd_vel_topic"      value="$(arg cmd_vel_topic)"      if="$(eval arg('cmd_vel_topic') != '')"/>
+  </node>
+
+</launch>

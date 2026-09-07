@@ -1,0 +1,79 @@
+# =============================================================================
+# THIS FILE IS THE SOURCE OF TRUTH FOR gps_nav_node's TUNING.
+#
+# Edit a value here and it takes effect. Launch <arg>s default to EMPTY and
+# their <param> tags are conditional, so a launch argument overrides this file
+# only when one is actually passed -- use that for per-run iteration, then write
+# the settled value back here.
+#
+# Confirm what actually resolved:
+#   roslaunch --dump-params agbot_gps_nav gps_nav.launch [args...]
+# The node also logs its full resolved config once at startup, right before
+# "gps_nav_node ready".
+#
+# TWO EXCEPTIONS, owned elsewhere:
+#   datum          -- config/gps_datum.yaml, loaded into this node's namespace.
+#                     ONE definition, shared with navsat_transform and with the
+#                     simulator's GAZEBO_WORLD_LAT/LON.
+#   gps_fix_topic  -- computed by the launch file from sim:=true|false.
+#
+# (agbot_vision_nav spent a session unpicking a version of this where every knob
+# was declared in BOTH the launch file and the yaml and the launch silently won
+# for all 44 duplicated keys. Do not reintroduce that here.)
+# =============================================================================
+
+# ---- speed envelope ---------------------------------------------------------
+# Deliberately below vision nav's in-row cruise is the WRONG instinct here: this
+# leg is open ground with no corn to hit, so it can be faster than in-row work.
+# It is capped by what is comfortable to walk beside and stop by hand.
+linear_x_cruise: 0.4       # m/s, cruising toward a distant goal
+approach_speed: 0.15       # m/s, the last approach_distance metres
+angular_z_max: 0.6         # rad/s hard clamp on |angular.z|
+heading_gain: 1.2          # angular_z = gain * heading_error, then clamped
+slow_down_deg: 60.0        # forward speed derates linearly to 0 at this error,
+                           # so a correcting turn is tighter than a cruising one
+
+# ---- turn in place ----------------------------------------------------------
+# Above this heading error the robot stops and turns rather than driving. It is
+# what stops a close, off-axis goal turning into an orbit the turning circle can
+# never close.
+turn_in_place_deg: 30.0
+turn_in_place_rate: 0.4    # rad/s while turning in place
+
+# ---- arrival ----------------------------------------------------------------
+approach_distance: 2.0     # m: switch to approach_speed inside this
+goal_tolerance: 0.3        # m: ARRIVED, and LATCHED. Roughly the Jackal's own
+                           # width; tighter than this and GPS noise decides when
+                           # the robot stops.
+
+# ---- safety -----------------------------------------------------------------
+# This robot drives across open ground unattended. Every gate below stops it.
+control_rate: 20.0         # Hz. Also the cmd_vel keep-alive rate; twist_mux
+                           # times an input out after 0.5 s.
+max_pose_age_sec: 1.0      # no fresh map pose -> stop
+max_fix_age_sec: 2.0       # no fresh GNSS fix -> stop. At 0.4 m/s this is 0.8 m
+                           # of blind driving, which is the budget.
+require_fix: true          # false only for bench tests with no GNSS at all
+
+# ⚠ 0 = STATUS_FIX, 1 = STATUS_SBAS_FIX, 2 = STATUS_GBAS_FIX (RTK).
+# The Gazebo hector plugin reports 0 and has no way to report anything else
+# (jackal.gazebo:24-38 sets no <status> tag), so a gate written for the field
+# rejects every simulated fix. 0 is the SIM value. SET THIS TO 2 BEFORE ANY
+# FIELD RUN -- without RTK the fix is ~2 m, and a 2 m error at a row entrance
+# is a robot driving into corn rather than between it.
+min_fix_status: 0
+
+# Maximum distance from the datum, for both goals and the robot itself. A goal
+# beyond it is refused; driving beyond it stops the robot. With no heading
+# estimator yet, a heading-sign error sends the robot in exactly the wrong
+# direction and THIS IS THE ONLY THING THAT STOPS IT. Size it to the site, not
+# to the route: generous enough not to trip, small enough to matter.
+geofence_radius_m: 200.0
+
+# ---- topics -----------------------------------------------------------------
+# ⚠ /odometry/filtered/global, NOT /odometry/filtered. The latter is the Jackal's
+# stock odom-frame EKF, which is smooth but not georeferenced.
+odom_topic: /odometry/filtered/global
+# ⚠ /cmd_vel and never the controller topic: twist_mux ranks cmd_vel at priority
+# 1 and the joysticks at 9 and 10, so a human always outranks this node.
+cmd_vel_topic: /cmd_vel
