@@ -1,0 +1,82 @@
+# =============================================================================
+# ekf_map -- the SECOND EKF, the one that knows where the robot is on Earth.
+#
+# ⚠ THE JACKAL'S OWN EKF IS NOT TOUCHED. jackal_control/control.launch runs
+# `ekf_localization` with world_frame: odom; it keeps publishing
+# /odometry/filtered and owning the odom -> base_link transform exactly as
+# before, which matters because vision_nav_node depends on both. This instance
+# is purely additive: a different world_frame, a different output topic, and a
+# different TF edge (map -> odom). Two EKFs, two edges, no conflict.
+#
+# Do not "simplify" this by adding GPS to the existing EKF. An odom-frame
+# estimate must be smooth and continuous for the row controller; a map-frame one
+# jumps whenever GPS corrects. Those are incompatible requirements, which is the
+# entire reason robot_localization documents the dual-EKF pattern.
+# =============================================================================
+
+frequency: 30
+sensor_timeout: 0.1
+two_d_mode: true          # flat field; stops roll/pitch noise leaking into x/y
+publish_tf: true
+
+map_frame: map
+odom_frame: odom
+base_link_frame: base_link
+world_frame: map          # <- the only structural difference from the stock EKF
+
+# Wheel odometry: velocities only, same as the stock EKF's odom0_config.
+odom0: /jackal_velocity_controller/odom
+odom0_config: [false, false, false,
+               false, false, false,
+               true,  true,  true,
+               false, false, true,
+               false, false, false]
+odom0_differential: false
+odom0_relative: false
+
+# IMU: roll/pitch absolute and all three angular rates -- but NOT absolute yaw
+# (row 2, column 3 stays false). That mirrors the stock EKF deliberately. In
+# Gazebo the IMU's yaw is a fake earth-referenced heading that the real robot
+# will not have; consuming it here would make sim pass and the field fail.
+imu0: /imu/data
+imu0_config: [false, false, false,
+              true,  true,  false,
+              false, false, false,
+              true,  true,  true,
+              false, false, false]
+imu0_differential: false
+imu0_relative: false
+imu0_remove_gravitational_acceleration: true
+
+# GPS, via navsat_transform_node: ABSOLUTE X AND Y ONLY. No z (flat field, and
+# GNSS altitude is the worst of its three axes), no orientation (a fix carries
+# none), no velocity.
+odom1: /odometry/gps
+odom1_config: [true,  true,  false,
+               false, false, false,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+odom1_differential: false
+odom1_relative: false
+odom1_queue_size: 10
+odom1_nodelay: true
+
+# x and y process noise is raised well above the odom-frame EKF's 1e-3. This is
+# the "the map frame is allowed to jump" tuning: a GPS correction should move
+# the estimate promptly rather than be argued down by dead reckoning.
+process_noise_covariance: [1.0,  0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    1.0,  0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    1e-3, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.3,  0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.3,  0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.01, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.5,   0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.5,   0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.1,  0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.3,  0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.3,  0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.3,  0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.3,  0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.3,  0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.3]

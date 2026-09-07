@@ -1,0 +1,63 @@
+# =============================================================================
+# navsat_transform_node -- converts a GNSS fix into a pose in the `map` frame.
+#
+# Adapted from
+#   /opt/ros/noetic/share/robot_localization/params/dual_ekf_navsat_example.yaml
+# Three of that template's values are WRONG for this robot and the reasons are
+# below, because they are exactly the kind of thing that gets copied forward.
+#
+# The datum itself is NOT here -- it lives in gps_datum.yaml, which
+# gps_localization.launch loads into this node's namespace alongside this file.
+# =============================================================================
+
+frequency: 30
+delay: 3.0                 # s to wait before using odometry, so the EKF settles
+
+# ---- heading -------------------------------------------------------------
+# THE one hard constraint in this whole subsystem. navsat_transform needs an
+# EARTH-REFERENCED yaw to place the robot in the UTM grid, and this robot does
+# not have one for free:
+#
+#   * The Jackal's internal magnetometer is unusable -- Clearpath's own manual
+#     says so, because of where it sits in the chassis.
+#   * A single Reach M2 outputs position, not orientation. Emlid state plainly
+#     that it "doesn't output yaw, pitch, and roll values".
+#   * Gazebo's hector IMU plugin DOES publish a fake absolute heading
+#     (jackal.gazebo:9-22, 0.005 rad drift). Using it would make every sim test
+#     pass and every field test fail. We do not use it.
+#
+# So: take yaw from the odometry input instead. That yaw is gyro-integrated
+# from zero at boot, i.e. RELATIVE TO WHERE THE ROBOT HAPPENED TO BE POINTING,
+# not to east. In sim, spawning at yaw=0 makes the two coincide by construction
+# (hector's referenceHeading=90 maps Gazebo +X to east), which is why the blank
+# world works today with no heading estimator.
+#
+# ON THE REAL ROBOT THIS IS NOT TRUE and this stack will drive the wrong way
+# until heading_estimator.py exists. Reproduce it deliberately with
+#   roslaunch agbot_bringup agbot_gps_sim.launch yaw:=1.2
+# The estimator inserts itself by republishing a yaw-corrected odometry and
+# changing ONE remap in gps_localization.launch. Nothing else moves.
+use_odometry_yaw: true
+
+# Both of the following are corrections that only make sense with an IMU-derived
+# heading, which we just refused. Left explicit rather than deleted so nobody
+# copies the template's values back in.
+yaw_offset: 0.0
+# The template says 1.5707963 -- correct for an IMU that reads 0 at magnetic
+# NORTH. Ours takes yaw from odometry, whose zero is east. Adding 90 deg here
+# would rotate the entire map frame by a quarter turn.
+magnetic_declination_radians: 0.0
+# The template says 0.0429351, which is Edinburgh's. Declination corrects a
+# MAGNETIC heading to a true one; we have no magnetometer in the loop, and
+# Gazebo has no magnetic field model at all. At ACRE the real declination is a
+# few degrees west - it becomes relevant only if a compass is ever added.
+
+# ---- frame / output ------------------------------------------------------
+zero_altitude: true            # flat field; keeps a noisy GPS altitude out of z
+broadcast_utm_transform: false # we do not need a utm frame; map is enough
+publish_filtered_gps: true     # /gps/filtered, for plotting the fused track
+wait_for_datum: true           # use the datum from gps_datum.yaml, NOT the
+                               # first fix received. This is what makes the map
+                               # frame repeatable across sessions -- otherwise
+                               # every boot picks a new origin and every saved
+                               # waypoint quietly means somewhere else.

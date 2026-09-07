@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- GPS localization: puts the robot in a georeferenced `map` frame.
+
+       Starts exactly two nodes, both ADDITIVE. The Jackal's own EKF
+       (jackal_control/control.launch) is untouched and keeps publishing
+       /odometry/filtered and the odom -> base_link transform, which
+       vision_nav_node depends on.
+
+         navsat_transform  fix + heading         -> /odometry/gps
+         ekf_map           wheels + IMU + GPS    -> /odometry/filtered/global
+                                                    and map -> odom
+
+       ⚠ The output topic is /odometry/filtered/global and NEVER
+       /odometry/filtered. Colliding with the stock EKF's topic would give the
+       row controller a pose that jumps every time GPS corrects. -->
+
+  <!-- true selects the Gazebo GNSS topics, false the real receiver's. Same
+       convention as agbot_vision_nav's vision_nav.launch. -->
+  <arg name="sim" default="false"/>
+
+  <!-- The hector plugin publishes /navsat/fix (jackal.gazebo:30); a real
+       nmea_navsat_driver or emlid_reach_ros publishes /gps/fix. Everything
+       downstream sees one name because of the remap below. -->
+  <arg name="gps_fix_topic"
+       default="$(eval '/navsat/fix' if arg('sim') else '/gps/fix')"/>
+
+  <!-- The single definition of where the field is on Earth. -->
+  <arg name="datum_file" default="$(find agbot_gps_nav)/config/gps_datum.yaml"/>
+
+  <node pkg="robot_localization" type="navsat_transform_node"
+        name="navsat_transform" clear_params="true" output="screen">
+    <rosparam file="$(find agbot_gps_nav)/config/navsat_transform.yaml" command="load"/>
+    <rosparam file="$(arg datum_file)" command="load"/>
+
+    <!-- ⚠ The yaw source. This remap is the seam the heading estimator will
+         eventually slot into: point it at the estimator's yaw-corrected
+         odometry instead, and nothing else in this stack changes.
+         It must NOT be left at the default /odometry/filtered - that is the
+         stock odom-frame EKF, and feeding an odom-frame pose back into the
+         thing that defines the map frame is a different (and wrong) loop. -->
+    <remap from="odometry/filtered" to="/odometry/filtered/global"/>
+    <remap from="gps/fix"           to="$(arg gps_fix_topic)"/>
+    <remap from="imu/data"          to="/imu/data"/>
+  </node>
+
+  <node pkg="robot_localization" type="ekf_localization_node"
+        name="ekf_map" clear_params="true" output="screen">
+    <rosparam file="$(find agbot_gps_nav)/config/ekf_map.yaml" command="load"/>
+    <remap from="odometry/filtered" to="/odometry/filtered/global"/>
+  </node>
+
+</launch>
