@@ -15,8 +15,8 @@ import pytest
 
 from agbot_gps_nav import geo
 from agbot_gps_nav.waypoint_follower import (
-    STATE_ALIGN, STATE_APPROACH, STATE_ARRIVED, STATE_GOTO, STATE_IDLE,
-    WaypointFollower,
+    STATE_ALIGN, STATE_APPROACH, STATE_ARRIVED, STATE_FAILED, STATE_GOTO,
+    STATE_HEADING_INIT, STATE_IDLE, WaypointFollower,
 )
 
 
@@ -502,3 +502,117 @@ def test_cross_track_converges_over_the_final_leg():
     cross = -(pose[0] - goal[0]) * math.sin(bearing) + (pose[1] - goal[1]) * math.cos(bearing)
     assert abs(cross) < 0.35
     assert abs(geo.wrap_angle(pose[2] - bearing)) < math.radians(6)
+
+
+# ---- receding-goal abort -------------------------------------------------
+
+def test_aborts_when_the_goal_is_receding():
+    """⚠ A robot driving AWAY from its goal is broken, and nothing else here
+    notices. The geofence is measured from the datum, so a 6.5 m goal missed by
+    100 m sits well inside it. Observed in sim 2026-09-07: a bad heading
+    estimate sent the robot backwards off the edge of the world while the
+    follower reported a calmly growing distance the whole way."""
+    f = WaypointFollower(max_goal_distance_growth=5.0)
+    f.set_goal((0.0, 0.0))
+    # Drive steadily away along +x.
+    for x in (1.0, 2.0, 3.0, 4.0, 5.0):
+        _lx, _az, state, _d = f.update((x, 0.0, 0.0))
+        assert state != STATE_FAILED, "aborted too early, at %.0f m" % x
+    _lx, angular_z, state, done = f.update((6.5, 0.0, 0.0))
+    assert state == STATE_FAILED
+    assert (_lx, angular_z, done) == (0.0, 0.0, False)
+
+
+def test_abort_is_measured_from_the_closest_approach_not_the_start():
+    """Getting within 2 m and then wandering 8 m away is a failure too, and
+    comparing against the STARTING distance would excuse it."""
+    f = WaypointFollower(max_goal_distance_growth=5.0)
+    f.set_goal((0.0, 0.0))
+    f.update((40.0, 0.0, 0.0))          # start far out
+    f.update((2.0, 0.0, 0.0))           # get close
+    _lx, _az, state, _d = f.update((6.0, 0.0, 0.0))
+    assert state != STATE_FAILED
+    _lx, _az, state, _d = f.update((8.0, 0.0, 0.0))
+    assert state == STATE_FAILED
+
+
+def test_failed_is_latched_and_silent():
+    f = WaypointFollower(max_goal_distance_growth=1.0)
+    f.set_goal((0.0, 0.0))
+    f.update((1.0, 0.0, 0.0))
+    f.update((5.0, 0.0, 0.0))
+    assert f.state == STATE_FAILED
+    for pose in [(0.1, 0.0, 0.0), (0.0, 0.0, 0.0)]:
+        linear_x, angular_z, state, done = f.update(pose)
+        assert (linear_x, angular_z, state, done) == (0.0, 0.0, STATE_FAILED, False)
+
+
+def test_a_new_goal_clears_a_failure():
+    f = WaypointFollower(max_goal_distance_growth=1.0)
+    f.set_goal((0.0, 0.0))
+    f.update((1.0, 0.0, 0.0)); f.update((5.0, 0.0, 0.0))
+    assert f.state == STATE_FAILED
+    f.set_goal((10.0, 0.0))
+    assert f.state == STATE_GOTO
+    linear_x, _az, _s, _d = f.update((5.0, 0.0, 0.0))
+    assert linear_x > 0
+
+
+def test_normal_approaches_do_not_trip_the_abort():
+    """The guard must not fire on the ordinary case where a turn-in-place or a
+    curved approach momentarily increases the distance."""
+    for goal in [(20.0, 0.0), (-15.0, 0.0), (0.5, 1.5), (12.0, -7.0)]:
+        f = WaypointFollower()
+        arrived, _pose, _steps = drive(f, goal)
+        assert arrived and f.state == STATE_ARRIVED, "spurious abort for %s" % (goal,)
+
+
+# ---- heading bootstrap ---------------------------------------------------
+
+def test_heading_init_is_off_by_default():
+    """Every existing behaviour and test depends on a goal starting in GOTO."""
+    f = WaypointFollower()
+    assert f.heading_init_distance == 0.0
+    f.set_goal((10.0, 0.0))
+    assert f.state == STATE_GOTO
+
+
+def test_heading_init_drives_straight_without_steering():
+    """⚠ It deliberately does not steer. Steering on the heading estimate is
+    the circularity being broken -- the point is to give the EKF motion so it
+    can fix that estimate from GPS displacement."""
+    f = WaypointFollower(heading_init_distance=4.0)
+    f.set_goal((0.0, 20.0))                  # goal is 90 deg to the left
+    linear_x, angular_z, state, _d = f.update((0.0, 0.0, 0.0))
+    assert state == STATE_HEADING_INIT
+    assert linear_x > 0
+    assert angular_z == 0.0, "must not steer during the bootstrap"
+
+
+def test_heading_init_ends_after_the_configured_distance():
+    f = WaypointFollower(heading_init_distance=4.0)
+    f.set_goal((20.0, 0.0))
+    _lx, _az, state, _d = f.update((0.0, 0.0, 0.0))
+    assert state == STATE_HEADING_INIT
+    _lx, _az, state, _d = f.update((3.9, 0.0, 0.0))
+    assert state == STATE_HEADING_INIT
+    _lx, _az, state, _d = f.update((4.1, 0.0, 0.0))
+    assert state == STATE_GOTO
+
+
+def test_heading_init_does_not_trip_the_receding_goal_abort():
+    """The bootstrap legitimately drives AWAY from the goal, and the abort must
+    not count that."""
+    f = WaypointFollower(heading_init_distance=4.0, max_goal_distance_growth=2.0)
+    f.set_goal((-20.0, 0.0))                 # goal is behind: the bootstrap
+    for x in (0.0, 1.0, 2.0, 3.0, 4.5):      # drives directly away from it
+        _lx, _az, state, _d = f.update((x, 0.0, 0.0))
+        assert state != STATE_FAILED
+    assert state == STATE_GOTO
+
+
+def test_still_converges_with_the_bootstrap_enabled():
+    f = WaypointFollower(heading_init_distance=4.0)
+    arrived, pose, _steps = drive(f, (20.0, 8.0))
+    assert arrived
+    assert math.hypot(pose[0] - 20.0, pose[1] - 8.0) <= f.goal_tolerance + 1e-6

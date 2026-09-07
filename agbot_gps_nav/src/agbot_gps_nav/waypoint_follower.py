@@ -51,10 +51,12 @@ import math
 from agbot_gps_nav import geo
 
 STATE_IDLE = "IDLE"
+STATE_HEADING_INIT = "HEADING_INIT"
 STATE_GOTO = "GOTO"
 STATE_ALIGN = "ALIGN"
 STATE_APPROACH = "APPROACH"
 STATE_ARRIVED = "ARRIVED"
+STATE_FAILED = "FAILED"
 
 
 class WaypointFollower(object):
@@ -78,7 +80,9 @@ class WaypointFollower(object):
                  staging_tolerance=0.25,
                  align_tolerance_deg=5.0,
                  axis_gain=1.0,
-                 max_axis_correction_deg=45.0):
+                 max_axis_correction_deg=45.0,
+                 max_goal_distance_growth=5.0,
+                 heading_init_distance=0.0):
         self.linear_x_cruise = float(linear_x_cruise)
         # Clamped to cruise: approach_speed above cruise would invert the ramp
         # below and make the robot SPEED UP into the goal.
@@ -97,6 +101,25 @@ class WaypointFollower(object):
         self.staging_distance = float(staging_distance)
         self.staging_tolerance = float(staging_tolerance)
         self.align_tolerance_rad = math.radians(float(align_tolerance_deg))
+        # ⚠ Abort if the goal is RECEDING. A robot driving away from its goal is
+        # broken, and nothing else in this controller notices: the geofence is
+        # measured from the datum, so a 6.5 m goal missed by 100 m sits well
+        # inside it. Observed in sim 2026-09-07, where a bad heading estimate
+        # sent the robot backwards off the edge of the world while the follower
+        # reported a calmly growing "distance to goal" the whole way.
+        self.max_goal_distance_growth = float(max_goal_distance_growth)
+        # ⚠ HEADING BOOTSTRAP. GPS gives position, never orientation, and this
+        # robot's map-frame yaw is gyro-integrated from zero at boot -- so at
+        # startup it is wrong by however far the robot happens to be pointing.
+        # The dual EKF DOES recover yaw, but only from MOTION: it compares
+        # GPS-observed displacement against what the current yaw predicts.
+        # Measured in the maize world from a 92 deg error: the estimate decayed
+        # 99 -> 19 deg over the drive, which is real convergence but not fast
+        # enough on a 6.5 m leg -- the robot missed the row entrance by 5.9 m.
+        # Driving straight first buys that convergence before any steering
+        # decision depends on it. 0.0 disables it (blank-world testing, or a
+        # robot whose heading is already trusted).
+        self.heading_init_distance = float(heading_init_distance)
         self.axis_gain = float(axis_gain)
         self.max_axis_correction_rad = math.radians(float(max_axis_correction_deg))
 
@@ -130,6 +153,8 @@ class WaypointFollower(object):
         self._goal = (float(goal_xy[0]), float(goal_xy[1]))
         self._last_distance = None
         self._last_heading_error = None
+        self._closest_distance = None
+        self._init_start_xy = None
         if approach_bearing is None:
             self._approach_bearing = None
             self._staging = None
@@ -140,7 +165,8 @@ class WaypointFollower(object):
             self._approach_bearing = bearing
             self._staging = (self._goal[0] - back * math.cos(bearing),
                              self._goal[1] - back * math.sin(bearing))
-        self.state = STATE_GOTO
+        self.state = (STATE_HEADING_INIT if self.heading_init_distance > 0.0
+                      else STATE_GOTO)
 
     def clear_goal(self):
         """Drop the current goal and stop. Used by the node's pause path."""
@@ -188,14 +214,43 @@ class WaypointFollower(object):
         """
         del now  # see docstring
 
-        if self._goal is None or self.state in (STATE_IDLE, STATE_ARRIVED):
+        if self._goal is None or self.state in (STATE_IDLE, STATE_ARRIVED,
+                                               STATE_FAILED):
             return 0.0, 0.0, self.state, self.state == STATE_ARRIVED
 
         if pose is None:
             return 0.0, 0.0, self.state, False
 
         pose = (float(pose[0]), float(pose[1]), float(pose[2]))
-        self._last_distance = geo.distance(pose[:2], self._goal)
+        distance = geo.distance(pose[:2], self._goal)
+        self._last_distance = distance
+
+        if self.state == STATE_HEADING_INIT:
+            # Drive straight. The DIRECTION does not matter -- any motion gives
+            # the filter the GPS-vs-prediction disagreement it needs -- so this
+            # deliberately does not steer, because steering on the heading we
+            # are trying to establish is the circularity being broken.
+            if self._init_start_xy is None:
+                self._init_start_xy = pose[:2]
+            gone = geo.distance(pose[:2], self._init_start_xy)
+            if gone < self.heading_init_distance:
+                self._last_heading_error = 0.0
+                return self.approach_speed, 0.0, STATE_HEADING_INIT, False
+            self.state = STATE_GOTO
+            # The bootstrap legitimately drives away from the goal, so the
+            # receding-goal abort must not count it.
+            self._closest_distance = None
+
+        # Receding-goal abort. Measured against the CLOSEST approach so far,
+        # not the starting distance: a robot that got within 2 m and is now
+        # 8 m out has failed just as surely as one that never got close, and
+        # comparing against the start would excuse it.
+        if self._closest_distance is None or distance < self._closest_distance:
+            self._closest_distance = distance
+        elif distance > self._closest_distance + self.max_goal_distance_growth:
+            self.state = STATE_FAILED
+            return 0.0, 0.0, STATE_FAILED, False
+
         if self._staging is not None:
             return self._update_on_axis(pose)
         return self._update_direct(pose)

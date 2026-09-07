@@ -13,6 +13,8 @@
   <exec_depend>jackal_gazebo</exec_depend>
   <exec_depend>jackal_control</exec_depend>
   <exec_depend>virtual_maize_field</exec_depend>
+  <!-- gps:=true includes agbot_gps_nav/launch/gps_localization.launch -->
+  <exec_depend>agbot_gps_nav</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>rviz</exec_depend>
   <exec_depend>xacro</exec_depend>

@@ -13,10 +13,16 @@
        seed 42 so the pose is stable across regenerations).
        Other worlds (NOT defaults; pass them explicitly):
          full maize snapshot:  x=3.16  y=-9.31  z=0.36 yaw=1.791
-         long maize snapshot:  x=2.199 y=-5.806 z=0.35 yaw=1.600
-           (agbot_maize_long.yaml, seed 42: 8 rows x 9 m, 7 corridors,
-            451 plants, missing stand in rows 1/3/4/6. Mission arg is
-            num_rows:=7.) -->
+         long maize snapshot:  x=1.531 y=-5.830 z=0.35 yaw=1.575
+           (agbot_maize_long.yaml, seed 42: 6 rows x 9 m, 5 corridors,
+            342 plants, single-plant gaps in the four inner rows. Mission
+            arg is num_rows:=5.)
+         gps maize snapshot:   x=0.702 y=-4.329 z=0.35 yaw=1.569
+           (agbot_maize_gps.yaml: the small world with an 8 m headland, so
+            there is open ground to drive across before the rows. For the
+            GPS transit start pose, see
+            agbot_gps_nav/config/waypoints_maize_gps.yaml.)
+       Read the pose the generator PRINTS; that one wins. -->
   <arg name="x" default="0.777"/>
   <arg name="y" default="-4.331"/>
   <arg name="z" default="0.35"/>
@@ -27,6 +33,15 @@
 
   <!-- Set false to disable teleop -->
   <arg name="joystick" default="true"/>
+
+  <!-- Start the GPS localization stack (navsat_transform + a map-frame EKF)
+       and place the simulated GNSS receiver at the datum. Off by default so
+       the ordinary vision-nav sim is unchanged.
+       ⚠ With gps:=false the receiver still publishes, but referenced to
+       hector's factory default of 49.9 / 8.9 (Darmstadt); nothing consumes
+       it, so that has never mattered. -->
+  <arg name="gps" default="false"/>
+  <arg name="datum_file" default="$(find agbot_gps_nav)/config/gps_datum.yaml"/>
 
   <!-- Ensure Gazebo can resolve model://maize_01, model://maize_02 (from
        virtual_maize_field). Sourcing the workspace normally handles this via
@@ -72,7 +87,18 @@
   <param name="robot_description"
          command="$(find agbot_bringup)/scripts/load_robot_description.sh
                   $(find agbot_bringup)/urdf/agbot_camera.urdf.xacro
-                  $(find jackal_description)/urdf/jackal.urdf.xacro" />
+                  $(find jackal_description)/urdf/jackal.urdf.xacro
+                  $(arg datum_file)" />
+
+  <!-- 3b. GPS localization. Purely additive: the Jackal's own EKF keeps
+       publishing /odometry/filtered and owning odom to base_link, which
+       vision_nav_node depends on. This adds a second EKF on world_frame: map,
+       publishing /odometry/filtered/global and owning the map to odom edge. -->
+  <include file="$(find agbot_gps_nav)/launch/gps_localization.launch"
+           if="$(arg gps)">
+    <arg name="sim"        value="true"/>
+    <arg name="datum_file" value="$(arg datum_file)"/>
+  </include>
 
   <!-- 4. RViz: RobotModel + TF + live camera feed from /camera/image_raw -->
   <node name="rviz" pkg="rviz" type="rviz" output="screen"

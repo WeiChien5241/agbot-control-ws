@@ -55,6 +55,8 @@
   <arg name="refusal_hold_sec"   default=""/>
   <arg name="min_fix_status"     default=""/>
   <arg name="geofence_radius_m"  default=""/>
+  <arg name="max_goal_distance_growth" default=""/>
+  <arg name="heading_init_distance" default=""/>
   <arg name="odom_topic"         default=""/>
   <arg name="cmd_vel_topic"      default=""/>
 
@@ -97,6 +99,8 @@
     <param name="refusal_hold_sec"   value="$(arg refusal_hold_sec)"   if="$(eval arg('refusal_hold_sec') != '')"/>
     <param name="min_fix_status"     value="$(arg min_fix_status)"     if="$(eval arg('min_fix_status') != '')"/>
     <param name="geofence_radius_m"  value="$(arg geofence_radius_m)"  if="$(eval arg('geofence_radius_m') != '')"/>
+    <param name="max_goal_distance_growth" value="$(arg max_goal_distance_growth)" if="$(eval arg('max_goal_distance_growth') != '')"/>
+    <param name="heading_init_distance" value="$(arg heading_init_distance)" if="$(eval arg('heading_init_distance') != '')"/>
     <param name="odom_topic"         value="$(arg odom_topic)"         if="$(eval arg('odom_topic') != '')"/>
     <param name="cmd_vel_topic"      value="$(arg cmd_vel_topic)"      if="$(eval arg('cmd_vel_topic') != '')"/>
   </node>

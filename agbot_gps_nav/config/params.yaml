@@ -111,6 +111,32 @@ min_fix_status: 0
 # to the route: generous enough not to trip, small enough to matter.
 geofence_radius_m: 200.0
 
+# ⚠ Abort if the goal is RECEDING by more than this beyond the closest approach
+# so far. A robot driving away from its goal is broken, and NOTHING ELSE HERE
+# NOTICES: the geofence is measured from the datum, so a 6.5 m goal missed by
+# 100 m sits well inside it. Observed in sim 2026-09-07 -- a bad heading
+# estimate sent the robot backwards off the edge of the world while the follower
+# reported a calmly growing "distance to goal" the whole way. Measured against
+# the closest approach rather than the starting distance, because getting within
+# 2 m and then wandering 8 m off is a failure too.
+max_goal_distance_growth: 5.0
+
+# ⚠ HEADING BOOTSTRAP: metres to drive STRAIGHT before any steering decision.
+# GPS gives position, never orientation, and this robot's map-frame yaw is
+# gyro-integrated from zero at boot -- so at startup it is wrong by however far
+# the robot happens to be pointing. The dual EKF does recover yaw, but only from
+# MOTION, by comparing GPS displacement against what the current yaw predicts.
+# Measured in the maize world from a 92 deg error: the estimate decayed 99 -> 19
+# deg over the drive, which is real convergence but not fast enough on a 6.5 m
+# leg -- the robot missed the row entrance by 5.9 m and the receding-goal abort
+# had to stop it.
+# The bootstrap deliberately does NOT steer: steering on the heading estimate is
+# the circularity being broken. Direction does not matter, only motion.
+# 0.0 disables it. ⚠ ON THE REAL ROBOT THIS SHOULD BE NON-ZERO, and it needs
+# clear ground ahead -- it is why GPS_plan calls it "expected behaviour, not a
+# bug". Set per-launch where the ground is known to be open.
+heading_init_distance: 0.0
+
 # Whether the node drives on startup. true is today's behaviour and the default.
 # Set false when vision nav owns the robot first and the supervisor will hand
 # over with ~set_enabled.

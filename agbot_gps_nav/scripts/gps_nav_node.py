@@ -61,7 +61,8 @@ from std_msgs.msg import String
 from std_srvs.srv import SetBool, SetBoolResponse
 
 from agbot_gps_nav import geo
-from agbot_gps_nav.waypoint_follower import STATE_ARRIVED, STATE_IDLE, WaypointFollower
+from agbot_gps_nav.waypoint_follower import (
+    STATE_ARRIVED, STATE_FAILED, STATE_IDLE, WaypointFollower)
 
 
 def _quaternion_to_yaw(q):
@@ -100,6 +101,9 @@ class GpsNavNode(object):
             axis_gain=rospy.get_param("~axis_gain", 1.0),
             max_axis_correction_deg=rospy.get_param(
                 "~max_axis_correction_deg", 45.0),
+            max_goal_distance_growth=rospy.get_param(
+                "~max_goal_distance_growth", 5.0),
+            heading_init_distance=rospy.get_param("~heading_init_distance", 0.0),
         )
         # RViz's 2D Nav Goal carries an orientation (you drag to set it), but a
         # plain click sends a meaningless one, and honouring that would impose
@@ -370,6 +374,7 @@ class GpsNavNode(object):
             linear_x, angular_z, state, done = self._follower.update(pose, now.to_sec())
             distance = self._follower.distance_remaining()
             arrived_now = done and self._last_state != STATE_ARRIVED
+            failed_now = state == STATE_FAILED and self._last_state != STATE_FAILED
             self._last_state = state
 
         if reason is not None and changed:
@@ -379,6 +384,12 @@ class GpsNavNode(object):
 
         if arrived_now:
             rospy.loginfo("ARRIVED (%.2f m from goal). Stopped.", distance or 0.0)
+        if failed_now:
+            rospy.logerr("ABORTED: the goal is RECEDING (%.1f m away, closest "
+                         "approach was %.1f m). The robot is driving away from "
+                         "it -- suspect the heading estimate. Stopped; send a "
+                         "new goal to clear.", distance or 0.0,
+                         self._follower._closest_distance or 0.0)
 
         # A recent refusal outranks the routine state line: it is the answer
         # to "why is nothing happening", and it is only true for an instant.
@@ -395,7 +406,10 @@ class GpsNavNode(object):
             self._set_status(state)
         else:
             axis = "" if self._follower.approach_bearing is None else " (on-axis)"
-            self._set_status("%s%s %.1f m to goal" % (state, axis, distance))
+            if state == STATE_FAILED:
+                self._set_status("FAILED: goal receding, %.1f m away" % distance)
+            else:
+                self._set_status("%s%s %.1f m to goal" % (state, axis, distance))
 
     def _publish_twist(self, linear_x, angular_z, force=False):
         """Publish a command, unless this node has been disabled.
@@ -442,6 +456,12 @@ class GpsNavNode(object):
                           f.staging_distance, f.staging_tolerance,
                           math.degrees(f.align_tolerance_rad),
                           "USED" if self._use_goal_orientation else "ignored")
+            rospy.loginfo("bootstrap: %s",
+                          ("%.1f m straight before any steering decision"
+                           % f.heading_init_distance)
+                          if f.heading_init_distance > 0
+                          else "DISABLED (heading_init_distance 0) -- fine in a "
+                               "blank world, NOT on the robot")
             rospy.loginfo("topics:   pose=%s fix=%s cmd=%s",
                           odom_topic, fix_topic, cmd_vel_topic)
             rospy.loginfo("enabled:  %s at startup (~set_enabled to hand over; "
@@ -456,9 +476,10 @@ class GpsNavNode(object):
                 rospy.loginfo("          min_fix_status < 2 accepts a NON-RTK fix. "
                               "Correct for simulation (hector reports 0); set 2 "
                               "before any field run.")
-            rospy.loginfo("heading:  taken from odometry yaw via navsat_transform "
-                          "(use_odometry_yaw). NO heading estimator yet -- valid "
-                          "only when the robot starts facing EAST.")
+            rospy.loginfo("heading:  from odometry yaw via navsat_transform "
+                          "(use_odometry_yaw), so it is WRONG at boot and is "
+                          "recovered only by MOVING -- the EKF compares GPS "
+                          "displacement against what the yaw predicts.")
             rospy.loginfo("----------------------------------")
         except Exception as exc:                 # never let logging kill startup
             rospy.logwarn("could not log config: %s", exc)
