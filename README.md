@@ -4,7 +4,8 @@ Purdue P-AgBot: vision-based row-following and multi-row mission navigation for 
 Clearpath Jackal UGV, plus a Gazebo simulation bringup.
 
 Packages: `agbot_bringup` (simulation launch), `agbot_vision_nav` (row-centering
-controller, mission FSM, operator panel).
+controller, mission FSM, operator panel), `agbot_gps_nav` (GPS waypoint
+navigation for open-sky transit from the trailer to a row entrance).
 
 ### Note:
 
@@ -147,3 +148,38 @@ Also, this repo assumes that the robot being used has a front and a back camera.
         source ~/agbot_control_ws/devel/setup.bash
         python3 -c "import torch, rospy, cv_bridge; print('all imports OK', torch.__version__)"
         ```
+
+#### GPS waypoint navigation in simulation:
+
+A blank Gazebo world with a simulated GNSS receiver — give the robot a point and
+it drives there and stops. No maize, no camera, so it loads in seconds.
+
+- Start the world (add `rviz:=true` to click goals):
+
+    ```jsx
+    roslaunch agbot_bringup agbot_gps_sim.launch rviz:=true
+    ```
+
+- Start GPS navigation:
+
+    ```jsx
+    roslaunch agbot_gps_nav gps_nav.launch sim:=true
+    ```
+
+- Send a goal, either by clicking **2D Nav Goal** in RViz (its Fixed Frame must
+  be `map`), or as a latitude/longitude — note `x` is the LONGITUDE:
+
+    ```jsx
+    rostopic pub -1 /gps_nav_node/goal_wgs84 geometry_msgs/PointStamped \
+      '{header: {frame_id: wgs84}, point: {x: -86.9910, y: 40.4695}}'
+    ```
+
+- Watch what it is doing:
+
+    ```jsx
+    rostopic echo /gps_nav_node/status
+    ```
+
+The field origin lives in `agbot_gps_nav/config/gps_datum.yaml` and is currently
+a placeholder — replace it with surveyed coordinates before saving any real
+waypoint.

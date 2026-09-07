@@ -1,12 +1,141 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot vision-nav work, updated end of session 2026-09-02.
-**Read §0f first.** A 0.5 m/s sim run drove over every plant; the run's metrics
-CSV says why, and the answer is arithmetic rather than opinion. Everything
-below §0f describes the state before that.
+Handoff for the P-AgBot work, updated end of session 2026-09-06.
+**Read §0g first** — GPS waypoint navigation now drives A to B in simulation,
+and the heading measurement in it contradicts what both this file and
+`GPS_plan.md` previously assumed. §0f (0.5 m/s ran over the corn) is the
+vision-nav state and is unchanged; everything below it is older still.
+
+⚠ **The dev machine IS the ROS1 Noetic box** — see §0g. Earlier sessions
+believed otherwise and handed every ROS command to the user.
 
 ⚠ **Nothing since 2026-08-06 has reached the GPU robot** (cpr-j100-0864, last
 updated to `0936f3b`). See the bundle flow in §0b; `catkin build` is required.
+
+---
+
+## 0g. SESSION 2026-09-06 — GPS waypoint nav: A to B in a blank world, and what the heading measurement actually said
+
+### What was built
+
+`agbot_gps_nav`, a new package on the `agbot_vision_nav` pattern (rospy-free
+core, exactly one rospy file, plain pytest — 93 tests). Plus a blank-world sim
+in `agbot_bringup`. **It works end to end in simulation**: give it a lat/lon or
+click a point in RViz and the robot drives there and stops.
+
+Scope was deliberately the smallest slice of `GPS_plan.md` that proves the whole
+chain — empty world, single goal, no maize, no camera, no vision handoff, no
+hardware. Phases 1 (Reach M2), 3 (heading estimator) and 6 (supervisor) are
+untouched.
+
+### ⚠ THE DEV MACHINE IS THE ROS1 NOETIC BOX
+
+`CLAUDE.md` said this sandbox had ROS2 Humble and no ROS1, so every ROS command
+had to be handed to the user. **That is wrong.** It is Ubuntu 20.04 with
+`/opt/ros/noetic`, `DISPLAY=:0`, and a built `devel/`. Headless Gazebo,
+`roslaunch`, `rostopic` and `catkin build` all run directly, and every result
+below was measured here rather than reasoned about. CLAUDE.md is corrected.
+
+### The measured result
+
+| check | result |
+|---|---|
+| `/navsat/fix` at the configured datum, not hector's 49.9/8.9 (Darmstadt) | ✅ 40.4693 / −86.9915 |
+| lat/lon goal 20 m east → drive → stop | ✅ arrived 0.29 m from goal (tolerance 0.30) |
+| RViz map-frame goal, diagonal | ✅ arrived 0.30 m |
+| map estimate vs Gazebo ground truth, position | ✅ agree to ~0.02 m |
+| goal in the wrong frame (`odom`) | ✅ ignored, with a log line naming the fix |
+| geofence, 5 km and 8.5 km goals | ✅ refused, robot never moved |
+| swapped lat/lon | ✅ refused, and the message names the swap |
+| GNSS fix stopped mid-drive | ✅ stops within 2 s, `HOLD GNSS fix stale by 3.0 s` |
+| fix returns | ✅ resumes the SAME goal (the goal is not lost by a gate) |
+| `min_fix_status:=2` (the FIELD value) against sim's status-0 fix | ✅ refuses to move |
+
+### ⚠ THE HEADING FINDING — the plan's premise was wrong, and the measurement is better news
+
+The plan, and `GPS_plan.md` before it, treated heading as a hard blocker: GPS
+gives position and not orientation, the Jackal has no usable compass, the stock
+EKF does not fuse absolute yaw, so its heading is relative to wherever the robot
+booted facing. The blank world was expected to work **only** because spawning at
+yaw 0 makes odom-yaw and ENU-yaw coincide (hector maps Gazebo +X to east), and
+`yaw:=1.2` was written into the plan as a deliberate FAILURE test — the
+acceptance test for a heading estimator not yet written.
+
+**It did not fail.** Spawned 74° wrong, the robot still reached a 20 m goal to
+within 0.29 m.
+
+Measured, against Gazebo ground truth:
+
+| condition | heading error |
+|---|---|
+| spawned `yaw:=1.2`, at rest | 74° |
+| after ONE 20 m driven leg | **5–10°** |
+| stationary, any start | **drifts 10–20°/min, unbounded** |
+
+The reason is that `ekf_map` fuses body-frame wheel velocities against absolute
+GPS positions, which makes **yaw observable whenever the robot is moving**: the
+GPS-observed direction of travel disagrees with the direction predicted from the
+current yaw, and the filter corrects it. That is course-over-ground heading
+estimation, arriving implicitly out of the dual-EKF structure rather than from a
+module anyone wrote. (Mechanism is inference; the convergence numbers are
+measured.)
+
+**What this changes.** Phase 3 is no longer a prerequisite — it is a quality and
+robustness item, and it should be re-justified on these two grounds rather than
+on "nothing works without it":
+
+1. **The opening excursion.** Converging from 74° cost a **6.2 m lateral
+   excursion** on a 20 m leg. Beside a row entrance that is a collision, and it
+   is exactly what the bootstrap straight-drive would remove.
+2. **At-rest drift is real and unbounded** (~10–20°/min, random-walk gyro bias,
+   so the magnitude varies run to run — one run reached 53° in two minutes).
+   Parked, the robot's heading estimate rots; the first metres after a stop are
+   driven on it.
+
+⚠ **Do not "fix" the at-rest drift by fusing the IMU's absolute yaw.** That
+signal exists only in Gazebo (`jackal.gazebo:9-22`); on the robot it is a
+magnetometer Clearpath say not to use. `imu0_config` leaves absolute yaw false
+on purpose, and `use_odometry_yaw: true` is mandatory, for exactly this reason.
+
+⚠ **Both EKFs drift, including the stock one** (measured at ~60°/min in one
+sitting, worse than ours). That is fine and expected for an odom-frame estimate
+— odom is *defined* as allowed to drift, and vision nav only ever uses it for
+Euclidean distance and short relative turns. It is not fine for a map frame,
+which is supposed to be drift-free, and that is the heading problem restated in
+filter terms.
+
+### Two defects found by RUNNING the safety gates rather than reading them
+
+1. **A goal refusal never reached `~status`.** It was published once and the
+   control loop overwrote the topic 50 ms later at `control_rate`, so an
+   operator panel would show nothing and the only trace was a `logerr`.
+   Refusals now hold the status topic for `refusal_hold_sec` (5 s).
+2. **A swapped lat/lon was caught only by the geofence, and blamed the datum.**
+   The range check cannot catch it: the goal message carries x=longitude and
+   y=latitude, so a swapped Purdue pair reads as latitude −86.99, which is a
+   legal latitude. The refusal now re-reads the pair the other way round and,
+   when THAT lands inside the geofence, says so.
+
+### Next action
+
+1. **The datum is still `TODO(datum)`** — an approximate ACRE centre off a map.
+   Nothing may be surveyed against it. Replace it in
+   `agbot_gps_nav/config/gps_datum.yaml`, the one place it lives, before saving
+   any field waypoint.
+2. **`heading_estimator.py` (Phase 3)**, re-justified as above: a
+   `HEADING_INIT` straight-drive bootstrap to kill the opening excursion, and a
+   course-over-ground offset filter to bound at-rest drift. The seam is one
+   remap in `gps_localization.launch` — nothing else moves. Its acceptance test
+   is no longer "does it arrive" (it already does) but **"is the lateral
+   excursion from a 74° start under ~1 m"**.
+3. **mapviz** — `sudo apt install ros-noetic-mapviz ros-noetic-mapviz-plugins
+   ros-noetic-tile-map`; the config is written and waiting.
+4. Phases 1 (Reach M2 + NTRIP) and 6 (`~set_enabled` + supervisor) unstarted.
+5. ⚠ **`GPS_plan.md` Part A was deliberately skipped** — `headland_clearance`
+   0.75 → 1.0 for the corn-clipping headland turn is still open.
+
+Everything in 0f is unchanged: the two long-world runs (control + 0.5 m/s) have
+still not been done, and the flat tire still gates defect #1.
 
 ---
 

@@ -53,8 +53,12 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
 
 1. **`agbot_bringup/`** — simulation bringup package: launches the Jackal in the virtual maize field (Gazebo) with a simulated forward camera and opens RViz. Main entry point: `roslaunch agbot_bringup agbot_gazebo.launch`.
 2. **`agbot_vision_nav/`** — vision-based row-centering controller: subscribes to a camera topic, runs a DINOv3 segmentation model, publishes `cmd_vel` to keep the robot centered in a crop row.
-3. **`DINOv3-Segmentation-Training/`** *(if present)* — model training pipeline (trains on annotated rosbag footage, produces `exported_best.pt`).
-4. **`Papers/`** — lab papers (P-AgBot, P-AgSLAM, P-AgNav) and related external papers (Agronav, ROW-SLAM, CropFollow). Read before designing navigation/control logic.
+3. **`agbot_gps_nav/`** — GPS waypoint navigation for open-sky transit
+   (trailer → row entrance), where vision nav then takes over. Blank-world sim:
+   `roslaunch agbot_bringup agbot_gps_sim.launch` + `roslaunch agbot_gps_nav
+   gps_nav.launch sim:=true`.
+4. **`DINOv3-Segmentation-Training/`** *(if present)* — model training pipeline (trains on annotated rosbag footage, produces `exported_best.pt`).
+5. **`Papers/`** — lab papers (P-AgBot, P-AgSLAM, P-AgNav) and related external papers (Agronav, ROW-SLAM, CropFollow). Read before designing navigation/control logic.
 
 **Third-party packages in this workspace** (not tracked in this repo):
 - `jackal/` — Clearpath Jackal ROS1 driver (noetic-devel branch)
@@ -62,7 +66,14 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
 
 ## Critical environment split — read this before running anything
 
-- **This dev sandbox has ROS2 (Humble) installed, not ROS1.** The actual robot and the user's development laptop (WSL2, Ubuntu 20.04) run **ROS1 Noetic**. Any `catkin_make`/`catkin build`/`roslaunch`/`rospy`/`rosbag play` command must be run by the user on their ROS1 machine.
+- ⚠ **Corrected 2026-09-06: the dev machine IS the ROS1 Noetic box.** Ubuntu
+  20.04 (WSL2), `/opt/ros/noetic`, `DISPLAY=:0` via WSLg, and
+  `~/agbot_control_ws/devel` already built. `catkin build`, `roslaunch`,
+  `rostopic` and headless Gazebo (`gui:=false`) all run here directly, and a
+  sim run can be driven end to end from this session. The previous note said
+  this sandbox had ROS2 Humble and no ROS1; that was wrong (or has since
+  changed) and cost a session's worth of "the user must run this" hedging.
+  The **robot** is still a separate machine reached by git bundle (HANDOFF3 §0b).
 - `agbot_control_ws` is used as a catkin workspace root; `src/` holds the packages directly. Build from the workspace root, not from inside `src/`.
 - The segmentation model (`lightly_train` + `torch`) has so far only been trained/run on **Google Colab** — never on the ROS1 Noetic box. ROS1 Noetic on Ubuntu 20.04 ships system Python 3.8; whether `lightly_train`'s dependencies even install there is unconfirmed.
 
@@ -149,8 +160,13 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 214 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 230 passed
+cd ../agbot_gps_nav
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 93 passed
 ```
+`agbot_vision_nav/test/test_launch_files.py` walks the WHOLE workspace, so it
+covers `agbot_gps_nav`'s and `agbot_bringup`'s launch files too — which is why
+its count rose from 214 to 230 when the GPS package landed.
 
 Performance report from a run (no ROS; CSVs are written automatically):
 ```bash
@@ -173,6 +189,88 @@ It reports path length from the pose (EKF jitter below `--min-step` dropped)
 and cross-checks it against integrated wheel speed `∫|twist.linear.x| dt`;
 the two disagreeing by >10% means wheel slip or a jumpy EKF, and the script
 says so. Neither is ground truth — say which one you quote.
+
+## agbot_gps_nav — GPS waypoint navigation (trailer → row)
+
+Gets the robot from the trailer to the front of a row across open ground, then
+vision nav takes over. GPS is used **here and nowhere else** — the lab's own
+P-AgNav paper is explicit that in-row navigation must work without GNSS.
+
+Same architecture as `agbot_vision_nav`: a rospy-free core under
+`src/agbot_gps_nav/`, unit-tested with plain pytest, and exactly one rospy file.
+
+```bash
+# blank world (empty Gazebo, bare Jackal, simulated GNSS at the datum)
+roslaunch agbot_bringup agbot_gps_sim.launch rviz:=true
+roslaunch agbot_gps_nav gps_nav.launch sim:=true
+# then: RViz "2D Nav Goal" (Fixed Frame MUST be map), or a lat/lon:
+rostopic pub -1 /gps_nav_node/goal_wgs84 geometry_msgs/PointStamped \
+  '{header: {frame_id: wgs84}, point: {x: -86.9910, y: 40.4695}}'   # x=LON, y=LAT
+```
+
+- `src/agbot_gps_nav/geo.py` — WGS84 ↔ local ENU about a datum. Local tangent
+  plane using the WGS84 meridional **and** prime-vertical radii at the datum
+  latitude (they differ by 0.39 % at Purdue; using one for both is a real bug a
+  round-trip test cannot see). No pyproj/geodesy — neither is installed and
+  neither is needed. Measured against Vincenty: 1.5 mm at 280 m, 3.7 cm at
+  1.4 km, 0.94 m at 7 km, so **the answer to a bigger site is a nearer datum**.
+- `src/agbot_gps_nav/waypoint_follower.py` — `IDLE → GOTO → APPROACH → ARRIVED`,
+  same `update()` signature and 4-tuple return as `MissionFSM`. Turns in place
+  above `turn_in_place_deg` (prevents the go-to-goal orbit, where a close
+  off-axis goal sits inside a turning circle that can never close) and derates
+  forward speed with heading error. ARRIVED is **latched**; only a new goal
+  releases it.
+- `scripts/gps_nav_node.py` — the only rospy file. Publishes `/cmd_vel` so
+  twist_mux keeps the joystick (priority 9-10) above autonomy (priority 1).
+- `config/gps_datum.yaml` — ⚠ **the single definition of the field origin**,
+  read by both `navsat_transform` (as `datum`) and, in sim, by
+  `load_robot_description.sh` as `GAZEBO_WORLD_LAT/LON`. Setting them equal
+  makes map coordinates and Gazebo coordinates the same numbers. **Still a
+  TODO(datum) placeholder near ACRE — replace with a surveyed fix before saving
+  any field waypoint; every stored waypoint is relative to it.**
+
+**Localization is a dual EKF.** ⚠ The Jackal's own EKF is untouched and keeps
+publishing `/odometry/filtered` + `odom→base_link`, which `vision_nav_node`
+depends on. We only add `ekf_map` (`world_frame: map`) publishing
+**`/odometry/filtered/global`** and owning `map→odom`. Never collide with
+`/odometry/filtered`: an odom-frame estimate must stay smooth for the row
+controller, while a map-frame one jumps whenever GPS corrects.
+
+### ⚠ Heading — measured 2026-09-06, and NOT what the plan assumed
+
+GPS gives position, never orientation. This robot has no usable compass
+(Clearpath say so), a single Reach M2 outputs no yaw, and the stock EKF
+deliberately does not fuse absolute yaw — so its heading is gyro-integrated
+from whatever direction the robot booted facing. Gazebo's hector IMU publishes
+a **fake absolute heading**; consuming it would make every sim pass and every
+field run fail, so `use_odometry_yaw: true` is mandatory and `imu0_config`
+leaves absolute yaw `false`.
+
+The expectation was that this blocks everything until a heading estimator
+exists. **It does not.** Measured in the blank world:
+
+| condition | heading error vs Gazebo ground truth |
+|---|---|
+| spawned at `yaw:=1.2` (74° wrong), at rest | 74° |
+| after one 20 m driven leg | **5–10°** |
+| stationary, any start | **drifts ~10–20°/min, unbounded** |
+
+`ekf_map` fuses body-frame wheel velocities with absolute GPS positions, so
+**while the robot is moving, yaw is observable** — GPS-observed direction of
+travel disagrees with the direction predicted from yaw, and the filter corrects
+it. That is course-over-ground heading estimation happening implicitly. A→B
+therefore works at **any** spawn yaw today:
+
+```bash
+roslaunch agbot_bringup agbot_gps_sim.launch yaw:=1.2   # still arrives
+```
+
+What it costs, and why Phase 3 is still wanted: converging from 74° took a
+**6.2 m lateral excursion** on a 20 m leg. Near a row entrance that is a
+collision. So a dedicated `heading_estimator.py` is now a **quality and
+robustness** item (kill the opening excursion, bound the at-rest drift), not a
+prerequisite. ⚠ Do not "fix" the at-rest drift by fusing the IMU's absolute
+yaw — that is the sim-only signal above.
 
 ## Commands
 
