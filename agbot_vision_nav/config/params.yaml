@@ -39,6 +39,19 @@ model_device: auto      # auto = CUDA when available, else CPU; or force
 camera_topic: /usb_cam/image_raw/compressed
 camera_topic_is_compressed: true
 cmd_vel_topic: /cmd_vel
+
+# Whether the node drives on startup. true is today's behaviour and the default.
+# Set false when another autonomy node (the GPS mission supervisor) owns the
+# robot first and will hand over with ~set_enabled.
+# ⚠ A DISABLED node is SILENT on cmd_vel, not publishing zeros: twist_mux takes
+# cmd_vel as one input at priority 1 and arbitrates by PRIORITY, not rate, so
+# zeros from a handed-off node would interleave with the active node's commands
+# and shred them.
+# ⚠ ~set_enabled is not ~pause. Pause freezes the mission so it survives an
+# interruption; enabling RESETS it, because after a transit under another
+# controller the row-entry pose is wrong rather than stale. Note the opposite
+# polarity too: ~pause true = stop, ~set_enabled true = go.
+start_enabled: true
 debug_image_topic: "~debug/image"
 publish_debug_image: true
 

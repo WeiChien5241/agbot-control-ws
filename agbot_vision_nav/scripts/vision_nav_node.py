@@ -28,7 +28,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import CompressedImage, Image, Joy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, SetBoolResponse
 
 from agbot_vision_nav.centerline_estimator import estimate_centerline
@@ -304,6 +304,32 @@ class VisionNavNode(object):
         self._paused = False
         self._pause_lock = threading.Lock()
         rospy.Service("~pause", SetBool, self._pause_srv)
+
+        # Runtime enable, for handing control to and from another autonomy node
+        # (the GPS mission supervisor). Defaults to enabled so every existing
+        # launch behaves exactly as it does today.
+        #
+        # ⚠ NOT THE SAME AS PAUSE, in two ways that matter:
+        #   polarity -- ~pause is data=True -> STOP, ~set_enabled is
+        #               data=True -> GO.
+        #   state    -- pause FREEZES the mission so it survives; enabling
+        #               RESETS it, because the robot has been driven somewhere
+        #               else and the old row-entry pose is wrong, not stale.
+        #
+        # ⚠ And a disabled node goes SILENT rather than publishing zeros. Both
+        # this node and gps_nav_node publish /cmd_vel, which twist_mux takes as
+        # ONE input at priority 1 -- it arbitrates by priority, not by rate, so
+        # two publishers on that topic are not arbitrated at all, they
+        # interleave. A "stopped" node emitting zeros at 10 Hz would chop the
+        # other node's commands to pieces. Silence is what makes a handoff
+        # clean; twist_mux's 0.5 s timeout is harmless because the OTHER node
+        # is publishing.
+        self._enabled = bool(rospy.get_param("~start_enabled", True))
+        self._enabled_lock = threading.Lock()
+        rospy.Service("~set_enabled", SetBool, self._set_enabled_srv)
+        self._mission_done_pub = rospy.Publisher(
+            "~mission_done", Bool, queue_size=1, latch=True
+        )
         self._status_pub = rospy.Publisher(
             "~status", String, queue_size=1, latch=True
         )
@@ -353,7 +379,9 @@ class VisionNavNode(object):
         rospy.Timer(rospy.Duration(1.0 / 10.0), self._watchdog_cb)
 
         self._log_config()
-        rospy.loginfo("vision_nav_node ready, listening on %s", camera_topic)
+        self._mission_done_pub.publish(Bool(data=False))
+        rospy.loginfo("vision_nav_node ready, listening on %s%s", camera_topic,
+                      "" if self._is_enabled() else "  [DISABLED at startup]")
 
     @staticmethod
     def _stamp_sec(msg):
@@ -447,6 +475,53 @@ class VisionNavNode(object):
             and self._fsm.exit_clear_rear_steering
         )
 
+    def _set_enabled_srv(self, req):
+        changed = self._set_enabled(bool(req.data))
+        state = "enabled" if req.data else "disabled"
+        if changed:
+            rospy.logwarn("vision_nav %s", state)
+        return SetBoolResponse(success=True, message=state)
+
+    def _set_enabled(self, enabled):
+        """Returns True if this changed anything."""
+        with self._enabled_lock:
+            if enabled == self._enabled:
+                return False
+            self._enabled = enabled
+
+        if not enabled:
+            # ONE zero to stop the robot, then silence -- see __init__.
+            self._publish_twist(0.0, 0.0, force=True)
+            with self._last_success_lock:
+                self._last_cmd = (0.0, 0.0)
+        else:
+            # ⚠ Enabling starts a CLEAN mission from wherever the robot now is.
+            # The exit detector arms over min_in_row_distance measured from the
+            # row-entry pose, and after a transit under another controller that
+            # reference is simply wrong -- keep it and the first frame of row 1
+            # can fire an exit.
+            if self._fsm is not None:
+                self._fsm.reset()
+            else:
+                if self._detector is not None:
+                    self._detector.reset()
+                self._controller.reset()
+            # High-water marks for one-shot logging. Not resetting these
+            # silently swallows the new mission's first revoked exit, first
+            # blocked row, and its DONE line.
+            self._mission_done_logged = False
+            self._revoked_logged = 0
+            self._blocked_logged = 0
+            self._mission_done_pub.publish(Bool(data=False))
+        if self._metrics is not None:
+            self._metrics.mark_event("ENABLED" if enabled else "DISABLED")
+        self._publish_status(None)
+        return True
+
+    def _is_enabled(self):
+        with self._enabled_lock:
+            return self._enabled
+
     def _pause_srv(self, req):
         changed = self._set_paused(bool(req.data))
         state = "paused" if req.data else "running"
@@ -492,7 +567,10 @@ class VisionNavNode(object):
         """Latched one-line status for the operator panel."""
         if self._status_pub is None:
             return
-        parts = ["paused" if self._is_paused() else "running"]
+        if not self._is_enabled():
+            parts = ["disabled"]
+        else:
+            parts = ["paused" if self._is_paused() else "running"]
         if self._fsm is not None:
             with self._odom_lock:
                 odom_pose = self._odom_pose
@@ -629,7 +707,16 @@ class VisionNavNode(object):
             odom_pose = self._odom_pose
 
         state_name = None
-        if self._is_paused():
+        if not self._is_enabled():
+            # Another node is driving. Perception keeps running so the HUD and
+            # the CSV still show what the robot saw, but the FSM is NOT
+            # advanced -- enabling resets it anyway, and advancing a mission
+            # while someone else steers would bank distance the robot did not
+            # drive under this controller.
+            linear_x, angular_z, done = 0.0, 0.0, False
+            if self._fsm is not None:
+                state_name = self._fsm.state + " (DISABLED)"
+        elif self._is_paused():
             # Perception keeps running (the HUD stays live and the CSV keeps
             # a record of what the robot was looking at while stopped), but
             # the FSM is NOT advanced and nothing is commanded. Skipping
@@ -738,6 +825,11 @@ class VisionNavNode(object):
                 )
                 if self._metrics is not None:
                     self._metrics.mark_event("MISSION_DONE")
+                # Latched machine signal for the GPS mission supervisor. The
+                # ~status string carries "state=DONE" too, but that line is
+                # written for a person to read and a supervisor should not be
+                # parsing prose to decide the robot has finished.
+                self._mission_done_pub.publish(Bool(data=True))
         else:
             linear_x, angular_z = self._controller.compute(
                 result.offset_norm, result.slope_term, result.valid
@@ -1066,7 +1158,18 @@ class VisionNavNode(object):
         )
         rospy.loginfo("-------------------------------------")
 
-    def _publish_twist(self, linear_x, angular_z):
+    def _publish_twist(self, linear_x, angular_z, force=False):
+        """Publish a command, unless this node has been disabled.
+
+        ⚠ Disabled means SILENT, not zero. See the ~set_enabled comment in
+        __init__: zeros from a handed-off node interleave with the active
+        node's commands on /cmd_vel and shred them. `force` is for the single
+        zero published at the moment of disabling, which is what actually stops
+        the robot.
+        """
+        if not force and not self._is_enabled():
+            return
+
         twist = Twist()
         twist.linear.x = linear_x
         twist.angular.z = angular_z

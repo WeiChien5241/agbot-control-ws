@@ -111,6 +111,17 @@ min_fix_status: 0
 # to the route: generous enough not to trip, small enough to matter.
 geofence_radius_m: 200.0
 
+# Whether the node drives on startup. true is today's behaviour and the default.
+# Set false when vision nav owns the robot first and the supervisor will hand
+# over with ~set_enabled.
+# ⚠ A DISABLED node is SILENT on cmd_vel, not publishing zeros: twist_mux takes
+# cmd_vel as one input at priority 1 and arbitrates by PRIORITY, not rate, so
+# zeros from a handed-off node would interleave with the active node's commands
+# and shred them. A PAUSED node, by contrast, keeps publishing zeros, because it
+# is still the one in charge and should hold the robot stopped immediately.
+# ⚠ Opposite polarity to ~pause: ~pause true = stop, ~set_enabled true = go.
+start_enabled: true
+
 # ---- topics -----------------------------------------------------------------
 # ⚠ /odometry/filtered/global, NOT /odometry/filtered. The latter is the Jackal's
 # stock odom-frame EKF, which is smooth but not georeferenced.

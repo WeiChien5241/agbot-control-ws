@@ -122,6 +122,7 @@ class GpsNavNode(object):
         self._fix = None                  # (status, lat, lon)
         self._fix_time = None
         self._paused = False
+        self._enabled = bool(rospy.get_param("~start_enabled", True))
         self._block_reason = None
         self._last_state = STATE_IDLE
         # A refusal is a one-shot event, but ~status is republished at
@@ -145,6 +146,7 @@ class GpsNavNode(object):
         rospy.Subscriber("~goal_pose", PoseStamped, self._pose_goal_cb, queue_size=1)
 
         rospy.Service("~pause", SetBool, self._pause_srv)
+        rospy.Service("~set_enabled", SetBool, self._set_enabled_srv)
 
         self._log_config(cmd_vel_topic, odom_topic, fix_topic)
         self._timer = rospy.Timer(rospy.Duration(1.0 / self._control_rate),
@@ -265,6 +267,14 @@ class GpsNavNode(object):
         return None
 
     def _pause_srv(self, req):
+        """Hold the robot, but stay the active driver.
+
+        Paused KEEPS PUBLISHING ZEROS, on purpose: a paused node is still the
+        one in charge of the robot, and zeros hold it stopped immediately
+        rather than waiting out twist_mux's 0.5 s timeout. Compare
+        ~set_enabled, which hands the robot to someone else and therefore goes
+        silent.
+        """
         with self._state_lock:
             self._paused = bool(req.data)
             paused = self._paused
@@ -272,6 +282,36 @@ class GpsNavNode(object):
             self._publish_twist(0.0, 0.0)
         rospy.loginfo("gps nav %s", "PAUSED" if paused else "RESUMED")
         return SetBoolResponse(success=True, message="paused" if paused else "running")
+
+    def _set_enabled_srv(self, req):
+        """Hand the robot to, or take it back from, another autonomy node.
+
+        ⚠ Disabled means SILENT on cmd_vel, not zeros. This node and
+        vision_nav_node both publish /cmd_vel, which twist_mux takes as ONE
+        input at priority 1 -- it arbitrates by PRIORITY, not rate, so two
+        publishers on that topic are not arbitrated at all, they interleave. A
+        "stopped" node emitting zeros at 20 Hz would chop the active node's
+        commands to pieces. Twist_mux's timeout is harmless here because the
+        OTHER node is publishing.
+
+        ⚠ Note the polarity, which is the opposite of ~pause: data=True means
+        GO, whereas ~pause data=True means STOP.
+        """
+        enabled = bool(req.data)
+        with self._state_lock:
+            changed = enabled != self._enabled
+            self._enabled = enabled
+            if not enabled:
+                # Drop the goal: whatever it was, this node is no longer the
+                # one driving toward it, and a stale goal would resume the
+                # instant someone re-enabled the node.
+                self._follower.clear_goal()
+        if not enabled:
+            self._publish_twist(0.0, 0.0, force=True)   # one zero, then silence
+        if changed:
+            rospy.logwarn("gps nav %s", "ENABLED" if enabled else "DISABLED")
+        return SetBoolResponse(success=True,
+                               message="enabled" if enabled else "disabled")
 
     # ---- gates -----------------------------------------------------------
 
@@ -311,6 +351,8 @@ class GpsNavNode(object):
     def _control_cb(self, _event):
         now = rospy.Time.now()
         with self._state_lock:
+            if not self._enabled:
+                return          # silent; another node owns the robot
             reason = self._blocking_reason(now)
             if reason is not None:
                 changed = reason != self._block_reason
@@ -355,7 +397,15 @@ class GpsNavNode(object):
             axis = "" if self._follower.approach_bearing is None else " (on-axis)"
             self._set_status("%s%s %.1f m to goal" % (state, axis, distance))
 
-    def _publish_twist(self, linear_x, angular_z):
+    def _publish_twist(self, linear_x, angular_z, force=False):
+        """Publish a command, unless this node has been disabled.
+
+        ⚠ Disabled means SILENT, not zero -- see _set_enabled_srv. `force` is
+        for the single zero published at the moment of disabling, which is what
+        actually stops the robot.
+        """
+        if not force and not self._enabled:
+            return
         msg = Twist()
         msg.linear.x = linear_x
         msg.angular.z = angular_z
@@ -394,6 +444,9 @@ class GpsNavNode(object):
                           "USED" if self._use_goal_orientation else "ignored")
             rospy.loginfo("topics:   pose=%s fix=%s cmd=%s",
                           odom_topic, fix_topic, cmd_vel_topic)
+            rospy.loginfo("enabled:  %s at startup (~set_enabled to hand over; "
+                          "disabled = SILENT on cmd_vel, not zeros)",
+                          "YES" if self._enabled else "NO")
             rospy.loginfo("safety:   geofence=%.0f m fix_age<%.1f s pose_age<%.1f s "
                           "min_fix_status=%d%s",
                           self._geofence_radius_m, self._max_fix_age_sec,
