@@ -1,0 +1,81 @@
+# mapviz layout: the QGroundControl-equivalent view. Satellite/OSM tiles, the
+# robot drawn at its live GNSS position, and click-to-send-a-goal.
+#
+# INSTALL FIRST (none of these are present by default):
+#   sudo apt install ros-noetic-mapviz ros-noetic-mapviz-plugins ros-noetic-tile-map
+#
+# RUN:
+#   rosrun mapviz mapviz
+#   then File > Open Config and pick this file.
+#
+# ⚠ PLUGIN ORDER MATTERS. tile_map is FIRST on purpose: mapviz draws plugins in
+# list order, so a tile layer listed later paints over everything above it and
+# the robot vanishes under the map.
+#
+# ⚠ THE CLICK PUBLISHES x=LONGITUDE, y=latitude on a PointStamped. That is
+# mapviz's convention and the reverse of how the pair is spoken. gps_nav_node
+# subscribes to exactly this message shape, which is why the same topic also
+# accepts a hand-typed lat/lon:
+#   rostopic pub -1 /gps_nav_node/goal_wgs84 geometry_msgs/PointStamped \
+#     '{header: {frame_id: wgs84}, point: {x: -86.9910, y: 40.4695}}'
+#
+# ⚠ Tiles only mean something once gps_datum.yaml holds the REAL field
+# coordinates. Against a placeholder datum this shows the right general area
+# and nothing more; against hector's untouched default it would show Darmstadt.
+capture_directory: "~"
+fixed_frame: map
+target_frame: <none>
+fix_orientation: false
+rotate_90: false
+enable_antialiasing: true
+show_displays: true
+show_status_bar: true
+show_capture_tools: true
+window_width: 1400
+window_height: 900
+view_scale: 0.15
+offset_x: 0
+offset_y: 0
+use_latest_transforms: true
+background: "#a0a0a4"
+displays:
+  - type: mapviz_plugins/tile_map
+    name: satellite tiles
+    config:
+      visible: true
+      collapsed: false
+      custom_sources:
+        - base_url: https://tile.openstreetmap.org/{level}/{x}/{y}.png
+          max_zoom: 19
+          name: OpenStreetMap
+          type: wmts
+      bing_api_key: ""
+      source: OpenStreetMap
+  - type: mapviz_plugins/navsat
+    name: robot GNSS track
+    config:
+      visible: true
+      collapsed: false
+      topic: /navsat/fix
+      color: "#fc4103"
+      draw_style: lines
+      position_tolerance: 0.2
+      buffer_size: 1000
+  - type: mapviz_plugins/odometry
+    name: fused pose (map)
+    config:
+      visible: true
+      collapsed: false
+      topic: /odometry/filtered/global
+      color: "#00ff00"
+      draw_style: arrows
+      position_tolerance: 0.2
+      buffer_size: 300
+      show_covariance: true
+  - type: mapviz_plugins/point_click_publisher
+    name: click to set a goal
+    config:
+      visible: true
+      collapsed: false
+      topic: /gps_nav_node/goal_wgs84
+      output_frame: wgs84

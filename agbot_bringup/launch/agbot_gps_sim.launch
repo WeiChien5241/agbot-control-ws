@@ -44,6 +44,11 @@
        plugged in) -->
   <arg name="joystick" default="true"/>
 
+  <!-- RViz with Fixed Frame already set to `map` and the goal tool wired up -
+       this is how you click a destination. Off by default so a headless run
+       stays headless. -->
+  <arg name="rviz" default="false"/>
+
   <!-- The single definition of where this world sits on Earth. Read below by
        load_robot_description.sh, and by navsat_transform in
        agbot_gps_nav/launch/gps_localization.launch. -->
@@ -85,5 +90,11 @@
                   none
                   $(find jackal_description)/urdf/jackal.urdf.xacro
                   $(arg datum_file)" />
+
+  <!-- 4. RViz. Its Fixed Frame is `map`, which is not cosmetic: the 2D Nav
+       Goal tool publishes in the Fixed Frame and gps_nav_node rejects a goal
+       that arrives in any other one. -->
+  <node name="rviz" pkg="rviz" type="rviz" if="$(arg rviz)"
+        args="-d $(find agbot_gps_nav)/rviz/gps_nav.rviz"/>
 
 </launch>
