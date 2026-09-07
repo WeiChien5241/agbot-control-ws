@@ -163,7 +163,9 @@ class GpsNavNode(object):
         frame = msg.header.frame_id.lstrip("/")
         if frame and frame != "map":
             rospy.logwarn("ignoring goal in frame '%s' -- set RViz's Fixed Frame "
-                          "to 'map'; an odom-frame goal is a different place.", frame)
+                          "to 'map'. A goal expressed in '%s' names a different "
+                          "physical place, and nothing downstream could tell.",
+                          frame, frame)
             return
         goal = (msg.pose.position.x, msg.pose.position.y)
         lat, lon = geo.enu_to_latlon(goal[0], goal[1], self._datum)

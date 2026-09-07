@@ -20,13 +20,21 @@ THE STATES
 
   GOTO       cruise. Turn in place when badly misaligned, otherwise drive and
              steer at the same time.
-  APPROACH   the last approach_distance metres, at approach_speed. Slower,
-             because overshooting the row entrance is the expensive failure --
-             it is the one leg where the robot is aiming at a gap in a wall of
-             corn.
+  APPROACH   the last approach_distance metres, ramping from cruise DOWN TO
+             approach_speed. Slower, because overshooting the row entrance is
+             the expensive failure -- it is the one leg where the robot is
+             aiming at a gap in a wall of corn.
   ARRIVED    zero velocity, LATCHED. It does not fall back to GOTO if the
              estimate wobbles across the tolerance boundary afterwards, which
              is what would make the robot creep around forever near the goal.
+
+⚠ approach_speed is a FLOOR, not a second multiplier. The first version picked
+approach_speed inside approach_distance and THEN multiplied it by a distance
+derate flooring at 0.25, so the last metre ran at 3.75 cm/s and a 2.5 m goal
+took 25-32 s -- long enough that the first operator to try it concluded the
+robot had stalled and killed the run (2026-09-06). Two independent slowdowns
+compounding is the bug; the careful approach itself was never the problem. The
+ramp below reaches exactly approach_speed at the goal and never goes under it.
 
 SIGN CONVENTION, REP-103: x forward, z up, positive angular.z turns LEFT. A
 goal to the robot's left gives a positive heading error and therefore a
@@ -66,7 +74,9 @@ class WaypointFollower(object):
                  goal_tolerance=0.3,
                  slow_down_deg=60.0):
         self.linear_x_cruise = float(linear_x_cruise)
-        self.approach_speed = float(approach_speed)
+        # Clamped to cruise: approach_speed above cruise would invert the ramp
+        # below and make the robot SPEED UP into the goal.
+        self.approach_speed = min(float(approach_speed), float(linear_x_cruise))
         self.angular_z_max = float(angular_z_max)
         self.heading_gain = float(heading_gain)
         self.turn_in_place_rad = math.radians(float(turn_in_place_deg))
@@ -145,7 +155,6 @@ class WaypointFollower(object):
             return 0.0, 0.0, STATE_ARRIVED, True
 
         self.state = STATE_APPROACH if distance <= self.approach_distance else STATE_GOTO
-        cruise = self.approach_speed if self.state == STATE_APPROACH else self.linear_x_cruise
 
         # Badly misaligned: turn in place. Driving forward while 90 deg off
         # covers ground in the wrong direction, and near the goal it produces
@@ -158,16 +167,24 @@ class WaypointFollower(object):
         angular_z = self.heading_gain * heading_error
         angular_z = max(-self.angular_z_max, min(self.angular_z_max, angular_z))
 
-        # Derate forward speed with heading error, so a correcting turn is
-        # tighter than a cruising one. kappa = angular_z / linear_x is what
-        # actually determines the path, and the same coupling bit this
-        # workspace once already (HANDOFF3 0f: raising speed without raising
-        # the turn limit drove the robot over every plant).
-        linear_x = cruise * max(0.0, 1.0 - abs(heading_error) / self.slow_down_rad)
-
-        # Also derate on the last stretch so the robot decelerates into the
-        # goal instead of stopping dead the instant it crosses the tolerance.
+        # Base speed: cruise, ramped linearly down to approach_speed over the
+        # last approach_distance metres, so the robot decelerates into the goal
+        # rather than stopping dead the instant it crosses the tolerance. At
+        # distance 0 this is exactly approach_speed -- the ramp IS the floor,
+        # which is why there is no second derate here (see the module docstring).
         if distance < self.approach_distance:
-            linear_x *= max(0.25, distance / self.approach_distance)
+            base = self.approach_speed + (
+                self.linear_x_cruise - self.approach_speed
+            ) * (distance / self.approach_distance)
+        else:
+            base = self.linear_x_cruise
+
+        # Derate with heading error, so a correcting turn is tighter than a
+        # cruising one. kappa = angular_z / linear_x is what actually determines
+        # the path, and the same coupling bit this workspace once already
+        # (HANDOFF3 0f: raising speed without raising the turn limit drove the
+        # robot over every plant). Bounded below by turn_in_place_deg <
+        # slow_down_deg, so this cannot approach zero while still driving.
+        linear_x = base * max(0.0, 1.0 - abs(heading_error) / self.slow_down_rad)
 
         return linear_x, angular_z, self.state, False

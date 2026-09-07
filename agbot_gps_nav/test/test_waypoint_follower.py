@@ -265,3 +265,64 @@ def test_reaching_the_goal_takes_a_sane_amount_of_time():
     arrived, _pose, steps = drive(f, (20.0, 0.0))
     assert arrived
     assert 500 <= steps <= 900        # dt = 0.1 s
+
+
+# ---- approach speed is a FLOOR, not a second multiplier ------------------
+
+def test_speed_never_drops_below_approach_speed_while_still_driving():
+    """The regression this exists for: approach_speed used to be selected
+    inside approach_distance and THEN multiplied by a distance derate flooring
+    at 0.25, so the last metre ran at 3.75 cm/s. A 2.5 m goal took 25-32 s and
+    the first operator to try it concluded the robot had stalled (2026-09-06).
+    """
+    f = WaypointFollower(linear_x_cruise=0.4, approach_speed=0.15,
+                         approach_distance=2.0, goal_tolerance=0.3)
+    arrived, _pose, _steps = drive(f, (2.5, 0.0))
+    assert arrived
+
+    # Sample the commanded speed straight down the approach, dead ahead so the
+    # heading derate is exactly 1.0 and only the distance ramp is under test.
+    for x in (0.6, 1.0, 1.5, 1.9, 2.19):        # 1.9 m ... 0.31 m to go
+        f.set_goal((2.5, 0.0))
+        linear_x, _az, _s, done = f.update((x, 0.0, 0.0))
+        assert not done
+        assert linear_x >= f.approach_speed - 1e-9, (
+            "%.3f m from the goal the command was %.4f m/s, under the %.2f m/s floor"
+            % (2.5 - x, linear_x, f.approach_speed))
+
+
+def test_speed_ramps_down_to_approach_speed_at_the_goal():
+    """At the goal the ramp should equal approach_speed exactly -- that is what
+    makes it a floor rather than something further derated."""
+    # Tolerance far below the sample point, or the tick reports ARRIVED (0.0)
+    # instead of the speed we are trying to read.
+    f = WaypointFollower(linear_x_cruise=0.4, approach_speed=0.15, approach_distance=2.0,
+                         goal_tolerance=1e-9)
+    f.set_goal((10.0, 0.0))
+    just_short, _az, _s, done = f.update((10.0 - 1e-4, 0.0, 0.0))
+    assert not done
+    assert just_short == pytest.approx(0.15, abs=1e-3)
+
+    f.set_goal((10.0, 0.0))
+    half_way_in, _az, _s, _d = f.update((9.0, 0.0, 0.0))   # 1.0 m of a 2.0 m ramp
+    assert half_way_in == pytest.approx(0.15 + (0.4 - 0.15) * 0.5, abs=1e-3)
+
+
+def test_a_short_goal_does_not_take_longer_than_the_transit_to_it():
+    """2.5 m used to cost 25 s. The operator-visible symptom was a robot that
+    looked stalled, so the bound here is on TIME, which is what they saw."""
+    f = WaypointFollower()
+    arrived, _pose, steps = drive(f, (2.5, 0.0))
+    assert arrived
+    assert steps * 0.1 < 12.0, "2.5 m took %.1f s" % (steps * 0.1)
+
+
+def test_approach_speed_above_cruise_is_clamped_not_inverted():
+    """A misconfigured approach_speed > cruise would otherwise invert the ramp
+    and make the robot accelerate into its goal."""
+    f = WaypointFollower(linear_x_cruise=0.3, approach_speed=0.9)
+    assert f.approach_speed == pytest.approx(0.3)
+    f.set_goal((10.0, 0.0))
+    far, _az, _s, _d = f.update((0.0, 0.0, 0.0))
+    near, _az, _s, _d = f.update((9.0, 0.0, 0.0))
+    assert near <= far + 1e-9

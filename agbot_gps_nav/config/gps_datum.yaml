@@ -24,10 +24,14 @@
 # gps_localization.launch).
 # =============================================================================
 
-# TODO(datum): PLACEHOLDER -- approximate centre of Purdue ACRE, taken from a
-# map, NOT surveyed. It is close enough for simulation and for satellite tiles
-# to show the right area, and it is NOT close enough to save a real waypoint
-# against. Replace with a surveyed fix from the Reach M2 BEFORE recording any
-# field waypoint, and re-record anything captured before the change: every
-# stored waypoint is relative to this origin, so moving it moves them all.
-datum: [40.4693, -86.9915, 0.0]
+# Purdue ACRE (Agronomy Center for Research and Education), approximately.
+#
+# ⚠ TODO(datum): this is an APPROXIMATE location read off a map, supplied
+# 2026-09-07. It is right for simulation and it puts satellite tiles over the
+# actual field, so mapviz is now useful. It is NOT surveyed, and it is NOT
+# accurate enough to save a real field waypoint against -- at RTK's 2 cm a
+# map-read origin is off by orders of magnitude more than the fix it anchors.
+# Replace it with a surveyed fix from the Reach M2 before recording any field
+# waypoint, and re-record anything captured beforehand: every stored waypoint
+# is relative to this origin, so moving the datum moves all of them together.
+datum: [40.494928, -86.996323, 0.0]
