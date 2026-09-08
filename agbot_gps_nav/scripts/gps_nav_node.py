@@ -56,7 +56,7 @@ import threading
 import rospy
 from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Float32, String
 from std_srvs.srv import SetBool, SetBoolResponse
 
@@ -151,6 +151,19 @@ class GpsNavNode(object):
         # and is free to be reworded; a handoff gate must not be.
         self._arrival_heading_pub = rospy.Publisher(
             "~arrival_heading_error_deg", Float32, queue_size=1, latch=True)
+        # ⚠ THE DATUM, RE-EMITTED AS A FIX, FOR MAPVIZ. mapviz cannot draw a
+        # tile until something tells it where the `map` frame sits on Earth;
+        # swri_transform_util's initialize_origin.py answers that, and this is
+        # what it reads (see launch/mapviz.launch). Without it the canvas is
+        # blank grey and looks like a mapviz configuration problem.
+        #
+        # It is published from THIS node rather than written into a launch file
+        # because gps_datum.yaml is the single definition of the field origin
+        # and every stored waypoint hangs off it -- a second copy of those
+        # numbers is a second thing to forget when the surveyed fix replaces
+        # the placeholder.
+        self._datum_fix_pub = rospy.Publisher(
+            "~datum_fix", NavSatFix, queue_size=1, latch=True)
 
         odom_topic = rospy.get_param("~odom_topic", "/odometry/filtered/global")
         fix_topic = rospy.get_param("~gps_fix_topic", "/gps/fix")
@@ -164,12 +177,27 @@ class GpsNavNode(object):
         rospy.Service("~pause", SetBool, self._pause_srv)
         rospy.Service("~set_enabled", SetBool, self._set_enabled_srv)
 
+        self._publish_datum_fix()
         self._log_config(cmd_vel_topic, odom_topic, fix_topic)
         self._timer = rospy.Timer(rospy.Duration(1.0 / self._control_rate),
                                   self._control_cb)
         rospy.on_shutdown(self._on_shutdown)
         rospy.loginfo("gps_nav_node ready; waiting for a goal on "
                       "/move_base_simple/goal or ~goal_wgs84")
+
+    def _publish_datum_fix(self):
+        """Latch the datum as a NavSatFix, for mapviz's origin. See __init__."""
+        msg = NavSatFix()
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()
+        msg.latitude = self._datum[0]
+        msg.longitude = self._datum[1]
+        msg.altitude = 0.0
+        # STATUS_FIX, not the receiver's real status: this is a surveyed-in
+        # constant, not a measurement. initialize_origin.py rejects STATUS_NO_FIX.
+        msg.status.status = NavSatStatus.STATUS_FIX
+        msg.status.service = NavSatStatus.SERVICE_GPS
+        self._datum_fix_pub.publish(msg)
 
     # ---- callbacks -------------------------------------------------------
 

@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- The QGroundControl-style map view: satellite/OSM tiles, the robot drawn
+       on them at its live GNSS position, and click-to-send-a-goal.
+
+         roslaunch agbot_gps_nav mapviz.launch
+
+       Run it alongside a sim or a field session; it drives nothing itself.
+
+       ⚠ THIS LAUNCH FILE EXISTS BECAUSE MAPVIZ ON ITS OWN DRAWS NOTHING.
+       Opening `rosrun mapviz mapviz` and loading the .mvc by hand gives a flat
+       grey canvas, which reads as a broken tile source and is not: the tiles
+       are fine. mapviz places everything through swri_transform_util's
+       TransformManager, which needs to know where the `map` frame sits on
+       Earth, and it learns that from /local_xy_origin. Nothing in this
+       workspace published that until now, so mapviz had no way to turn a map
+       coordinate into a latitude and painted its background colour instead
+       (config/mapviz_agbot.mvc, `background: "#a0a0a4"`). -->
+
+  <arg name="config" default="$(find agbot_gps_nav)/config/mapviz_agbot.mvc"/>
+
+  <!-- ⚠ THE ORIGIN COMES FROM gps_datum.yaml, VIA gps_nav_node, and is not
+       written out again here. That file is the single definition of the field
+       origin and every stored waypoint hangs off it, so a second copy of the
+       numbers is a second thing to miss when the surveyed fix replaces the
+       placeholder. gps_nav_node latches the datum as a NavSatFix on
+       ~datum_fix for exactly this; initialize_origin.py takes the first fix it
+       sees on that topic and then unsubscribes, so the order the two nodes
+       start in does not matter.
+
+       ⚠ NOT `local_xy_origin: auto` against the robot's real fix topic. That
+       would anchor the map frame wherever the robot happened to boot, which in
+       the sim is the trailer 18 m south of the field, and mapviz's `map` would
+       then disagree with ekf_map's by that much. -->
+  <arg name="datum_fix_topic" default="/gps_nav_node/datum_fix"/>
+
+  <node pkg="swri_transform_util" type="initialize_origin.py"
+        name="initialize_origin" output="screen">
+    <param name="local_xy_frame"           value="map"/>
+    <param name="local_xy_origin"          value="auto"/>
+    <param name="local_xy_navsatfix_topic" value="$(arg datum_fix_topic)"/>
+  </node>
+
+  <node pkg="mapviz" type="mapviz" name="mapviz" output="screen">
+    <param name="config" value="$(arg config)"/>
+  </node>
+
+</launch>
