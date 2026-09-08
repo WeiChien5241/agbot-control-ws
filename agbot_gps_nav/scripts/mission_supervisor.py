@@ -26,7 +26,7 @@ import sys
 import rospy
 import yaml
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import SetBool
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
@@ -60,10 +60,14 @@ class MissionSupervisor(object):
         self._fsm = HandoffFSM(
             transit_timeout_sec=rospy.get_param("~transit_timeout_sec", 300.0),
             mission_timeout_sec=rospy.get_param("~mission_timeout_sec", 1800.0),
+            max_arrival_heading_error_deg=rospy.get_param(
+                "~max_arrival_heading_error_deg", 12.0),
         )
 
         self._gps_state = None
+        self._arrival_heading_error_deg = None
         self._vision_done = False
+        self._warned_unmeasured = False
         self._applied = (None, None)     # last (gps_enabled, vision_enabled)
 
         self._goal_pub = rospy.Publisher(
@@ -72,6 +76,11 @@ class MissionSupervisor(object):
         rospy.Subscriber("/gps_nav_node/status", String, self._gps_status_cb, queue_size=1)
         rospy.Subscriber("/vision_nav_node/mission_done", Bool,
                          self._mission_done_cb, queue_size=1)
+        # Latched, and published once on arrival -- see the arrival-heading note
+        # in handoff_fsm. A number on its own topic, deliberately not words
+        # parsed back out of the human-readable status line.
+        rospy.Subscriber("/gps_nav_node/arrival_heading_error_deg", Float32,
+                         self._arrival_heading_cb, queue_size=1)
 
         self._gps_enable = self._wait_for_service("/gps_nav_node/set_enabled")
         self._vision_enable = self._wait_for_service("/vision_nav_node/set_enabled")
@@ -83,6 +92,10 @@ class MissionSupervisor(object):
                       math.degrees(self._bearing))
         rospy.loginfo("timeouts: transit %.0f s, row mission %.0f s",
                       self._fsm.transit_timeout_sec, self._fsm.mission_timeout_sec)
+        rospy.loginfo("handoff:  refused if the arrival heading is more than "
+                      "%.0f deg off the approach bearing (course actually "
+                      "driven vs yaw estimate, not the estimate vs itself)",
+                      self._fsm.max_arrival_heading_error_deg)
         rospy.loginfo("----------------------------")
 
         self._apply(self._fsm.start(rospy.get_time()))
@@ -114,11 +127,31 @@ class MissionSupervisor(object):
     def _mission_done_cb(self, msg):
         self._vision_done = bool(msg.data)
 
+    def _arrival_heading_cb(self, msg):
+        self._arrival_heading_error_deg = float(msg.data)
+
     # ---- the loop --------------------------------------------------------
 
     def _tick(self, _event):
-        tick = self._fsm.update(rospy.get_time(), gps_state=self._gps_state,
-                                vision_done=self._vision_done)
+        # ⚠ Warn ONCE if the GPS node says it arrived but never published a
+        # heading residual: the handoff is about to happen with nothing having
+        # checked which way the robot points, which is exactly the blind spot
+        # that put a robot into the corn. It is allowed through -- the gate
+        # fires on evidence of being wrong, not on its absence -- but not
+        # quietly.
+        if (self._gps_state == GPS_ARRIVED
+                and self._arrival_heading_error_deg is None
+                and not self._warned_unmeasured):
+            self._warned_unmeasured = True
+            rospy.logwarn("arrived with NO arrival-heading measurement; "
+                          "handing over unverified. Check that the goal "
+                          "carries an approach bearing and that "
+                          "staging_distance leaves a leg long enough to "
+                          "measure a course over.")
+        tick = self._fsm.update(
+            rospy.get_time(), gps_state=self._gps_state,
+            vision_done=self._vision_done,
+            arrival_heading_error_deg=self._arrival_heading_error_deg)
         self._apply(tick)
 
     def _apply(self, tick):

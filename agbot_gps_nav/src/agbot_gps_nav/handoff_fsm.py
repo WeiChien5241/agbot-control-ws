@@ -19,6 +19,17 @@ both enabled and shred the commands. Re-asserting an unchanged state is free.
 enabling the incoming one. Doing it the other way round leaves a window, however
 short, with two nodes publishing. `HandoffTick.disable_first` names which one
 must be switched off first so the caller cannot get it wrong by accident.
+
+⚠ ARRIVING IS NOT THE SAME AS ARRIVING POINTED THE RIGHT WAY, and until
+2026-09-07 this module treated them as the same thing: gps_state == ARRIVED was
+the only condition on the handoff. GPS pins position, never orientation, so a
+robot with a bad yaw estimate arrives at exactly the right PLACE facing
+somewhere else -- measured that day at ~72 deg off, which handed vision nav a
+view of solid corn and cost the mission at rows=0/3. The follower measures the
+course it actually drove over the final on-axis leg and compares it with the
+yaw it thinks it has; that residual is passed in here, and a bad one aborts
+instead of handing over. Refusing at the row entrance is cheap. Discovering it
+one row spacing later is not.
 """
 
 import collections
@@ -42,12 +53,17 @@ HandoffTick = collections.namedtuple(
 class HandoffFSM(object):
     """Decides what should be running, and when the sequence has failed."""
 
-    def __init__(self, transit_timeout_sec=300.0, mission_timeout_sec=1800.0):
+    def __init__(self, transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
+                 max_arrival_heading_error_deg=12.0):
         # Both are backstops, not schedules. A transit that has not arrived in
         # five minutes is not slow, it is lost -- and a lost robot on open
         # ground keeps going.
         self.transit_timeout_sec = float(transit_timeout_sec)
         self.mission_timeout_sec = float(mission_timeout_sec)
+        # Same 12 deg as the heading bootstrap's tolerance, and for the same
+        # reason: it is the disagreement between course over ground and the yaw
+        # estimate that is small enough to drive a row on.
+        self.max_arrival_heading_error_deg = float(max_arrival_heading_error_deg)
         self.state = STATE_IDLE
         self.reason = ""
         self._entered_at = None
@@ -69,8 +85,15 @@ class HandoffFSM(object):
         self.reason = reason
         return self._tick()
 
-    def update(self, now, gps_state=None, vision_done=False):
-        """Advance one tick and return the full desired state of both nodes."""
+    def update(self, now, gps_state=None, vision_done=False,
+               arrival_heading_error_deg=None):
+        """Advance one tick and return the full desired state of both nodes.
+
+        `arrival_heading_error_deg` is the follower's course-driven-vs-yaw
+        residual on the final leg. None means it could not be measured -- which
+        is allowed through, loudly, by the caller: the gate fires on evidence of
+        being wrong, not on the absence of evidence.
+        """
         now = float(now)
         if self.state in (STATE_IDLE, STATE_FINISHED, STATE_FAILED):
             return self._tick()
@@ -83,6 +106,16 @@ class HandoffFSM(object):
             if elapsed > self.transit_timeout_sec:
                 return self.abort("transit timed out after %.0f s" % elapsed)
             if gps_state == GPS_ARRIVED:
+                if (arrival_heading_error_deg is not None
+                        and abs(float(arrival_heading_error_deg))
+                        > self.max_arrival_heading_error_deg):
+                    return self.abort(
+                        "arrived at the waypoint pointing %+.0f deg off the "
+                        "approach bearing (limit %.0f) -- the yaw estimate is "
+                        "wrong, so this is the right place facing the wrong "
+                        "way. NOT handing over to vision nav."
+                        % (float(arrival_heading_error_deg),
+                           self.max_arrival_heading_error_deg))
                 self.state = STATE_ROW_MISSION
                 self._entered_at = now
                 return self._tick()

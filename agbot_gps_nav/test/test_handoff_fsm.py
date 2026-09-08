@@ -152,3 +152,55 @@ def test_a_late_arrival_after_failure_does_not_restart_the_sequence():
     fsm.update(20.0, gps_state="GOTO")            # times out
     assert fsm.state == STATE_FAILED
     assert fsm.update(21.0, gps_state=GPS_ARRIVED).state == STATE_FAILED
+
+
+# ---- the arrival heading gate --------------------------------------------
+
+def test_arriving_pointed_the_wrong_way_refuses_the_handoff():
+    """⚠ THE 2026-09-07 FAILURE. GPS pins position, never orientation, so
+    gps_state == ARRIVED on its own says the robot reached the right PLACE and
+    nothing about which way it faces. That run arrived 0.41 m from the corridor
+    entrance and about 72 deg off it; vision nav was handed a view of solid
+    corn, went BLOCKED, backed out, and the mission ended at rows=0/3."""
+    fsm = HandoffFSM(max_arrival_heading_error_deg=12.0)
+    fsm.start(0.0)
+    tick = fsm.update(1.0, gps_state=GPS_ARRIVED,
+                      arrival_heading_error_deg=71.9)
+    assert tick.state == STATE_FAILED
+    assert tick.failed and not tick.vision_enabled and not tick.gps_enabled
+    assert "72 deg off" in tick.reason
+
+
+def test_a_good_arrival_heading_still_hands_over():
+    fsm = HandoffFSM(max_arrival_heading_error_deg=12.0)
+    fsm.start(0.0)
+    tick = fsm.update(1.0, gps_state=GPS_ARRIVED, arrival_heading_error_deg=-4.2)
+    assert tick.state == STATE_ROW_MISSION
+    assert tick.vision_enabled and not tick.gps_enabled
+
+
+def test_the_gate_is_symmetric_about_zero():
+    """Off to the left is exactly as bad as off to the right."""
+    for error in (13.0, -13.0):
+        fsm = HandoffFSM(max_arrival_heading_error_deg=12.0)
+        fsm.start(0.0)
+        tick = fsm.update(1.0, gps_state=GPS_ARRIVED,
+                          arrival_heading_error_deg=error)
+        assert tick.state == STATE_FAILED, "%.0f deg should have been refused" % error
+
+
+def test_an_unmeasured_arrival_heading_is_allowed_through():
+    """⚠ Deliberate: the gate fires on EVIDENCE OF BEING WRONG, not on the
+    absence of evidence. A short or bearingless goal has no leg to measure a
+    course over, and failing those would break every plain go-to-a-point use.
+    The supervisor logs a warning instead -- unverified, but not silent."""
+    fsm = HandoffFSM()
+    fsm.start(0.0)
+    tick = fsm.update(1.0, gps_state=GPS_ARRIVED, arrival_heading_error_deg=None)
+    assert tick.state == STATE_ROW_MISSION
+
+
+def test_the_gate_default_matches_the_bootstrap_tolerance():
+    """Both ask the same question -- does the course driven agree with the yaw
+    estimate -- so they should not disagree about what counts as agreement."""
+    assert HandoffFSM().max_arrival_heading_error_deg == 12.0
