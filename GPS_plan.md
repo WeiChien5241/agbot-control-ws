@@ -9,7 +9,11 @@
 > measurement) and §0h (the handoff, and the five defects integration exposed).
 > `CLAUDE.md` has the condensed version of both.
 >
-> Last updated end of session **2026-09-07**.
+> Last updated end of session **2026-09-07 (second session, evening)**. That
+> session found and fixed the reason the transit had been unreliable — §3.1's
+> process-noise starvation — and added the two guards that would have caught it:
+> the handoff heading gate (§3.5b) and goal ownership (§3.7). §1.3 explains why
+> mapviz used to draw nothing, and why clicking it used to hijack a run.
 
 ---
 
@@ -25,6 +29,8 @@
 | **Phase 3** | *bootstrap* half built and required; full course-over-ground estimator NOT built |
 | **Phase 1** | not started (Reach M2, NTRIP) |
 | **Part A** | not done — `headland_clearance` 0.75 → 1.0, unrelated vision-nav fix, still open |
+| **Guards that stop a bad run** | heading bootstrap must converge or it logs a red error (§3.1); the handoff is refused if the arrival heading is >12° off (§3.5b); interactive goals are locked out during a mission (§3.7) |
+| **Known cost** | every open GUI eats real-time factor and shows up as `WATCHDOG_ZERO`; see §1.1 |
 
 ---
 
@@ -91,15 +97,28 @@ rows 3/3, DONE.  42.6 m, 0 interventions, 0 BLOCKED, 0 BACKOUT
 FOLLOW_ROW rms offset_norm 0.095, invalid frames 0.0%
 ```
 
-⚠ **But the GUI costs real-time factor, and the watchdog reports it honestly:
-190 `WATCHDOG_ZERO` events**, against 41 on an earlier headless run. End-to-end
-latency was 486 ms mean / 790 ms p95 against `max_data_age_sec` 0.5 s, so the
-loop genuinely could not keep up and the node correctly zeroed on stale frames.
-The mission survived it, but do not read that as free. ⚠ **Do not raise
-`max_data_age_sec` to make the count go away** — in sim the answer is
-`rosrun agbot_bringup set_sim_rtf.sh 0.5`, which slows wall-clock time so every
-threshold stays self-consistent, or just drop the GUI again once you have seen
-what you wanted to see.
+And the 22:20 run the same evening, **headless**, driven by the operator:
+
+```
+bootstrap converged 1.9 deg, then -2.1 deg on the real goal
+ARRIVED 0.30 m from goal, arrival heading check +0.9 deg -> handoff accepted
+Mission DONE: rows_driven=3, blocked rows: none, revoked exits: 0
+44.0 m, 0 interventions.  FOLLOW_ROW rms 0.091, invalid frames 0.0%
+```
+
+⚠ **Every GUI costs real-time factor, and the watchdog reports it honestly.**
+`WATCHDOG_ZERO` counts across those two runs: **190** with the Gazebo GUI up,
+**97** headless but with RViz *and* mapviz open. End-to-end latency ran
+486 ms mean / 790 ms p95 (and touched 965 ms) against `max_data_age_sec` 0.5 s,
+so the loop genuinely could not keep up and the node correctly zeroed on stale
+frames. Both missions survived it; do not read that as free.
+
+⚠ **Do not raise `max_data_age_sec` to make the count go away.** In sim the
+answer is `rosrun agbot_bringup set_sim_rtf.sh 0.5`, which slows wall-clock time
+so every threshold stays self-consistent; otherwise close what you are not
+reading. The cheapest useful view is
+`rqt_image_view /vision_nav_node/debug/image` — mapviz and the Gazebo window
+are both GPU consumers competing with the segmentation model.
 
 ⚠ **The spawn pose is not the launch default.** `x:=-0.798 y:=-21.361` is the
 simulated trailer, 18 m south of the rows; it comes from `start_pose` in
@@ -224,6 +243,21 @@ roslaunch --dump-params agbot_gps_nav gps_nav.launch | grep <knob>
 Both nodes log a full resolved-config block at startup, right before
 `... ready`. That block is the fastest way to confirm a knob actually took.
 
+**The five lines that say a transit is healthy**, in the order they appear:
+
+| line | meaning | bad version |
+|---|---|---|
+| `goals: ~goal_pose always \| RViz + mapviz clicks LOCKED OUT` | the supervisor owns the node (§3.7) | `... ACCEPTED` during a mission — a stray click can redirect the run |
+| `heading bootstrap converged: yaw vs course driven = N deg` | heading locked on (§3.1) | red `HEADING BOOTSTRAP FAILED` — it ran out of ground |
+| `ARRIVED (0.30 m from goal) ... arrival heading check = N deg` | arrived pointing the right way (§3.5b) | over 12° and the handoff is refused |
+| `ROW_MISSION: gps=off vision=on` | handoff taken | `FAILED` with the arrival-heading reason |
+| `Mission DONE: rows_driven=3, blocked rows: none` | the row mission finished | `rows_driven` short of `num_rows` (see §3.6) |
+
+⚠ Two warnings worth knowing on sight:
+`goal from ... REPLACES the goal being driven` means something redirected the
+robot mid-transit, and `IGNORING goal from ...` means the lock refused one.
+Both are §3.7.
+
 ---
 
 ## 2. WHAT EXISTS
@@ -269,7 +303,8 @@ agbot_gps_nav/
   launch/gps_localization.launch         navsat_transform + ekf_map
   launch/gps_nav.launch                  localization + follower
   launch/gps_vision_mission.launch       the whole sequence
-  test/                                  149 tests, no ROS needed
+  launch/mapviz.launch                   mapviz + initialize_origin (see 1.3)
+  test/                                  161 tests, no ROS needed
 
 agbot_bringup/
   config/agbot_maize_gps.yaml            maize world with a 20 m headland
@@ -312,8 +347,10 @@ Measured against Gazebo ground truth:
 | condition | heading error |
 |---|---|
 | spawned 74° wrong, at rest | 74° |
-| after ONE 20 m driven leg | **5–10°** |
-| stationary, any start | **drifts 10–20°/min, unbounded** |
+| after 3 m of the bootstrap (yaw process noise `0.3`) | **6.6°** |
+| after 10 m of the same leg | **0.7°** |
+| after 10 m with the OLD `0.01` tuning | **~48°** — it never converged |
+| stationary, any start | **drifts ~17°/min, unbounded** |
 
 `ekf_map` fuses body-frame wheel velocities against absolute GPS positions, so
 **yaw is observable whenever the robot moves** — that is course-over-ground
@@ -368,9 +405,12 @@ bottomed out at 0.47 m, never reached the 0.30 m tolerance, and the follower
 drove calmly on up the field reporting a growing "distance to goal". Crossing a
 plane is a thing that definitely happens; entering a radius is not.
 
-Crossing further off-axis than `arrival_cross_tolerance` (0.35 m, under half a
-row spacing so "arrived" cannot mean the next corridor) re-stages and retries,
-up to `max_approach_attempts`, then fails cleanly.
+Crossing further off-axis than `arrival_cross_tolerance` re-stages and retries,
+up to `max_approach_attempts`, then fails cleanly. The generic default is 0.35 m
+— under half a row spacing, so "arrived" cannot mean the next corridor — but
+`gps_vision_mission.launch` tightens it to **0.20**, because fitting through a
+row entrance is a stricter question than being at the right point. See §3.5b for
+the arithmetic.
 
 ### 3.3 The final leg tracks the AXIS, not the goal point
 
@@ -447,7 +487,48 @@ Also: without `rear_camera_enabled` a blocked-ahead signal **ends the mission**
 (the BACKOUT states are unreachable), which in a 3-row run reads as a mission
 that quietly finished at `rows=1/3`. It is on by default in the mission launch.
 
-### 3.7 Things that are NOT bugs — do not chase them
+### 3.7 The GPS node used to obey ANYONE, silently
+
+⚠ `gps_nav_node` accepted a goal from any publisher at any time — including
+mid-transit while a supervisor was driving it — and logged it as an ordinary
+INFO indistinguishable from the first goal. The supervisor sends its goal and
+then *assumes* it owns the node. It did not.
+
+That is not a theoretical hole. mapviz's `point_click_publisher` fires on
+**every** click on `~goal_wgs84`, and clicking is also how you pan and inspect
+the map — so looking at the map steered the robot. On 2026-09-07 two clicks
+during the **44 s the segmentation model takes to load** (the supervisor waits
+for `/vision_nav_node/set_enabled` before sending its goal, so the GPS node is
+live and unowned that whole time) did this:
+
+```
+t=32.5  goal from WGS84 ... = map ( 46.05, -10.88)   <- click 1: 47 m ENE, 77 deg right turn
+t=40.1  heading bootstrap converged 1.9 deg           <- bootstrapping toward the WRONG goal
+t=50.5  goal from WGS84 ... = map (-14.08, -15.84)   <- click 2: behind, 151 deg swing back
+t=54.2  goal sent: corridor_0 -> map (-0.80, -3.86)  <- the supervisor's REAL goal
+```
+
+The robot drove a large triangle across the field and then completed the mission
+perfectly. **That is the shape of a fault that gets blamed on navigation**, and
+the only trace was two INFO lines buried in the timing stream.
+
+The fix is at the node, not at mapviz:
+
+- `~external_goals_enabled` (**true** by default, **false** from
+  `gps_vision_mission.launch`) gates the two INTERACTIVE channels — RViz's
+  `/move_base_simple/goal` and mapviz's `~goal_wgs84`. Refused goals are logged
+  by name and land on `~status`.
+- ⚠ `~goal_pose` is **deliberately not gated**. It is the supervisor's
+  programmatic channel, no GUI publishes to it, and gating it would lock the
+  mission out of its own node.
+- In **either** mode, a goal that displaces one already being driven is now a
+  `logwarn` naming both points. That warning is the general fix; the lock is the
+  specific one.
+
+Standalone hand-driving (§1.2) is unchanged — click-to-goal is the whole point
+there.
+
+### 3.8 Things that are NOT bugs — do not chase them
 
 - **`Transform from ... unavailable for the time requested. Using latest
   instead`**, ~1/s from `ekf_map` and `navsat_transform`. Throttled; the
@@ -466,6 +547,16 @@ that quietly finished at `rows=1/3`. It is on by default in the mission launch.
 - The first ~15 s after launch, `ekf_map` is still converging from a zero
   initialisation and `navsat_transform` has a 3 s `delay`. Sampling the map pose
   before that shows `(0,0)` and looks like a datum bug. Wait, then look.
+- **`heading bootstrap converged` appearing TWICE in one run** is not a
+  double-bootstrap bug. Every new goal restarts the follower at `HEADING_INIT`
+  (`set_goal` does), so a run that received two goals bootstraps twice. If you
+  did not send two goals, that second line is evidence something else did —
+  see §3.7.
+- The ~44 s gap between `gps_nav_node ready` and `goal sent:` is the
+  segmentation model loading. The supervisor waits on
+  `/vision_nav_node/set_enabled` before it starts the transit, so the robot sits
+  still and the gyro drifts (§3.1) for that whole window. It is why the
+  bootstrap has to exist rather than merely being nice to have.
 
 ---
 
@@ -483,7 +574,7 @@ argument overrides the file only when actually passed.
 | `arrival_cross_tolerance` | 0.35 (**0.20 in the mission launch**) | must stay under half a row spacing, and well under it for a row entrance: the Jackal is ~0.43 m wide in a 0.75 m corridor |
 | `external_goals_enabled` | true (**false in the mission launch**) | whether RViz 2D Nav Goals and mapviz clicks are honoured. ⚠ true is right for hand-driving; under a supervisor a stray click silently redirects the run |
 | `max_arrival_heading_error_deg` | 12.0 (`mission_supervisor`) | ⚠ the handoff gate. Over this the supervisor refuses to enable vision nav and stops. Raising it is how the robot ends up in the corn |
-| `heading_init_distance` / `_max_distance` | 0.0 / 8.0 | bootstrap min and backstop. ⚠ **0 disables it — fine in a blank world, NOT on the robot** |
+| `heading_init_distance` / `_max_distance` | 0.0 / 8.0 (**3.0 / 10.0 in the mission launch**) | bootstrap min and backstop. ⚠ **0 disables it — fine in a blank world, NOT on the robot.** It drives STRAIGHT, so the backstop must fit the open ground ahead |
 | `max_goal_distance_growth` | 5.0 | receding-goal abort |
 | `geofence_radius_m` | 200.0 | max distance from the datum |
 | `min_fix_status` | 0 | ⚠ **0 accepts a non-RTK fix.** Correct for sim (hector reports 0 and cannot report anything else). **SET TO 2 BEFORE ANY FIELD RUN** |
@@ -524,10 +615,17 @@ moving the datum moves them all — re-record anything captured beforehand.
 ### 5.3 Phase 3 — the full heading estimator (bootstrap only, so far)
 
 `heading_estimator.py` was never written. What exists is the bootstrap: drive
-straight until the course driven agrees with the yaw estimate. That fixes the
-START of a run. It does **not** fix the unbounded ~10–20°/min at-rest drift, so
-a robot parked for several minutes mid-mission still starts its next leg on a
-rotten heading.
+straight until the course driven agrees with the yaw estimate, plus the
+`ekf_map` process-noise fix (§3.1) that lets GPS keep correcting yaw *while the
+robot moves*. Together those fix the start of a run and hold it through a
+transit.
+
+They do **not** fix the unbounded **~17°/min** at-rest drift (`jackal.gazebo`
+models `rateDrift 0.005 rad/s`; measured as −17.4° over 50 s of standing still).
+Yaw is only observable from motion, so a robot parked for several minutes
+mid-mission still starts its next leg on a rotten heading — it will re-converge
+once moving, but it steers on the bad estimate first. That is the remaining
+gap.
 
 The design, unchanged: estimate the constant offset `yaw_enu − yaw_odom` from
 course-over-ground whenever ground speed > ~0.3 m/s and `|angular.z|` is small
