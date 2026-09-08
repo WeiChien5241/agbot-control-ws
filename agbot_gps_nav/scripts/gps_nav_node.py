@@ -57,7 +57,7 @@ import rospy
 from geometry_msgs.msg import PointStamped, PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import NavSatFix
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 from std_srvs.srv import SetBool, SetBoolResponse
 
 from agbot_gps_nav import geo
@@ -146,6 +146,11 @@ class GpsNavNode(object):
         cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/cmd_vel")
         self._cmd_pub = rospy.Publisher(cmd_vel_topic, Twist, queue_size=1)
         self._status_pub = rospy.Publisher("~status", String, queue_size=1, latch=True)
+        # ⚠ The arrival-heading check crosses to the supervisor as a NUMBER, not
+        # as words scraped back out of ~status. ~status is written for a person
+        # and is free to be reworded; a handoff gate must not be.
+        self._arrival_heading_pub = rospy.Publisher(
+            "~arrival_heading_error_deg", Float32, queue_size=1, latch=True)
 
         odom_topic = rospy.get_param("~odom_topic", "/odometry/filtered/global")
         fix_topic = rospy.get_param("~gps_fix_topic", "/gps/fix")
@@ -393,11 +398,40 @@ class GpsNavNode(object):
 
         if init_done:
             error = self._follower.heading_init_error()
-            rospy.loginfo("heading bootstrap done: yaw vs course driven = %s",
-                          "%.1f deg" % math.degrees(error) if error is not None
-                          else "not measured")
+            shown = ("%.1f deg" % math.degrees(error) if error is not None
+                     else "not measured")
+            if self._follower.heading_init_converged():
+                rospy.loginfo("heading bootstrap converged: yaw vs course "
+                              "driven = %s", shown)
+            else:
+                # ⚠ NOT a loginfo. This used to share the line above, and a
+                # transit that came out of its bootstrap 71.9 deg wrong read as
+                # a normal startup message; the robot then aligned to a bearing
+                # that physically pointed across the rows and vision nav was
+                # handed a wall of corn (sim 2026-09-07).
+                rospy.logerr(
+                    "HEADING BOOTSTRAP FAILED: gave up at the %.1f m backstop "
+                    "with yaw vs course driven still %s (tolerance %.0f deg). "
+                    "The yaw estimate is UNVERIFIED -- every steering decision "
+                    "from here rests on it, and the row entrance is one row "
+                    "spacing wide. Driving on; the arrival heading check is "
+                    "what will refuse the handoff.",
+                    self._follower.heading_init_max_distance, shown,
+                    math.degrees(self._follower.heading_init_tolerance_rad))
         if arrived_now:
-            rospy.loginfo("ARRIVED (%.2f m from goal). Stopped.", distance or 0.0)
+            course_error = self._follower.approach_course_error()
+            if course_error is None:
+                rospy.loginfo("ARRIVED (%.2f m from goal). Stopped. Arrival "
+                              "heading NOT MEASURED (no on-axis leg long "
+                              "enough) -- nothing has checked which way the "
+                              "robot is actually pointing.", distance or 0.0)
+            else:
+                degrees = math.degrees(course_error)
+                self._arrival_heading_pub.publish(Float32(data=degrees))
+                rospy.loginfo("ARRIVED (%.2f m from goal). Stopped. Arrival "
+                              "heading check: course driven over the final leg "
+                              "vs yaw estimate = %+.1f deg.",
+                              distance or 0.0, degrees)
         if failed_now:
             rospy.logerr("ABORTED: the goal is RECEDING (%.1f m away, closest "
                          "approach was %.1f m). The robot is driving away from "

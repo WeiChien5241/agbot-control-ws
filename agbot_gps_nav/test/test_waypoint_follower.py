@@ -15,8 +15,8 @@ import pytest
 
 from agbot_gps_nav import geo
 from agbot_gps_nav.waypoint_follower import (
-    STATE_ALIGN, STATE_APPROACH, STATE_ARRIVED, STATE_FAILED, STATE_GOTO,
-    STATE_HEADING_INIT, STATE_IDLE, WaypointFollower,
+    MIN_COURSE_DISTANCE, STATE_ALIGN, STATE_APPROACH, STATE_ARRIVED,
+    STATE_FAILED, STATE_GOTO, STATE_HEADING_INIT, STATE_IDLE, WaypointFollower,
 )
 
 
@@ -634,6 +634,53 @@ def test_heading_init_gives_up_at_its_max_distance():
     assert state == STATE_GOTO, "must not drive straight for ever"
 
 
+def test_heading_init_drives_at_cruise_not_approach_speed():
+    """⚠ The bootstrap is an OBSERVABILITY manoeuvre, and the signal it feeds
+    the EKF -- GPS displacement disagreeing with what the yaw predicted --
+    grows with ground speed. Run at approach_speed it is both the weakest
+    signal available and the longest wait: measured 2026-09-07, the 10 m
+    backstop took 67 s at 0.15 m/s and came out 71.9 deg wrong, having laid
+    down ~19 deg of fresh gyro drift while it ran."""
+    f = WaypointFollower(linear_x_cruise=0.4, approach_speed=0.15,
+                         heading_init_distance=4.0)
+    f.set_goal((20.0, 0.0))
+    linear_x, _az, state, _d = f.update((0.0, 0.0, 0.0))
+    assert state == STATE_HEADING_INIT
+    assert linear_x == pytest.approx(0.4)
+
+
+def test_heading_init_converged_reports_which_way_it_ended():
+    """⚠ Ending on the MEASUREMENT and ending on the BACKSTOP are opposite
+    outcomes. They used to share one loginfo saying "done", which is how a
+    transit ran its whole length 72 deg wrong with nothing flagged."""
+    good = WaypointFollower(heading_init_distance=4.0,
+                            heading_init_tolerance_deg=12.0)
+    assert good.heading_init_converged() is None, "None until it has run"
+    good.set_goal((20.0, 0.0))
+    good.update((0.0, 0.0, 0.0))
+    _lx, _az, state, _d = good.update((4.1, 0.0, 0.0))
+    assert state == STATE_GOTO
+    assert good.heading_init_converged() is True
+
+    gave_up = WaypointFollower(heading_init_distance=2.0,
+                               heading_init_max_distance=6.0,
+                               heading_init_tolerance_deg=5.0)
+    gave_up.set_goal((30.0, 0.0))
+    for x in (0.0, 3.0, 5.9, 6.1):
+        gave_up.update((x, 0.0, math.pi / 2))
+    assert gave_up.heading_init_converged() is False
+
+
+def test_a_new_goal_clears_the_previous_bootstrap_verdict():
+    f = WaypointFollower(heading_init_distance=4.0)
+    f.set_goal((20.0, 0.0))
+    f.update((0.0, 0.0, 0.0))
+    f.update((4.1, 0.0, 0.0))
+    assert f.heading_init_converged() is True
+    f.set_goal((40.0, 0.0))
+    assert f.heading_init_converged() is None
+
+
 def test_heading_init_does_not_trip_the_receding_goal_abort():
     """The bootstrap legitimately drives AWAY from the goal, and the abort must
     not count that."""
@@ -688,6 +735,64 @@ def test_repeated_misses_fail_rather_than_looping_for_ever():
     f.state = STATE_APPROACH
     _lx, _az, state, _d = f.update((1.2, 0.0, math.pi / 2))
     assert state == STATE_FAILED
+
+
+# ---- the arrival heading check -------------------------------------------
+
+def test_arrival_course_error_is_near_zero_on_a_clean_approach():
+    """The whole final leg is a free course-over-ground sample, and on a good
+    run the direction driven and the yaw estimate agree."""
+    f = WaypointFollower(staging_distance=5.0)
+    arrived, _pose, _t, _states = drive_on_axis(
+        f, goal=(0.0, 0.0), bearing=math.pi / 2, start=(-4.0, -12.0, 0.0),
+        approach_distance=5.0)
+    assert arrived
+    assert f.approach_course_error() is not None
+    assert abs(f.approach_course_error()) < math.radians(5)
+
+
+def test_arrival_course_error_catches_a_yaw_estimate_that_is_lying():
+    """⚠ THE 2026-09-07 FAILURE. GPS pins position, never orientation, so a
+    robot with a bad yaw arrives at exactly the right PLACE facing somewhere
+    else -- measured ~72 deg off, which handed vision nav a wall of corn.
+
+    ALIGN cannot catch it: it turns until the ESTIMATE reads the bearing, so
+    heading-error-vs-bearing is the estimate agreeing with itself. The course
+    actually driven is the independent witness. Here the robot really travels
+    up the axis while believing it points 70 deg away from that."""
+    f = WaypointFollower(arrival_cross_tolerance=0.35)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    lie = math.pi / 2 - math.radians(70)
+    f._approach_start_xy = (0.0, -5.0)          # leg start, 5 m back on axis
+    _lx, _az, state, done = f.update((0.0, 0.0, lie))
+    assert state == STATE_ARRIVED and done
+    assert f.approach_course_error() == pytest.approx(math.radians(70), abs=1e-6)
+
+
+def test_arrival_course_error_is_none_when_the_leg_is_too_short_to_measure():
+    """A course computed over a few centimetres is GPS noise, not a direction.
+    None means 'not measured' and the caller must say so rather than assume."""
+    f = WaypointFollower(arrival_cross_tolerance=0.35)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    f._approach_start_xy = (0.0, -MIN_COURSE_DISTANCE / 2.0)
+    _lx, _az, state, done = f.update((0.0, 0.0, math.pi / 2))
+    assert state == STATE_ARRIVED and done
+    assert f.approach_course_error() is None
+
+
+def test_restaging_starts_a_fresh_heading_measurement():
+    """Each attempt must be measured over its OWN leg; carrying the previous
+    attempt's start point across a turn-around would measure a chord of the
+    loop rather than the approach."""
+    f = WaypointFollower(arrival_cross_tolerance=0.35, max_approach_attempts=3)
+    f.set_goal((0.0, 0.0), approach_bearing=math.pi / 2, approach_distance=3.0)
+    f.state = STATE_APPROACH
+    f._approach_start_xy = (1.2, -5.0)
+    _lx, _az, state, _d = f.update((1.2, 0.0, math.pi / 2))   # 1.2 m off axis
+    assert state == STATE_GOTO
+    assert f._approach_start_xy is None
 
 
 def test_the_cross_tolerance_is_under_half_a_row_spacing():

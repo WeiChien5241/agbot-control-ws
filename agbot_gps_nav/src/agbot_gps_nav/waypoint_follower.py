@@ -50,6 +50,12 @@ import math
 
 from agbot_gps_nav import geo
 
+# Shortest leg over which a course over ground is worth computing. Both course
+# measurements in this file (the bootstrap and the arrival check) are "which
+# way did the robot ACTUALLY go", and over a few centimetres that is GPS noise
+# rather than a direction. One metre at RTK's 2 cm is a 1 degree question.
+MIN_COURSE_DISTANCE = 1.0
+
 STATE_IDLE = "IDLE"
 STATE_HEADING_INIT = "HEADING_INIT"
 STATE_GOTO = "GOTO"
@@ -141,6 +147,11 @@ class WaypointFollower(object):
         self.heading_init_tolerance_rad = math.radians(
             float(heading_init_tolerance_deg))
         self._heading_init_error = None
+        # Did the bootstrap end because it MEASURED agreement, or because it ran
+        # out of ground? Those are opposite outcomes and the old code reported
+        # both as "done" on the same loginfo -- which is how a transit ran its
+        # whole length 72 degrees wrong with nothing flagged (sim 2026-09-07).
+        self._heading_init_converged = None
         # ⚠ Arrival on a DIRECTED approach is crossing the goal's plane, not
         # getting within a radius of the point. Euclidean distance was tried
         # first and it fails in a way that looks like nothing: the robot passed
@@ -153,6 +164,16 @@ class WaypointFollower(object):
         self.arrival_cross_tolerance = float(arrival_cross_tolerance)
         self.max_approach_attempts = int(max_approach_attempts)
         self._approach_attempts = 0
+        # ⚠ THE INDEPENDENT ARRIVAL-HEADING CHECK. ALIGN turns the robot until
+        # the ESTIMATE reads the approach bearing, so "final heading error vs
+        # bearing" is the estimate agreeing with itself and proves nothing. The
+        # final on-axis leg is staging_distance of straight driving, though, so
+        # it is a free course-over-ground measurement: the direction the robot
+        # actually travelled, against the yaw it thinks it has. That comparison
+        # is independent, and it is the one that would have caught the robot
+        # being handed to vision nav pointing across the rows.
+        self._approach_start_xy = None
+        self._approach_course_error = None
         self.axis_gain = float(axis_gain)
         self.max_axis_correction_rad = math.radians(float(max_axis_correction_deg))
 
@@ -188,7 +209,10 @@ class WaypointFollower(object):
         self._last_heading_error = None
         self._closest_distance = None
         self._init_start_xy = None
+        self._heading_init_converged = None
         self._approach_attempts = 0
+        self._approach_start_xy = None
+        self._approach_course_error = None
         if approach_bearing is None:
             self._approach_bearing = None
             self._staging = None
@@ -241,6 +265,27 @@ class WaypointFollower(object):
         """
         return self._heading_init_error
 
+    def heading_init_converged(self):
+        """True if the bootstrap ended on the MEASUREMENT, False on the backstop.
+
+        None until it has run (or when it is disabled). False is not a soft
+        result: it means the yaw estimate is still unverified, every steering
+        decision after it rests on a number nothing has checked, and whoever is
+        about to be handed the robot should be told.
+        """
+        return self._heading_init_converged
+
+    def approach_course_error(self):
+        """Course over ground across the final on-axis leg, minus the yaw estimate.
+
+        Radians, or None when there was no leg long enough to measure (see
+        MIN_COURSE_DISTANCE) or no bearing on the goal. Near zero means the
+        robot really is pointing the way it thinks it is; large means it
+        arrived at the right PLACE facing somewhere else, which is exactly the
+        failure that put a robot into the corn on 2026-09-07.
+        """
+        return self._approach_course_error
+
     # ---- the tick --------------------------------------------------------
 
     def update(self, pose, now=None):
@@ -287,7 +332,16 @@ class WaypointFollower(object):
                 converged = False
             if not converged and gone < self.heading_init_max_distance:
                 self._last_heading_error = 0.0
-                return self.approach_speed, 0.0, STATE_HEADING_INIT, False
+                # ⚠ CRUISE, not approach_speed. This leg exists to make yaw
+                # OBSERVABLE, and the signal it feeds the filter -- GPS
+                # displacement disagreeing with what the yaw predicted -- grows
+                # with ground speed. Run at the careful-arrival speed it is
+                # both the weakest signal available and the longest wait: the
+                # 10 m backstop took 67 s at 0.15 m/s, during which the gyro
+                # laid down another 19 deg of the very drift being corrected
+                # (jackal.gazebo models 0.005 rad/s = 17 deg/min).
+                return self.linear_x_cruise, 0.0, STATE_HEADING_INIT, False
+            self._heading_init_converged = bool(converged)
             self.state = STATE_GOTO
             # The bootstrap legitimately drives away from the goal, so the
             # receding-goal abort must not count it.
@@ -345,6 +399,10 @@ class WaypointFollower(object):
                 return (0.0, math.copysign(self.turn_in_place_rate, error),
                         STATE_ALIGN, False)
             self.state = STATE_APPROACH
+            # Where the straight final leg starts. Everything from here to the
+            # goal plane is one long course-over-ground sample -- see
+            # approach_course_error().
+            self._approach_start_xy = (x, y)
 
         # Arrival is crossing the plane through the goal perpendicular to the
         # approach bearing -- see arrival_cross_tolerance in __init__.
@@ -355,6 +413,13 @@ class WaypointFollower(object):
 
         if along >= -self.goal_tolerance:
             if abs(cross) <= self.arrival_cross_tolerance:
+                # Cash in the final leg as a heading measurement BEFORE
+                # latching ARRIVED, while the leg's start point is still held.
+                if self._approach_start_xy is not None:
+                    flown = geo.distance(self._approach_start_xy, (x, y))
+                    if flown >= MIN_COURSE_DISTANCE:
+                        course = geo.bearing_to(self._approach_start_xy, (x, y))
+                        self._approach_course_error = geo.wrap_angle(course - yaw)
                 self.state = STATE_ARRIVED
                 return 0.0, 0.0, STATE_ARRIVED, True
             # Crossed the plane, but too far off the axis to call it arrived.
@@ -366,6 +431,8 @@ class WaypointFollower(object):
                 return 0.0, 0.0, STATE_FAILED, False
             self.state = STATE_GOTO
             self._closest_distance = None
+            # The next attempt gets its own leg to measure.
+            self._approach_start_xy = None
             return 0.0, 0.0, STATE_GOTO, False
 
         return self._drive_along_axis(pose)
