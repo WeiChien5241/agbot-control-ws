@@ -65,12 +65,30 @@ odom1_nodelay: true
 # x and y process noise is raised well above the odom-frame EKF's 1e-3. This is
 # the "the map frame is allowed to jump" tuning: a GPS correction should move
 # the estimate promptly rather than be argued down by dead reckoning.
+#
+# ⚠ YAW (row 5) IS 0.3, NOT THE 0.01 IT USED TO BE, AND THAT IS THE WHOLE
+# HEADING FIX. Nothing here observes yaw directly -- no absolute-yaw source is
+# fused, on purpose (see imu0_config). Yaw is observable ONLY through the
+# disagreement between where GPS says the robot is and where its body-frame
+# velocity rotated by the current yaw predicted it would be. Position and yaw
+# therefore compete for the SAME innovation, and the filter spends it on
+# whichever term is looser. At 0.01 against x/y's 1.0 yaw was 100x stiffer, so
+# it never moved: measured 2026-09-07, the heading bootstrap drove its full
+# 10 m backstop and came out still 71.9 deg wrong, the transit aligned to a
+# bearing that physically pointed 70 deg across the rows, and vision nav was
+# handed a robot facing a wall of corn.
+#
+# So free yaw instead of pinning position: 0.3 matches the roll/pitch entries
+# already in this matrix and leaves x/y at 1.0, which keeps the jump-promptly
+# behaviour the paragraph above is asking for. If convergence is still too slow
+# the NEXT single change is x/y 1.0 -> 0.25 -- one at a time, or neither is
+# attributable.
 process_noise_covariance: [1.0,  0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
                            0,    1.0,  0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
                            0,    0,    1e-3, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
                            0,    0,    0,    0.3,  0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
                            0,    0,    0,    0,    0.3,  0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
-                           0,    0,    0,    0,    0,    0.01, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.3,  0,     0,     0,    0,    0,    0,    0,    0,    0,
                            0,    0,    0,    0,    0,    0,    0.5,   0,     0,    0,    0,    0,    0,    0,    0,
                            0,    0,    0,    0,    0,    0,    0,     0.5,   0,    0,    0,    0,    0,    0,    0,
                            0,    0,    0,    0,    0,    0,    0,     0,     0.1,  0,    0,    0,    0,    0,    0,
