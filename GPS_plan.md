@@ -123,17 +123,32 @@ Watch with `rostopic echo /gps_nav_node/status`.
 
 ### 1.3 mapviz — the QGroundControl-style map view
 
-Installed but **never opened**; this is the one untried piece of Phase 5.
-
 ```bash
-rosrun mapviz mapviz
-# File > Open Config > ~/agbot_control_ws/src/agbot_gps_nav/config/mapviz_agbot.mvc
+roslaunch agbot_gps_nav mapviz.launch      # alongside a running sim or field session
 ```
 
-It should show OSM tiles over ACRE with the robot on them; clicking publishes to
-`/gps_nav_node/goal_wgs84`, the same topic as 1.2(b). ⚠ `tile_map` is listed
-first in the config on purpose — mapviz paints plugins in list order and a tile
-layer listed later covers the robot.
+OSM tiles over ACRE with the robot on them; clicking publishes to
+`/gps_nav_node/goal_wgs84`, the same topic as 1.2(b).
+
+⚠ **Do not start it with `rosrun mapviz mapviz` and File > Open Config.** That
+was the instruction here until 2026-09-07 and it gives a **flat grey canvas**,
+which reads as a broken tile source and is not — the tiles are fine
+(`tile.openstreetmap.org` answers 200). mapviz places everything through
+swri_transform_util's TransformManager, which has to know where the `map` frame
+sits on Earth and learns it from `/local_xy_origin`. Nothing published that, so
+mapviz could not turn a map coordinate into a latitude and painted its own
+`background: "#a0a0a4"` instead. `mapviz.launch` runs `initialize_origin.py`
+alongside mapviz to supply it.
+
+⚠ The origin comes from `gps_datum.yaml` and is **not written out a second
+time**: `gps_nav_node` latches the datum as a `NavSatFix` on `~datum_fix`, and
+`initialize_origin.py` takes the first fix on that topic. So `gps_nav_node` must
+be running. It is deliberately NOT `local_xy_origin: auto` against the robot's
+real fix topic — that anchors the map frame wherever the robot booted, which in
+the sim is the trailer 18 m south of the field.
+
+⚠ `tile_map` is listed first in the config on purpose — mapviz paints plugins in
+list order and a tile layer listed later covers the robot.
 
 ### 1.4 Regenerating the world, if the snapshot is ever lost
 
@@ -267,6 +282,36 @@ But it is not free. In the maize world a 92° start with no bootstrap **missed
 the row entrance by 5.9 m**. So `heading_init_distance` (the bootstrap) is
 required there and is on by default in `gps_vision_mission.launch`.
 
+⚠ **And observable is not the same as observed.** Until 2026-09-07 that
+correction was starved by this filter's own tuning:
+`ekf_map.yaml`'s `process_noise_covariance` gave x/y `1.0` and yaw `0.01`.
+Nothing observes yaw directly, so position and yaw compete for the SAME GPS
+innovation, and a term 100× stiffer never wins it — the filter spent every
+disagreement on position. Yaw is now `0.3`, matching the roll/pitch entries.
+
+Measured the same day, blank world, robot spawned ~66° off, identical in every
+other respect (`agbot_gps_sim.launch yaw:=1.2`, one 20 m goal on a bearing):
+
+| yaw process noise | what the bootstrap did |
+|---|---|
+| `0.01` (before) | **gave up at its 10 m backstop, still 47.9° wrong**, then wandered — ground-truth error was still 48° at 10 m along |
+| `0.3` (after) | **converged at 3.0 m with 6.3°**; ground truth 66° → 6.6° over those 3 m, → 0.7° by 10 m; arrived 0.29 m from the goal |
+
+⚠ **The drift is CONTINUOUS, not just a bad starting value.** `jackal.gazebo`
+models the gyro with `rateDrift 0.005 rad/s` — **17°/min**, and it was measured
+at that: the 2026-09-07 19:05 run's odom yaw moved −17.4° in the ~50 s the
+robot sat still waiting for the segmentation model to load, before it had moved
+at all. A one-shot bootstrap cannot hold a 160 s transit against that on its
+own; what makes it hold is the EKF correcting continuously underneath, which is
+what the process-noise change turned back on. §5.3 is still wanted for the
+at-rest case.
+
+⚠ **The bootstrap also drives at CRUISE now, not `approach_speed`.** It is an
+observability manoeuvre and the signal it feeds the filter grows with ground
+speed, so 0.15 m/s made it both the weakest signal available and the longest
+wait — the 10 m backstop took 67 s, laying down ~19° of fresh drift while it
+ran.
+
 ⚠ **The bootstrap ends on a MEASUREMENT, not a distance.** A fixed 4 m was tried
 and was not enough. It now drives straight until the course actually driven
 agrees with the yaw estimate, because how far that takes depends on how wrong
@@ -319,6 +364,35 @@ disabled **0.0 Hz**. ⚠ Opposite polarity too: `~pause` true = stop,
 Enabling vision nav **resets** the mission (`MissionFSM.reset()`), it does not
 resume it: after a transit under another controller the row-entry pose is wrong,
 not stale, and `min_in_row_distance` arms off it.
+
+### 3.5b Arriving is not the same as arriving pointed the right way
+
+⚠ `gps_state == ARRIVED` used to be the ONLY condition on the handoff. GPS pins
+position and never orientation, so it says the robot reached the right *place*
+and nothing about which way it faces. On 2026-09-07 it reached the corridor 0
+entrance 0.41 m from the goal and ~72° off it; vision nav's first frames read
+`w=1.0 edges=1/1` — open field, no corridor — then `obst=0.78`, a wall of corn.
+Two `BLOCKED` events, a back-out, and the mission ended at rows=0/3.
+
+⚠ **`ALIGN` cannot catch this**, and neither can final-heading-error-vs-bearing:
+ALIGN turns the robot until the *estimate* reads the bearing, so that number is
+the estimate agreeing with itself. The independent witness is the course the
+robot actually drove. The final on-axis leg is `staging_distance` of straight
+driving, so it is a free course-over-ground sample — `approach_course_error()`
+compares it against the yaw estimate, `gps_nav_node` publishes it on
+`~arrival_heading_error_deg` (a number on its own latched topic, deliberately
+not words scraped out of `~status`), and `handoff_fsm` refuses the handoff over
+`max_arrival_heading_error_deg` (12°, the bootstrap's tolerance). Measured on a
+good run: **−0.4°**.
+
+An *unmeasurable* residual — no bearing on the goal, or a leg shorter than
+`waypoint_follower.MIN_COURSE_DISTANCE` — is allowed through with a warning.
+The gate fires on evidence of being wrong, not on the absence of evidence.
+
+⚠ `arrival_cross_tolerance` is **0.20 in `gps_vision_mission.launch`**, tighter
+than params.yaml's generic 0.35. The Jackal is ~0.43 m wide in a 0.75 m
+corridor — 0.16 m of clearance per side — so a 0.35 m "arrival" is already
+0.13 m inside the plant row.
 
 ### 3.6 `first_turn_direction` must match the corridor
 
@@ -444,7 +518,6 @@ test beside `test_exit_clear_back_dates_to_first_sighting`.
 
 ### 5.5 Smaller open items
 
-- **mapviz has never been opened** (§1.3). Config written, packages installed.
 - **The return leg** (row → trailer) is not built. The supervisor stops at
   `FINISHED`; "go home" still has no home.
 - **Only `corridor_0` has been driven end to end.** `waypoint:=corridor_1` /

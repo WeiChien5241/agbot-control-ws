@@ -267,6 +267,12 @@ to it. Restart the sim at the pose you want.
   releases it.
 - `scripts/gps_nav_node.py` — the only rospy file. Publishes `/cmd_vel` so
   twist_mux keeps the joystick (priority 9-10) above autonomy (priority 1).
+- `launch/mapviz.launch` — the map view. ⚠ Use this, not `rosrun mapviz mapviz`
+  plus File > Open Config: mapviz needs `/local_xy_origin` to know where `map`
+  sits on Earth, nothing published it, and without it the canvas is blank grey
+  and looks like a broken tile source. The launch runs `initialize_origin.py`
+  off the datum that `gps_nav_node` latches on `~datum_fix`, so the datum still
+  has exactly one definition.
 - `config/gps_datum.yaml` — ⚠ **the single definition of the field origin**,
   read by both `navsat_transform` (as `datum`) and, in sim, by
   `load_robot_description.sh` as `GAZEBO_WORLD_LAT/LON`. Setting them equal
@@ -298,13 +304,24 @@ where the line falls. Measured in the blank world:
 | condition | heading error vs Gazebo ground truth |
 |---|---|
 | spawned at `yaw:=1.2` (74° wrong), at rest | 74° |
-| after one 20 m driven leg | **5–10°** |
-| stationary, any start | **drifts ~10–20°/min, unbounded** |
+| after 3 m of the bootstrap (yaw process noise 0.3) | **6.6°** |
+| after 10 m of the same leg | **0.7°** |
+| after 10 m with the OLD 0.01 tuning | **~48°** |
+| stationary, any start | **drifts ~17°/min, unbounded** |
 
 `ekf_map` fuses body-frame wheel velocities with absolute GPS positions, so
 **while the robot is moving, yaw is observable** — GPS-observed direction of
 travel disagrees with the direction predicted from yaw, and the filter corrects
-it. That is course-over-ground heading estimation happening implicitly. A→B
+it. ⚠ **Observable is not observed**: until 2026-09-07 `ekf_map.yaml`'s
+`process_noise_covariance` gave x/y `1.0` against yaw `0.01`, and since position
+and yaw compete for that one GPS innovation, a term 100× stiffer never moved.
+Yaw is now `0.3`. Measured A/B, blank world, 66° start: `0.01` gave up at the
+10 m backstop still **47.9°** wrong; `0.3` converged at **3.0 m with 6.3°**, and
+0.7° by 10 m. ⚠ The drift is continuous, not just a bad start —
+`jackal.gazebo` models `rateDrift 0.005 rad/s` = **17°/min**, measured as −17.4°
+of odom yaw while the robot sat still for 50 s waiting for the model to load.
+
+That is course-over-ground heading estimation happening implicitly. A→B
 therefore works at **any** spawn yaw today:
 
 ```bash
@@ -323,6 +340,24 @@ over ground** agrees with the yaw estimate. ⚠ It ends on that MEASUREMENT, not
 a distance: a fixed 4 m was tried and was not enough, because how far it needs
 depends on how wrong the estimate started. It needs clear ground ahead, which is
 why the `gps` maize world has a 20 m headland.
+
+⚠ The bootstrap drives at **cruise**, not `approach_speed`: it is an
+observability manoeuvre and the signal grows with ground speed, so 0.15 m/s was
+both the weakest signal available and the longest wait. It also now logs a
+`logerr` when it ends on the backstop rather than on the measurement — sharing
+one "done" loginfo with the success case is how a transit ran its whole length
+71.9° wrong with nothing flagged.
+
+⚠ **Arriving is not arriving pointed the right way, and the handoff is gated on
+that.** GPS pins position, never orientation. `ALIGN` turns until the *estimate*
+reads the bearing, so heading-error-vs-bearing proves nothing; the independent
+check is the course actually driven over the final on-axis leg
+(`approach_course_error()` → `~arrival_heading_error_deg` → `handoff_fsm`,
+refused over `max_arrival_heading_error_deg` 12°). An unmeasurable residual is
+allowed through with a warning: the gate fires on evidence of being wrong, not
+on its absence. `arrival_cross_tolerance` is 0.20 in the mission launch, not
+params.yaml's 0.35 — the Jackal is ~0.43 m wide in a 0.75 m corridor, so 0.35 m
+off axis is already inside the plant row.
 
 A full `heading_estimator.py` (Phase 3) is still unbuilt and still wanted: the
 bootstrap fixes the start of a run, not the unbounded at-rest drift. ⚠ Do not
