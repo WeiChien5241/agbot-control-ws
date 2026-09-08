@@ -424,7 +424,19 @@ fixed the 2026-07-24 field failure).
 
 ⚠ **Do not raise `max_data_age_sec` to silence a fast run's `WATCHDOG_ZERO`
 events** — at 0.5 m/s a 1.0 s window is half a metre of blind driving, and the
-watchdog is correctly reporting that the loop cannot keep up. In sim the answer
+watchdog is correctly reporting that the loop cannot keep up.
+
+⚠ **Where the time actually goes: the MPC, not inference and not the GUI.**
+Measured 2026-09-07 across three passing sim runs, ~90% of every `WATCHDOG_ZERO`
+lands in `FOLLOW_ROW` — the only state that runs the solver. Mean latency by
+state: inference is flat at ~200 ms everywhere, but the non-inference part of
+the loop is ~100 ms in the odometry-open-loop states (`TURN_1` 280 ms e2e,
+`TRAVERSE` 309 ms) and **~317 ms in `FOLLOW_ROW`** (522 ms e2e). So the SLSQP
+solve costs ~200 ms/cycle and puts the row-following cycle at ~520 ms against a
+500 ms `max_data_age_sec` — right on the threshold, so roughly every other cycle
+is late. ⚠ Closing GUIs does NOT fix this: a run with mapviz open logged 97
+events and the same run without it logged 123. Use `set_sim_rtf.sh` in sim, a
+faster machine or a shorter `mpc_horizon` on the robot. In sim the answer
 is `agbot_bringup/scripts/set_sim_rtf.sh <factor>`: `use_sim_time` is on, so
 slowing wall-clock time raises the *sim-time* inference rate and leaves every
 threshold self-consistent (RTF 0.3 turns a 0.431 s wall cycle into a 0.13 s sim

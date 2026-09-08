@@ -106,19 +106,53 @@ Mission DONE: rows_driven=3, blocked rows: none, revoked exits: 0
 44.0 m, 0 interventions.  FOLLOW_ROW rms 0.091, invalid frames 0.0%
 ```
 
-⚠ **Every GUI costs real-time factor, and the watchdog reports it honestly.**
-`WATCHDOG_ZERO` counts across those two runs: **190** with the Gazebo GUI up,
-**97** headless but with RViz *and* mapviz open. End-to-end latency ran
-486 ms mean / 790 ms p95 (and touched 965 ms) against `max_data_age_sec` 0.5 s,
-so the loop genuinely could not keep up and the node correctly zeroed on stale
-frames. Both missions survived it; do not read that as free.
+### `WATCHDOG_ZERO` — it is the MPC, not the GUI
 
-⚠ **Do not raise `max_data_age_sec` to make the count go away.** In sim the
-answer is `rosrun agbot_bringup set_sim_rtf.sh 0.5`, which slows wall-clock time
-so every threshold stays self-consistent; otherwise close what you are not
-reading. The cheapest useful view is
-`rqt_image_view /vision_nav_node/debug/image` — mapviz and the Gazebo window
-are both GPU consumers competing with the segmentation model.
+⚠ **Corrected 2026-09-07 late.** The first reading of this was "every open GUI
+costs real-time factor, so close them". That is not what the data says, and
+acting on it wastes time. Three passing runs the same evening:
+
+| run | on screen | `WATCHDOG_ZERO` | of which in `FOLLOW_ROW` | frames over 0.5 s |
+|---|---|---|---|---|
+| 21:06 | Gazebo GUI + RViz | 190 | 169 (89 %) | 318 / 801 |
+| 22:20 | RViz + mapviz | 97 | 91 (94 %) | 235 / 850 |
+| 23:46 | RViz only | **123** | 113 (92 %) | 294 / 735 |
+
+Closing mapviz made it **worse**, not better (97 → 123). The Gazebo GUI does
+cost something real — 190 is clearly the outlier — but run-to-run variance
+swamps the rest, and **~90 % of every trip lands in `FOLLOW_ROW`**. That is the
+tell.
+
+Latency split by mission state, mean ms, consistent across both late runs:
+
+| state | inference | end-to-end | **the difference** |
+|---|---|---|---|
+| `FOLLOW_ROW` | 205 | 522 | **317** |
+| `EXIT_CLEAR` | 191 | 417 | 225 |
+| `TURN_1` | 182 | 280 | **99** |
+| `TRAVERSE` | 205 | 309 | 104 |
+
+Inference is flat at ~200 ms everywhere. The non-inference part of the loop is
+~100 ms in the odometry-open-loop states and **~300 ms in `FOLLOW_ROW`** — and
+`FOLLOW_ROW` is the only state that runs the MPC. So the SLSQP solve
+(`mpc_horizon` 8) costs roughly **200 ms per cycle**, which puts the row-following
+cycle at ~520 ms against a `max_data_age_sec` of **500 ms**. It is sitting
+exactly on the threshold, so roughly every other cycle is late. Nothing on
+screen changes that.
+
+⚠ **Do not raise `max_data_age_sec` to make the count go away** — the watchdog
+is correctly reporting that the loop cannot keep up, and at 0.5 m/s that window
+would be half a metre of blind driving. In sim the sanctioned answer is
+`rosrun agbot_bringup set_sim_rtf.sh 0.5`: `use_sim_time` is on, so slowing
+wall-clock time halves the *sim-time* cycle to ~260 ms and leaves every
+threshold self-consistent. On the robot the answers are a faster machine or a
+shorter MPC horizon.
+
+**It is not currently hurting anything.** At 0.15 m/s these runs still returned
+the best tracking of the four (`FOLLOW_ROW` rms 0.082) with 0 interventions and
+0 % invalid frames — a watchdog tick commands zero, so the robot stutters rather
+than drifts. It would matter at the 0.5 m/s envelope, which is exactly what
+`speed_args.py` and the RTF throttle exist for.
 
 ⚠ **The spawn pose is not the launch default.** `x:=-0.798 y:=-21.361` is the
 simulated trailer, 18 m south of the rows; it comes from `start_pose` in
