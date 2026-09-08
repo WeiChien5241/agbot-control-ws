@@ -73,6 +73,20 @@
        the supervisor refuses the handoff and stops instead. -->
   <arg name="max_arrival_heading_error_deg" default="12.0"/>
 
+  <!-- ⚠ LOCK OUT INTERACTIVE GOALS FOR THE WHOLE SEQUENCE. gps_nav_node
+       normally accepts a goal from anybody: an RViz 2D Nav Goal, or a mapviz
+       click. Under a supervisor that is a hazard, not a feature. mapviz's
+       point_click_publisher fires on EVERY click and clicking is also how you
+       pan and inspect the map, so looking at the map steers the robot.
+
+       Measured 2026-09-07: two clicks during the 44 s the segmentation model
+       takes to load sent the robot 47 m east, then 151 degrees back, before
+       the supervisor's real goal arrived. It drove a large triangle across the
+       field and then completed the mission correctly, which is exactly the
+       shape of a fault that gets blamed on navigation. The supervisor's own
+       channel, ~goal_pose, is not gated. -->
+  <arg name="external_goals_enabled" default="false"/>
+
   <arg name="transit_timeout_sec" default="300.0"/>
   <arg name="mission_timeout_sec" default="1800.0"/>
 
@@ -84,6 +98,7 @@
     <arg name="heading_init_max_distance" value="$(arg heading_init_max_distance)"/>
     <arg name="staging_distance"      value="$(arg staging_distance)"/>
     <arg name="arrival_cross_tolerance" value="$(arg arrival_cross_tolerance)"/>
+    <arg name="external_goals_enabled" value="$(arg external_goals_enabled)"/>
   </include>
 
   <!-- Vision nav, held OFF until the robot reaches the row entrance. Its

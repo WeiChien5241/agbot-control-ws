@@ -172,6 +172,22 @@ heading_init_tolerance_deg: 12.0
 # ⚠ Opposite polarity to ~pause: ~pause true = stop, ~set_enabled true = go.
 start_enabled: true
 
+# Whether the INTERACTIVE goal channels are honoured -- an RViz 2D Nav Goal on
+# /move_base_simple/goal, and a mapviz click on ~goal_wgs84. true is right when
+# you are driving this node by hand, which is what those channels are for.
+# ⚠ gps_vision_mission.launch passes FALSE. Under a supervisor they are a
+# hazard: mapviz's point_click_publisher fires on EVERY click, and clicking is
+# also how you pan and inspect the map, so looking at the map steers the robot.
+# Measured 2026-09-07 -- two clicks during the 44 s the segmentation model takes
+# to load sent the robot 47 m east and then 151 deg back before the supervisor's
+# real goal arrived. It drove a large triangle across the field and then did the
+# mission correctly, which is exactly the shape of a fault that gets blamed on
+# navigation.
+# ⚠ ~goal_pose is NOT gated by this. It is the supervisor's programmatic
+# channel, no GUI publishes to it, and gating it would lock the mission out of
+# its own node.
+external_goals_enabled: true
+
 # ---- topics -----------------------------------------------------------------
 # ⚠ /odometry/filtered/global, NOT /odometry/filtered. The latter is the Jackal's
 # stock odom-frame EKF, which is smooth but not georeferenced.

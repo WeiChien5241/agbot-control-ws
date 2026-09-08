@@ -118,6 +118,24 @@ class GpsNavNode(object):
         # implies. Off by default; ~goal_pose below is the unambiguous channel.
         self._use_goal_orientation = bool(
             rospy.get_param("~use_goal_orientation", False))
+        # ⚠ WHO IS ALLOWED TO STEER THIS NODE. True (the default) also accepts
+        # goals from the INTERACTIVE channels -- an RViz 2D Nav Goal and a
+        # mapviz click -- which is the whole point when driving it by hand.
+        #
+        # gps_vision_mission.launch sets it FALSE, because under a supervisor
+        # those channels are a hazard rather than a feature: mapviz's
+        # point_click_publisher fires on EVERY click, and clicking is also how
+        # you pan and inspect the map. Measured 2026-09-07: two clicks during
+        # the 44 s the segmentation model takes to load sent the robot 47 m
+        # east and then 151 degrees back before the supervisor's real goal
+        # arrived -- a large triangle across the field that looked like a
+        # navigation fault and was not one.
+        #
+        # ~goal_pose is deliberately NOT gated. It is the supervisor's
+        # programmatic channel, no GUI publishes to it, and gating it would
+        # lock the mission out of its own node.
+        self._external_goals_enabled = bool(
+            rospy.get_param("~external_goals_enabled", True))
 
         self._control_rate = float(rospy.get_param("~control_rate", 20.0))
         self._max_fix_age_sec = float(rospy.get_param("~max_fix_age_sec", 2.0))
@@ -234,7 +252,8 @@ class GpsNavNode(object):
                       goal[0], goal[1], lat, lon,
                       "" if bearing is None
                       else "  approach bearing %.0f deg" % math.degrees(bearing))
-        self._accept_goal(goal, approach_bearing=bearing)
+        self._accept_goal(goal, approach_bearing=bearing,
+                          source="RViz (/move_base_simple/goal)", external=True)
 
     def _wgs84_goal_cb(self, msg):
         """mapviz click, or a hand-published lat/lon.
@@ -251,7 +270,8 @@ class GpsNavNode(object):
         goal = geo.latlon_to_enu(lat, lon, self._datum)
         rospy.loginfo("goal from WGS84: lat %.7f, lon %.7f = map (%.2f, %.2f)",
                       lat, lon, goal[0], goal[1])
-        self._accept_goal(goal, hint=self._swap_hint(lat, lon))
+        self._accept_goal(goal, hint=self._swap_hint(lat, lon),
+                          source="mapviz/WGS84 (~goal_wgs84)", external=True)
 
     def _pose_goal_cb(self, msg):
         """A goal whose ORIENTATION IS ALWAYS the approach bearing.
@@ -271,10 +291,42 @@ class GpsNavNode(object):
         bearing = _quaternion_to_yaw(msg.pose.orientation)
         rospy.loginfo("goal from ~goal_pose: map (%.2f, %.2f), approach bearing "
                       "%.0f deg", goal[0], goal[1], math.degrees(bearing))
-        self._accept_goal(goal, approach_bearing=bearing)
+        self._accept_goal(goal, approach_bearing=bearing, source="~goal_pose")
 
-    def _accept_goal(self, goal_xy, hint=None, approach_bearing=None):
-        """Common goal entry point. Refuses anything outside the geofence."""
+    def _accept_goal(self, goal_xy, hint=None, approach_bearing=None,
+                     source="?", external=False):
+        """Common goal entry point.
+
+        Refuses anything outside the geofence, refuses interactive goals while
+        those are locked out, and says so LOUDLY when a goal displaces one
+        already being driven.
+        """
+        if external and not self._external_goals_enabled:
+            rospy.logwarn(
+                "IGNORING goal from %s: map (%.2f, %.2f). Interactive goals are "
+                "locked out on this node (~external_goals_enabled false) because "
+                "a mission supervisor is driving it, and a stray click would "
+                "silently redirect the run.",
+                source, goal_xy[0], goal_xy[1])
+            self._refuse("IGNORED goal from %s: a supervisor owns this node"
+                         % source)
+            return
+
+        # ⚠ A goal landing on top of one already being driven is nearly always
+        # a mistake, and it used to be indistinguishable from the first goal in
+        # the log -- an ordinary INFO in a stream of timing lines. That is how
+        # two mapviz clicks redirected a whole transit unnoticed (2026-09-07).
+        with self._state_lock:
+            previous = self._follower.goal
+            displacing = previous is not None and self._follower.state not in (
+                STATE_IDLE, STATE_ARRIVED, STATE_FAILED)
+        if displacing:
+            rospy.logwarn(
+                "goal from %s REPLACES the goal being driven: map (%.2f, %.2f) "
+                "-> (%.2f, %.2f). If that was not deliberate, the robot is now "
+                "going somewhere else.",
+                source, previous[0], previous[1], goal_xy[0], goal_xy[1])
+
         distance = math.hypot(goal_xy[0], goal_xy[1])
         if distance > self._geofence_radius_m:
             rospy.logerr("REFUSING goal %.1f m from the datum; geofence is %.1f m. "
@@ -545,6 +597,10 @@ class GpsNavNode(object):
                                "blank world, NOT on the robot")
             rospy.loginfo("topics:   pose=%s fix=%s cmd=%s",
                           odom_topic, fix_topic, cmd_vel_topic)
+            rospy.loginfo("goals:    ~goal_pose always | RViz + mapviz clicks %s",
+                          "ACCEPTED" if self._external_goals_enabled else
+                          "LOCKED OUT (a supervisor owns this node, so a stray "
+                          "mapviz click cannot redirect the run)")
             rospy.loginfo("enabled:  %s at startup (~set_enabled to hand over; "
                           "disabled = SILENT on cmd_vel, not zeros)",
                           "YES" if self._enabled else "NO")

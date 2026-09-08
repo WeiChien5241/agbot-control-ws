@@ -267,7 +267,14 @@ to it. Restart the sim at the pose you want.
   releases it.
 - `scripts/gps_nav_node.py` — the only rospy file. Publishes `/cmd_vel` so
   twist_mux keeps the joystick (priority 9-10) above autonomy (priority 1).
-- `launch/mapviz.launch` — the map view. ⚠ Use this, not `rosrun mapviz mapviz`
+- `launch/mapviz.launch` — the map view. ⚠ **Clicking the map STEERS THE
+  ROBOT**: `point_click_publisher` fires on every click on `~goal_wgs84`, and
+  clicking is also how you pan. Two stray clicks during a mission's model-load
+  window drove a 47 m detour that read as a navigation fault (sim 2026-09-07).
+  `gps_vision_mission.launch` therefore passes `external_goals_enabled:=false`,
+  which refuses RViz and mapviz goals by name while leaving the supervisor's
+  `~goal_pose` open; a goal displacing an active one is a WARN in either mode.
+  ⚠ Use the launch file, not `rosrun mapviz mapviz`
   plus File > Open Config: mapviz needs `/local_xy_origin` to know where `map`
   sits on Earth, nothing published it, and without it the canvas is blank grey
   and looks like a broken tile source. The launch runs `initialize_origin.py`

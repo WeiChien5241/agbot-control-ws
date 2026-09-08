@@ -167,6 +167,27 @@ be running. It is deliberately NOT `local_xy_origin: auto` against the robot's
 real fix topic — that anchors the map frame wherever the robot booted, which in
 the sim is the trailer 18 m south of the field.
 
+⚠ **CLICKING THE MAP STEERS THE ROBOT.** `point_click_publisher` fires on
+*every* click on `/gps_nav_node/goal_wgs84`, and clicking is also how you pan
+and inspect — so looking at the map sends a goal. That is the feature in the
+§1.2 hand-driving workflow and a hazard during a mission.
+
+It bit a real run on 2026-09-07: two clicks during the 44 s the segmentation
+model takes to load sent the robot to map `(46.05, -10.88)` — 47 m east — then
+to `(-14.08, -15.84)` behind it, before the supervisor's real goal arrived at
+t=54. The robot drove a large triangle across the field, then completed the
+mission correctly. The transit looked like a navigation fault and was not one;
+the only trace was two ordinary `goal from WGS84:` INFO lines buried in the
+timing stream.
+
+Fixed at the node, not at mapviz: `gps_vision_mission.launch` now passes
+`external_goals_enabled:=false`, so during a sequence the RViz and mapviz
+channels are **refused and logged by name** while the supervisor's `~goal_pose`
+still works. The startup config block says which:
+`goals: ~goal_pose always | RViz + mapviz clicks LOCKED OUT`. And in either
+mode, a goal that displaces one already being driven is now a WARN naming both
+points. Standalone (§1.2) click-to-goal is unchanged.
+
 ⚠ `tile_map` is listed first in the config on purpose — mapviz paints plugins in
 list order and a tile layer listed later covers the robot.
 
@@ -460,6 +481,7 @@ argument overrides the file only when actually passed.
 | `approach_speed` | 0.15 | speed at the goal. ⚠ a FLOOR, not a second derate — it used to be multiplied again and the last metre crawled at 3.75 cm/s |
 | `staging_distance` | 3.0 (5.0 in the mission launch) | length of the on-axis final leg; longer gives the cross-track term more room |
 | `arrival_cross_tolerance` | 0.35 (**0.20 in the mission launch**) | must stay under half a row spacing, and well under it for a row entrance: the Jackal is ~0.43 m wide in a 0.75 m corridor |
+| `external_goals_enabled` | true (**false in the mission launch**) | whether RViz 2D Nav Goals and mapviz clicks are honoured. ⚠ true is right for hand-driving; under a supervisor a stray click silently redirects the run |
 | `max_arrival_heading_error_deg` | 12.0 (`mission_supervisor`) | ⚠ the handoff gate. Over this the supervisor refuses to enable vision nav and stops. Raising it is how the robot ends up in the corn |
 | `heading_init_distance` / `_max_distance` | 0.0 / 8.0 | bootstrap min and backstop. ⚠ **0 disables it — fine in a blank world, NOT on the robot** |
 | `max_goal_distance_growth` | 5.0 | receding-goal abort |
