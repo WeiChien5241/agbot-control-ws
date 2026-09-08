@@ -160,13 +160,13 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 240 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 243 passed
 cd ../agbot_gps_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 149 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 161 passed
 ```
 `agbot_vision_nav/test/test_launch_files.py` walks the WHOLE workspace, so it
 covers `agbot_gps_nav`'s and `agbot_bringup`'s launch files too — which is why
-its count rose from 214 to 240 as the GPS package grew.
+its count rose from 214 to 243 as the GPS package grew.
 
 Performance report from a run (no ROS; CSVs are written automatically):
 ```bash

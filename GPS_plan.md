@@ -20,8 +20,8 @@
 | **Works today, in simulation** | trailer → GPS transit → arrive on the row axis → hand off → vision nav drives 3 corridors → DONE |
 | **Never run on the robot** | no Reach M2 yet; the whole GPS stack is sim-only |
 | **Datum** | Purdue ACRE `40.494928, −86.996323` — approximate, **read off a map, not surveyed** |
-| **Tests** | `agbot_gps_nav` 149, `agbot_vision_nav` 240, all passing |
-| **Phases done** | 0 (sim-first), 2 (dual EKF), 4 (follower + node), 5 (RViz + mapviz configs), 6 (handoff) |
+| **Tests** | `agbot_gps_nav` 161, `agbot_vision_nav` 243, all passing |
+| **Phases done** | 0 (sim-first), 2 (dual EKF), 4 (follower + node), 5 (RViz + mapviz, both now actually working), 6 (handoff) |
 | **Phase 3** | *bootstrap* half built and required; full course-over-ground estimator NOT built |
 | **Phase 1** | not started (Reach M2, NTRIP) |
 | **Part A** | not done — `headland_clearance` 0.75 → 1.0, unrelated vision-nav fix, still open |
@@ -45,8 +45,8 @@ source devel/setup.bash # in EVERY terminal you use below
 Offline tests, no ROS or Gazebo needed:
 
 ```bash
-cd ~/agbot_control_ws/src/agbot_gps_nav   && PYTHONPATH=src python3 -m pytest test/ -q   # 149
-cd ~/agbot_control_ws/src/agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -q   # 240
+cd ~/agbot_control_ws/src/agbot_gps_nav   && PYTHONPATH=src python3 -m pytest test/ -q   # 161
+cd ~/agbot_control_ws/src/agbot_vision_nav && PYTHONPATH=src python3 -m pytest test/ -q   # 243
 ```
 
 ### 1.1 The headline demo — trailer to row, then the row mission
@@ -80,6 +80,26 @@ FINISHED      rows=3/3, state=DONE
 
 `rostopic echo /vision_nav_node/status` shows `rows=N/3` climbing. The debug
 overlay is `rqt_image_view /vision_nav_node/debug/image`.
+
+Measured on the 2026-09-07 21:06 run, after the heading fixes (§3.1, §3.5b),
+**with the Gazebo GUI on**:
+
+```
+bootstrap converged at 2.7 deg      (the run before it gave up at 71.9 deg)
+ARRIVED 0.30 m from goal, arrival heading check -0.5 deg -> handoff accepted
+rows 3/3, DONE.  42.6 m, 0 interventions, 0 BLOCKED, 0 BACKOUT
+FOLLOW_ROW rms offset_norm 0.095, invalid frames 0.0%
+```
+
+⚠ **But the GUI costs real-time factor, and the watchdog reports it honestly:
+190 `WATCHDOG_ZERO` events**, against 41 on an earlier headless run. End-to-end
+latency was 486 ms mean / 790 ms p95 against `max_data_age_sec` 0.5 s, so the
+loop genuinely could not keep up and the node correctly zeroed on stale frames.
+The mission survived it, but do not read that as free. ⚠ **Do not raise
+`max_data_age_sec` to make the count go away** — in sim the answer is
+`rosrun agbot_bringup set_sim_rtf.sh 0.5`, which slows wall-clock time so every
+threshold stays self-consistent, or just drop the GUI again once you have seen
+what you wanted to see.
 
 ⚠ **The spawn pose is not the launch default.** `x:=-0.798 y:=-21.361` is the
 simulated trailer, 18 m south of the rows; it comes from `start_pose` in
@@ -439,7 +459,8 @@ argument overrides the file only when actually passed.
 | `linear_x_cruise` | 0.4 | transit speed; open ground, so faster than in-row |
 | `approach_speed` | 0.15 | speed at the goal. ⚠ a FLOOR, not a second derate — it used to be multiplied again and the last metre crawled at 3.75 cm/s |
 | `staging_distance` | 3.0 (5.0 in the mission launch) | length of the on-axis final leg; longer gives the cross-track term more room |
-| `arrival_cross_tolerance` | 0.35 | must stay under half a row spacing |
+| `arrival_cross_tolerance` | 0.35 (**0.20 in the mission launch**) | must stay under half a row spacing, and well under it for a row entrance: the Jackal is ~0.43 m wide in a 0.75 m corridor |
+| `max_arrival_heading_error_deg` | 12.0 (`mission_supervisor`) | ⚠ the handoff gate. Over this the supervisor refuses to enable vision nav and stops. Raising it is how the robot ends up in the corn |
 | `heading_init_distance` / `_max_distance` | 0.0 / 8.0 | bootstrap min and backstop. ⚠ **0 disables it — fine in a blank world, NOT on the robot** |
 | `max_goal_distance_growth` | 5.0 | receding-goal abort |
 | `geofence_radius_m` | 200.0 | max distance from the datum |
