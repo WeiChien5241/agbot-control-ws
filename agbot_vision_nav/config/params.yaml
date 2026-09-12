@@ -208,8 +208,23 @@ traverse_distance: 0.6     # m of sideways travel after TURN_1. Deliberately
                            # been tested. 0.6 vs 0.65 is still an open field
                            # question (HANDOFF3 next-step 5); decide it with a
                            # run, not by editing this line.
-exit_clear_speed: 0.10     # m/s during EXIT_CLEAR (slower than cruise: the
-                           # post-exit leg is where overshoot hurts most)
+traverse_speed: 0.5        # m/s during TRAVERSE and BACKOUT_TRAVERSE -- the
+                           # blind, odometry-bounded sideways move between
+                           # rows. ⚠ It is NOT linear_x_cruise, which it used
+                           # to inherit silently: in-row cruise is an operator
+                           # knob that is deliberately pushed to 0.9 m/s in
+                           # testing, and the headland leg must not follow it
+                           # up there. Kept at a speed the 2026-09-09 field
+                           # test proved comfortable in the row (0.5 < the
+                           # validated 0.6), driven with angular_z pinned to
+                           # 0.0 over 0.6 m.
+exit_clear_speed: 0.25     # m/s during EXIT_CLEAR. Was 0.10 on the argument
+                           # that the post-exit leg is where overshoot hurts
+                           # most -- but the leg is odometry/rear-camera
+                           # bounded in DISTANCE, not in time, so speed does
+                           # not change where it ends, only how long it takes
+                           # to get there. Field 2026-09-09: all 13 legs ran
+                           # their full length at 0.10 m/s and cost ~15 s each.
 # Rear-camera-steered headland leg (needs rear_camera_enabled; the node ANDs
 # the two the same way it does for the back-out). The front camera has just
 # said "open field ahead"; the REAR camera is then looking straight back down
@@ -335,8 +350,35 @@ exit_clear_min_distance: 0.2  # m always driven after the exit confirms, even
 exit_revoke_enabled: true
 exit_revoke_distance: 0.5      # m after confirming during which revert is possible
 exit_revoke_fail_distance: 0.25  # m of continuous corn beside the near row => revert
-turn_rate: 0.4             # rad/s during in-place 90-degree turns
-yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees
+turn_rate: 0.7             # rad/s during the HEADLAND in-place 90-degree
+                           # turns (TURN_1, TURN_2). Was 0.4; raised 75% on
+                           # 2026-09-12 after the field test showed the turns
+                           # are the slowest part of a headland and nothing
+                           # about them is perception-limited -- they run on
+                           # integrated odometry yaw with the robot stopped.
+                           # ⚠ The back-out S-turn does NOT use this; see
+                           # backout_turn_rate.
+backout_turn_rate: 0.4     # rad/s during BACKOUT_TURN_1 / BACKOUT_TURN_2.
+                           # Deliberately left at the pre-2026-09-12 rate: the
+                           # S-turn out of a blocked row is the one maneuver
+                           # that starts next to whatever blocked the robot,
+                           # and it has no independent validation at 0.7.
+yaw_tolerance_deg: 1.5     # stop turning within this much of 90 degrees.
+                           # ⚠ Read the code before changing it: the test is
+                           # `swept >= pi/2 - yaw_tolerance`, so this is a
+                           # one-sided STOP-EARLY band, not a +/- tolerance --
+                           # every turn undershoots by exactly this much.
+                           # Field 2026-09-09 measured it: all 12 TURN_1 legs
+                           # swept 1.477-1.483 rad = pi/2 - 5 deg exactly, so
+                           # TURN_1 + TURN_2 handed REACQUIRE a repeatable
+                           # ~10 deg heading bias to absorb.
+                           # ⚠ The floor is one control tick of turning:
+                           # turn_rate / frame_rate. At the field robot's
+                           # ~58 Hz (17 ms inference) and 0.7 rad/s that is
+                           # 0.7 deg, so 1.5 has 2x margin. On the 2 Hz CPU
+                           # Jackal one tick is 20 deg and this pairing would
+                           # overshoot badly -- raise it there, or lower
+                           # turn_rate.
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
 reacquire_confirm_distance: 0.12  # m of sustained in-row view before re-entering
                            # FOLLOW_ROW (= the old 3 frames at 2 Hz and
@@ -356,6 +398,45 @@ reacquire_max_distance: 2.0  # m of creep without a corridor => no rows left =>
                              # DONE. 2.0 (was 1.5) leaves margin for back-out
                              # overshoot: the robot may re-approach the rows
                              # from farther out than a normal headland turn.
+                             # ⚠ This applies to the SEARCH phase only. Once a
+                             # row has been latched REACQUIRE can no longer end
+                             # the mission -- "I can see a row but am not yet
+                             # centred in it" must never be reported as "there
+                             # are no rows left".
+
+# REACQUIRE phase B -- re-centre before handing the row to FOLLOW_ROW.
+#
+# WHY: latching a row and entering FOLLOW_ROW are two different events, and
+# until 2026-09-12 they were the same one. REACQUIRE exited after 0.12 m of
+# "a row is visible" with no centring requirement at all, so it handed over
+# whatever lateral error the headland turn had left. Field 2026-09-09 measured
+# the residual |offset_norm| at handoff across 5 runs: typically 0.10, worst
+# 0.26 -- and the two worst handoffs of the morning are the two rows that
+# needed a rescue. FOLLOW_ROW absorbs that at 0.3 m/s and does not at 0.9.
+#
+# So after latching, the FSM stays in REACQUIRE (state reads
+# "REACQUIRE (CENTER)") and steers until the row is actually centred.
+reacquire_center_tolerance: 0.06   # |offset_norm| that counts as centred.
+                           # Normalized IMAGE space, so it is mount-dependent
+                           # like every other offset_norm threshold -- it is
+                           # NOT meters. 0.06 is the FOLLOW_ROW RMS of the
+                           # three clean 0.6 m/s runs (0.045 / 0.068 / 0.059),
+                           # i.e. "as centred as normal row-following holds".
+reacquire_center_confirm_distance: 0.10  # m of travel inside the tolerance
+                           # before handing off. Resets to zero on any frame
+                           # outside it, so a single lucky frame at a zero
+                           # crossing cannot end the phase.
+reacquire_center_speed: 0.15  # m/s while centring. Faster than the 0.08 m/s
+                           # search creep (the row is found; there is nothing
+                           # left to look for) and deliberately the 0.15 m/s
+                           # the MPC and angular_z_max 0.175 are tuned at, so
+                           # the tightest phase of the whole mission runs in
+                           # the field-proven envelope.
+reacquire_center_max_distance: 0.5  # m of centring before handing off anyway.
+                           # A backstop, not a target: reaching it is logged as
+                           # a WARNING, because it means the row was latched
+                           # and never centred. 0.5 m at 0.15 m/s is ~3.3 s per
+                           # headland worst case.
 exit_width_threshold: 0.8  # normalized corridor width that reads as "open field"
 exit_flank_edge_margin: 0.05  # width of the outer strip checked at EACH side of
                            # a scan row. OPEN additionally requires both strips
@@ -432,6 +513,52 @@ blocked_min_obstacle_fraction: 0.2  # BLOCKED also needs this much OBSTACLE in
 blocked_arming_distance: 0.3  # m of in-row travel before BLOCKED detection arms
                               # (much earlier than open, so obstacles right
                               # after row entry still trigger the back-out)
+
+# Occlusion nudge -- tell a leaf on the lens apart from a dead end by MOVING.
+#
+# WHY: the blocked signature (no corridor at any scan row + obstacle pixels)
+# is produced by a crop wall ahead AND by a single leaf resting on the lens,
+# and from one frame the two are indistinguishable. The robot's response was
+# to stop, which is the one action that guarantees the leaf never leaves the
+# view: field 2026-09-09 (vision_nav_20260909_102256.csv) went 99% obstacle at
+# 2.80 m into the row, stopped dead with distance_in_row frozen at 2.798 m for
+# 4 s, and backed out of a row that was not blocked.
+#
+# The discriminator is 10-15 cm of travel: that clears the leaf and is far
+# less than the standoff the blocked signature leaves in front of a real crop
+# wall. So on a blocked signature -- after a healthy corridor, and only twice
+# -- the FSM creeps forward instead of standing still. If the view comes back
+# it was a leaf; if it does not, BLOCKED fires as before and the back-out runs
+# 0.24 m further forward than it used to.
+#
+# nudge_max_attempts: 0 disables the whole mechanism (pre-2026-09-12 behavior).
+nudge_max_attempts: 2      # consecutive nudges allowed without the view
+                           # recovering. Resets as soon as a FOLLOW_ROW frame
+                           # sees nudge_min_corridor_rows again, so a second
+                           # leaf later in the same row gets its own budget.
+nudge_distance: 0.12       # m driven per nudge. The user-facing number: total
+                           # forward creep before a genuine back-out is
+                           # nudge_distance * nudge_max_attempts = 0.24 m.
+nudge_speed: 0.08          # m/s while nudging. The robot is BLIND for this
+                           # leg (angular_z is pinned to 0.0 -- there is no
+                           # corridor to steer on), so it is driven at the
+                           # slowest speed in the system.
+nudge_trigger_seconds: 0.5  # s of accumulated blocked evidence before a nudge
+                           # fires. Reuses the detector's existing leaky
+                           # blocked timer rather than adding an accumulator,
+                           # which is what debounces it: at the field robot's
+                           # ~58 Hz a single garbage frame is 17 ms and must
+                           # never move the robot. Must stay well below
+                           # blocked_confirm_seconds (4.0) or the nudge never
+                           # gets a chance to run.
+nudge_min_corridor_rows: 2  # scan rows that must find a corridor for the view
+                           # to count as "healthy" (of 3).
+nudge_min_healthy_distance: 0.5  # m of healthy driving required before a nudge
+                           # is allowed -- the "there WAS a long enough
+                           # traversable path" precondition. Without it the
+                           # robot would nudge forward into something it has
+                           # never seen a corridor past, e.g. a row entered
+                           # straight into an obstacle.
 
 # Blocked-row back-out (rear camera; see mission_fsm.py BACKOUT states).
 # On a blocked-ahead signal the robot reverses out of the row steering from

@@ -90,6 +90,11 @@
                                                           the robot turns before reaching the next
                                                           row's corn (field near-miss at 0.75);
                                                           REACQUIRE closes the remaining alignment -->
+  <arg name="traverse_speed"       default="" />  <!-- m/s on that leg. NOT linear_x_cruise, which
+                                                          it used to inherit: cruise is the operator's
+                                                          in-row knob and gets pushed to 0.9 m/s in
+                                                          speed testing, which took the blind headland
+                                                          crossing up there with it. -->
   <arg name="min_in_row_distance"  default="" />  <!-- m of in-row travel before exit detection arms -->
 
   <!-- Row-exit detection / headland tuning (see row_exit_detector.py). -->
@@ -196,6 +201,36 @@
        camera-height constant and could never be met on the low camera. -->
   <arg name="reacquire_confirm_distance" default="" /><!-- m of in-row view to latch -->
   <arg name="reacquire_steering_enabled" default="" /><!-- steer while creeping -->
+  <arg name="reacquire_speed"            default="" /><!-- m/s while searching for the corridor -->
+  <arg name="reacquire_max_distance"     default="" /><!-- m of search before DONE (phase A only) -->
+
+  <!-- REACQUIRE phase B: latching a row and being centred in it are two
+       different events. Treating them as one handed FOLLOW_ROW up to 0.26 of
+       offset_norm at every headland (field 2026-09-09), and the two worst
+       handoffs of that morning are the two rows that needed a rescue. -->
+  <arg name="reacquire_center_tolerance"        default="" /><!-- |offset_norm| that counts as centred -->
+  <arg name="reacquire_center_confirm_distance" default="" /><!-- m inside tolerance before handing off -->
+  <arg name="reacquire_center_speed"            default="" /><!-- m/s while centring -->
+  <arg name="reacquire_center_max_distance"     default="" /><!-- m before handing off anyway (warns) -->
+
+  <!-- Occlusion nudge. A leaf on the lens and a crop wall ahead produce the
+       same blocked signature; standing still is the one response that
+       guarantees a leaf never leaves the view. 0 attempts disables it. -->
+  <arg name="nudge_max_attempts"        default="" />
+  <arg name="nudge_distance"            default="" /><!-- m per nudge -->
+  <arg name="nudge_speed"               default="" /><!-- m/s while blind -->
+  <arg name="nudge_trigger_seconds"     default="" /><!-- s of blocked evidence before nudging -->
+  <arg name="nudge_min_corridor_rows"   default="" /><!-- scan rows that count as a healthy view -->
+  <arg name="nudge_min_healthy_distance" default="" /><!-- m of healthy driving required first -->
+
+  <!-- In-place turn rates. The headland turns and the blocked-row S-turn are
+       separate knobs: the S-turn starts beside whatever blocked the robot. -->
+  <arg name="turn_rate"            default="" /><!-- rad/s, TURN_1 / TURN_2 -->
+  <arg name="backout_turn_rate"    default="" /><!-- rad/s, BACKOUT_TURN_1 / _2 -->
+  <arg name="yaw_tolerance_deg"    default="" /><!-- STOP-EARLY band, not a plus/minus tolerance:
+                                                      every turn undershoots by exactly this much.
+                                                      Floor is one control tick of turning,
+                                                      turn_rate / frame_rate. -->
 
   <arg name="rear_camera_enabled" default="" />
   <arg name="rear_camera_topic"
@@ -255,6 +290,14 @@
            if="$(eval arg('row_spacing') != '')" />
     <param name="traverse_distance"        value="$(arg traverse_distance)"
            if="$(eval arg('traverse_distance') != '')" />
+    <param name="traverse_speed"           value="$(arg traverse_speed)"
+           if="$(eval arg('traverse_speed') != '')" />
+    <param name="turn_rate"                value="$(arg turn_rate)"
+           if="$(eval arg('turn_rate') != '')" />
+    <param name="backout_turn_rate"        value="$(arg backout_turn_rate)"
+           if="$(eval arg('backout_turn_rate') != '')" />
+    <param name="yaw_tolerance_deg"        value="$(arg yaw_tolerance_deg)"
+           if="$(eval arg('yaw_tolerance_deg') != '')" />
     <param name="min_in_row_distance"      value="$(arg min_in_row_distance)"
            if="$(eval arg('min_in_row_distance') != '')" />
     <param name="headland_clearance"       value="$(arg headland_clearance)"
@@ -295,6 +338,32 @@
            if="$(eval arg('reacquire_confirm_distance') != '')" />
     <param name="reacquire_steering_enabled" value="$(arg reacquire_steering_enabled)"
            if="$(eval arg('reacquire_steering_enabled') != '')" />
+    <param name="reacquire_speed"          value="$(arg reacquire_speed)"
+           if="$(eval arg('reacquire_speed') != '')" />
+    <param name="reacquire_max_distance"   value="$(arg reacquire_max_distance)"
+           if="$(eval arg('reacquire_max_distance') != '')" />
+    <param name="reacquire_center_tolerance" value="$(arg reacquire_center_tolerance)"
+           if="$(eval arg('reacquire_center_tolerance') != '')" />
+    <param name="reacquire_center_confirm_distance"
+           value="$(arg reacquire_center_confirm_distance)"
+           if="$(eval arg('reacquire_center_confirm_distance') != '')" />
+    <param name="reacquire_center_speed"   value="$(arg reacquire_center_speed)"
+           if="$(eval arg('reacquire_center_speed') != '')" />
+    <param name="reacquire_center_max_distance"
+           value="$(arg reacquire_center_max_distance)"
+           if="$(eval arg('reacquire_center_max_distance') != '')" />
+    <param name="nudge_max_attempts"       value="$(arg nudge_max_attempts)"
+           if="$(eval arg('nudge_max_attempts') != '')" />
+    <param name="nudge_distance"           value="$(arg nudge_distance)"
+           if="$(eval arg('nudge_distance') != '')" />
+    <param name="nudge_speed"              value="$(arg nudge_speed)"
+           if="$(eval arg('nudge_speed') != '')" />
+    <param name="nudge_trigger_seconds"    value="$(arg nudge_trigger_seconds)"
+           if="$(eval arg('nudge_trigger_seconds') != '')" />
+    <param name="nudge_min_corridor_rows"  value="$(arg nudge_min_corridor_rows)"
+           if="$(eval arg('nudge_min_corridor_rows') != '')" />
+    <param name="nudge_min_healthy_distance" value="$(arg nudge_min_healthy_distance)"
+           if="$(eval arg('nudge_min_healthy_distance') != '')" />
     <param name="exit_revoke_enabled"      value="$(arg exit_revoke_enabled)"
            if="$(eval arg('exit_revoke_enabled') != '')" />
     <param name="exit_revoke_distance"     value="$(arg exit_revoke_distance)"

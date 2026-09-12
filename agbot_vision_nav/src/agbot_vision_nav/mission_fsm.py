@@ -114,6 +114,13 @@ STATE_TURN_1 = "TURN_1"
 STATE_TRAVERSE = "TRAVERSE"
 STATE_TURN_2 = "TURN_2"
 STATE_REACQUIRE = "REACQUIRE"
+STATE_NUDGE = "NUDGE"
+# Reported instead of STATE_REACQUIRE while REACQUIRE is centring rather than
+# searching. A LABEL, not a state: self.state stays STATE_REACQUIRE, so every
+# transition and test keyed on it is unchanged. It exists because the two
+# phases are the two halves of the defect this state was rebuilt to fix, and
+# a CSV that renders them identically cannot show which half is slow.
+STATE_REACQUIRE_CENTER = "REACQUIRE (CENTER)"
 STATE_DONE = "DONE"
 STATE_BACKOUT = "BACKOUT"
 STATE_BACKOUT_CLEAR = "BACKOUT_CLEAR"
@@ -193,13 +200,25 @@ class MissionFSM:
         first_turn_direction="left",
         row_spacing=0.75,
         traverse_distance=0.6,
+        traverse_speed=None,
         headland_clearance=1.0,
         turn_rate=0.4,
+        backout_turn_rate=None,
         yaw_tolerance_deg=5.0,
         reacquire_speed=0.08,
         reacquire_confirm_distance=0.12,
         reacquire_steering_enabled=True,
         reacquire_max_distance=1.5,
+        reacquire_center_tolerance=0.06,
+        reacquire_center_confirm_distance=0.10,
+        reacquire_center_speed=0.15,
+        reacquire_center_max_distance=0.5,
+        nudge_max_attempts=2,
+        nudge_distance=0.12,
+        nudge_speed=0.08,
+        nudge_trigger_seconds=0.5,
+        nudge_min_corridor_rows=2,
+        nudge_min_healthy_distance=0.5,
         backout_speed=0.10,
         backout_enabled=True,
         exit_clear_speed=0.10,
@@ -280,8 +299,23 @@ class MissionFSM:
         # near-miss, 2026-07); REACQUIRE + the MPC close the remaining
         # lateral offset.
         self.traverse_distance = traverse_distance
+        # Speed of the TRAVERSE/BACKOUT_TRAVERSE leg. It used to BE
+        # linear_x_cruise, read straight off the controller -- which coupled a
+        # blind odometry leg to the operator's in-row speed knob, so a 0.9 m/s
+        # test run also crossed the headland at 0.9 m/s. None keeps the old
+        # behaviour so a caller that never heard of this knob is unchanged.
+        self.traverse_speed = (
+            abs(traverse_speed) if traverse_speed is not None else None
+        )
         self.headland_clearance = headland_clearance
         self.turn_rate = abs(turn_rate)
+        # The back-out S-turn starts next to whatever blocked the robot and has
+        # no validation at the headland turns' raised rate, so it keeps its
+        # own. None = share turn_rate (pre-2026-09-12 behaviour).
+        self.backout_turn_rate = (
+            abs(backout_turn_rate) if backout_turn_rate is not None
+            else abs(turn_rate)
+        )
         self.yaw_tolerance = math.radians(yaw_tolerance_deg)
         self.reacquire_speed = reacquire_speed
         # Meters of sustained in-row view to latch the new row. 0.12 m is the
@@ -293,6 +327,22 @@ class MissionFSM:
         # is how it nearly put the robot into the corn (sim, 2026-07-28).
         self.reacquire_steering_enabled = reacquire_steering_enabled
         self.reacquire_max_distance = reacquire_max_distance
+        # REACQUIRE phase B: latching a row and being centred in it are two
+        # different events, and treating them as one is what handed FOLLOW_ROW
+        # up to 0.26 of offset_norm at every headland (field, 2026-09-09).
+        self.reacquire_center_tolerance = abs(reacquire_center_tolerance)
+        self.reacquire_center_confirm_distance = reacquire_center_confirm_distance
+        self.reacquire_center_speed = abs(reacquire_center_speed)
+        self.reacquire_center_max_distance = reacquire_center_max_distance
+        # Occlusion nudge. A leaf on the lens and a crop wall produce the same
+        # blocked signature; the only thing that separates them is moving. 0
+        # attempts disables the mechanism entirely.
+        self.nudge_max_attempts = max(0, int(nudge_max_attempts))
+        self.nudge_distance = abs(nudge_distance)
+        self.nudge_speed = abs(nudge_speed)
+        self.nudge_trigger_seconds = abs(nudge_trigger_seconds)
+        self.nudge_min_corridor_rows = max(0, int(nudge_min_corridor_rows))
+        self.nudge_min_healthy_distance = abs(nudge_min_healthy_distance)
         self.backout_speed = abs(backout_speed)
         self.backout_enabled = backout_enabled
         # EXIT_CLEAR runs slower than cruise: the post-exit leg is where
@@ -395,8 +445,27 @@ class MissionFSM:
         self._swept = 0.0          # accumulated yaw swept in current turn
         self._reacquire_distance = 0.0   # m of in-row view banked (leaky)
         self._reacquire_last = None      # previous REACQUIRE distance sample
+        # REACQUIRE phase B: set once the row is latched, from which point the
+        # state is centring rather than searching -- and can no longer end the
+        # mission. _reacquire_center_distance banks travel spent inside
+        # reacquire_center_tolerance.
+        self._reacquire_latched = False
+        self._reacquire_center_distance = 0.0
+        self._reacquire_center_last = None
+        # True when phase B gave up on reacquire_center_max_distance rather
+        # than on the tolerance. The ROS node turns this into a warning; it is
+        # a list so a repeated failure across rows is visible, not overwritten.
+        self.uncentered_handoffs = []  # (row_index, |offset_norm| at handoff)
         self._backout_target = None    # meters to reverse in BACKOUT
         self._suppress_flip = False    # skip one turn-sign flip at REACQUIRE
+        # Occlusion nudge bookkeeping. _healthy_distance is the "there WAS a
+        # corridor" precondition; _nudge_attempts is the budget, spent on entry
+        # and refunded the moment the view comes back; _nudge_resume_xy is the
+        # row-entry pose NUDGE must hand back unchanged (see _resume_follow_row).
+        self._healthy_distance = 0.0
+        self._healthy_last = None
+        self._nudge_attempts = 0
+        self.nudge_events = []     # (row_index, distance_in_row) per nudge
 
         # Every distance- and time-debounced accumulator lives in these, and
         # each works on the DELTA between consecutive samples. Left alone, the
@@ -426,6 +495,9 @@ class MissionFSM:
         self._swept = 0.0
         self._reacquire_distance = 0.0
         self._reacquire_last = None
+        self._reacquire_latched = False
+        self._reacquire_center_distance = 0.0
+        self._reacquire_center_last = None
         if state == STATE_EXIT_CLEAR:
             self._revoke_fail = 0.0
             # 0.0, not None: the leg starts at zero travel, so the first
@@ -448,11 +520,46 @@ class MissionFSM:
             self._row_entry_xy = self._entry_xy
             self._controller.reset()
             self._detector.reset()
+            # A new row: the occlusion budget and the "I had a corridor"
+            # evidence both belong to the row that just ended.
+            self._healthy_distance = 0.0
+            self._healthy_last = None
+            self._nudge_attempts = 0
         elif state == STATE_BACKOUT:
             # Clear the MPC rate-limiter history from forward driving before
             # the controller starts steering the reverse leg.
             self._controller.reset()
             self.rear_exit_detector.reset()
+
+    def _resume_follow_row(self, odom_pose, distance_in_row, now):
+        """Return to FOLLOW_ROW from NUDGE without starting a new row.
+
+        ⚠ Deliberately NOT _enter(STATE_FOLLOW_ROW, ...). That call re-stamps
+        _row_entry_xy and resets the detector, which is right when a headland
+        turn has delivered the robot into a genuinely new row and catastrophic
+        here: the nudge happens mid-row, and re-stamping would re-arm the exit
+        detector over another min_in_row_distance (2.0 m) and throw away the
+        open evidence banked on the way up the row. rows_driven, the turn sign
+        and the row-entry pose all belong to the row the robot never left.
+
+        The detector IS resynced, because it was not updated during the nudge:
+        its accumulators work on deltas between consecutive samples, so the
+        first frame back would otherwise bank the whole nudge -- _MAX_DT of
+        blocked seconds and nudge_distance of travel -- in one step. Resync
+        moves the references forward without crediting anything, so the
+        blocked evidence banked BEFORE the nudge survives and a real dead end
+        still confirms promptly.
+        """
+        self.state = STATE_FOLLOW_ROW
+        self._entry_xy = self._row_entry_xy
+        self._last_yaw = odom_pose[2] if odom_pose else None
+        self._swept = 0.0
+        # The robot drove blind and straight; whatever the rate limiter was
+        # holding predates the occlusion.
+        self._controller.reset()
+        self._detector.resync(now, distance_in_row)
+        # Same for the nudge's own travel: it was not corridor evidence.
+        self._healthy_last = distance_in_row
 
     def _distance_from(self, reference_xy, odom_pose):
         if odom_pose is None or reference_xy is None:
@@ -670,6 +777,74 @@ class MissionFSM:
             _, angular_z = self._controller.compute(offset, slope, True)
         return self.exit_clear_speed, angular_z, self.state, False
 
+    # --------------------------------------------------- occlusion nudge --
+    @property
+    def nudge_attempts(self):
+        """Nudges spent on the CURRENT occlusion (0 once the view returns)."""
+        return self._nudge_attempts
+
+    def _track_corridor_health(self, distance_in_row):
+        """Bank meters driven with a real corridor in view, for the nudge gate.
+
+        The nudge's precondition is the user-facing one: there WAS a long
+        enough traversable path, and then it vanished. Without it the robot
+        would creep forward into something it has never once seen a corridor
+        past -- a row entered straight into an obstacle, say.
+
+        ⚠ The accumulator is HELD, not cleared, once a nudge cycle is under
+        way (_nudge_attempts > 0). Clearing it on the very frames the nudge
+        exists to handle would let exactly one nudge ever fire: after the
+        first one the view is still occluded, so the evidence would be gone
+        and nudge_max_attempts could never be reached.
+        """
+        status = self._detector.last_status
+        if distance_in_row is None or status is None:
+            self._healthy_last = distance_in_row
+            return
+        delta = (
+            max(0.0, distance_in_row - self._healthy_last)
+            if self._healthy_last is not None
+            else 0.0
+        )
+        self._healthy_last = distance_in_row
+        if (status.corridor_rows or 0) >= self.nudge_min_corridor_rows:
+            self._healthy_distance += delta
+            # The view is back: refund the budget so a second leaf later in
+            # the same row is handled like the first one.
+            self._nudge_attempts = 0
+        elif self._nudge_attempts == 0:
+            self._healthy_distance = 0.0
+
+    def _should_nudge(self, distance_in_row):
+        """True when this frame's blocked signature is worth testing by moving.
+
+        The blocked test is read off the detector's own status rather than
+        recomputed, so it cannot drift from row_exit_detector's definition:
+        no corridor at any scan row, plus enough obstacle pixels to say
+        something is actually there.
+
+        Timing comes free from the detector's existing leaky blocked timer.
+        nudge_trigger_seconds of banked evidence is the debounce -- at the
+        field robot's ~58 Hz a single garbage frame is 17 ms and must never
+        move the robot -- and it is far below blocked_confirm_seconds, so the
+        nudge always gets its chance before the back-out commits.
+        """
+        if self.nudge_max_attempts <= 0 or distance_in_row is None:
+            return False
+        if self._nudge_attempts >= self.nudge_max_attempts:
+            return False
+        if self._healthy_distance < self.nudge_min_healthy_distance:
+            return False
+        status = self._detector.last_status
+        if status is None or not status.blocked_armed:
+            return False
+        blocked_signature = (status.corridor_rows or 0) == 0 and (
+            status.obstacle_fraction or 0.0
+        ) >= self._detector.blocked_min_obstacle_fraction
+        if not blocked_signature:
+            return False
+        return (status.blocked_seconds or 0.0) >= self.nudge_trigger_seconds
+
     def _looks_like_row(self, centerline_result, image_width):
         """True when the near scan row has a corridor with corn on BOTH sides.
 
@@ -758,6 +933,18 @@ class MissionFSM:
             exit_signal = self._detector.update(
                 exit_centerline_result, image_width, distance_in_row, now=now
             )
+            self._track_corridor_health(distance_in_row)
+            if exit_signal == EXIT_NONE and self._should_nudge(distance_in_row):
+                # A leaf on the lens and a crop wall ahead look identical in
+                # one frame. Move a little and look again instead of standing
+                # still, which is the one action that guarantees a leaf stays
+                # put. If the occlusion survives the budget, the blocked
+                # evidence banked so far is still there and BLOCKED fires
+                # below on a later frame exactly as it always did.
+                self._nudge_attempts += 1
+                self.nudge_events.append((self.rows_driven + 1, distance_in_row))
+                self._enter(STATE_NUDGE, odom_pose)
+                return 0.0, 0.0, self.state, False
             if exit_signal != EXIT_NONE:
                 if exit_signal == EXIT_ROW_END_BLOCKED:
                     # Blocked ahead (mid-row obstacle or crop wall at the row
@@ -867,6 +1054,18 @@ class MissionFSM:
                 return 0.0, 0.0, self.state, False
             return -self.backout_speed, 0.0, self.state, False
 
+        if self.state == STATE_NUDGE:
+            if self._distance_from_entry(odom_pose) >= self.nudge_distance:
+                self._resume_follow_row(
+                    odom_pose, self._distance_in_row(odom_pose), now
+                )
+                return 0.0, 0.0, self.state, False
+            # angular_z is 0.0 on purpose: there is no corridor in the mask to
+            # steer on -- that is the whole reason this state exists -- and
+            # steering on a reading taken through a leaf is worse than holding
+            # the heading the robot already had in the row.
+            return self.nudge_speed, 0.0, self.state, False
+
         # 90-degree in-place turns: {state: (sign multiplier, next state)}.
         # BACKOUT_TURN_2 counter-rotates (S-shaped lane change into the next
         # row, entered from the same end the blocked row was).
@@ -882,9 +1081,17 @@ class MissionFSM:
             if swept >= math.pi / 2.0 - self.yaw_tolerance:
                 self._enter(next_state, odom_pose)
                 return 0.0, 0.0, self.state, False
+            # The back-out S-turn keeps its own rate: it is the one turn that
+            # starts beside whatever blocked the robot, and the headland
+            # turns' raised rate has no validation there.
+            rate = (
+                self.backout_turn_rate
+                if self.state in (STATE_BACKOUT_TURN_1, STATE_BACKOUT_TURN_2)
+                else self.turn_rate
+            )
             return (
                 0.0,
-                sign_mult * self._turn_sign * self.turn_rate,
+                sign_mult * self._turn_sign * rate,
                 self.state,
                 False,
             )
@@ -896,7 +1103,15 @@ class MissionFSM:
             if self._distance_from_entry(odom_pose) >= self.traverse_distance:
                 self._enter(next_turn, odom_pose)
                 return 0.0, 0.0, self.state, False
-            return self._controller.linear_x_cruise, 0.0, self.state, False
+            # NOT linear_x_cruise. This leg is blind and odometry-bounded, and
+            # cruise is an operator knob pushed to 0.9 m/s in speed testing;
+            # inheriting it sent the headland crossing up there too.
+            speed = (
+                self.traverse_speed
+                if self.traverse_speed is not None
+                else self._controller.linear_x_cruise
+            )
+            return speed, 0.0, self.state, False
 
         if self.state == STATE_REACQUIRE:
             travelled = self._distance_from_entry(odom_pose)
@@ -907,6 +1122,59 @@ class MissionFSM:
             )
             self._reacquire_last = travelled
             in_row = self._looks_like_row(exit_centerline_result, image_width)
+
+            # Phase B -- centring. Latching a row and being fit to hand it to
+            # FOLLOW_ROW are two different events; until 2026-09-12 they were
+            # the same one, and REACQUIRE handed over whatever lateral error
+            # the headland turn had left (field 2026-09-09: typically 0.10 of
+            # offset_norm, worst 0.26, and the two worst handoffs of the
+            # morning are the two rows that needed a rescue).
+            if self._reacquire_latched:
+                centered = (
+                    abs(centerline_result.offset_norm)
+                    <= self.reacquire_center_tolerance
+                )
+                if centered:
+                    self._reacquire_center_distance += delta
+                else:
+                    self._reacquire_center_distance = 0.0
+                give_up = travelled >= self.reacquire_center_max_distance
+                if (
+                    self._reacquire_center_distance
+                    >= self.reacquire_center_confirm_distance - 1e-9
+                    or give_up
+                ):
+                    if give_up:
+                        # Latched a row and never centred in it. Recorded, not
+                        # swallowed: the node logs it as a warning, because the
+                        # next thing that happens is FOLLOW_ROW inheriting the
+                        # error this state exists to remove.
+                        self.uncentered_handoffs.append(
+                            (
+                                self.rows_driven + 1,
+                                abs(centerline_result.offset_norm),
+                            )
+                        )
+                    self._enter(STATE_FOLLOW_ROW, odom_pose)
+                    return 0.0, 0.0, self.state, False
+                angular_z = 0.0
+                if self.reacquire_steering_enabled:
+                    _, angular_z = self._controller.compute(
+                        centerline_result.offset_norm,
+                        centerline_result.slope_term,
+                        True,
+                    )
+                # Faster than the search creep: the row is found, there is
+                # nothing left to look for, and reacquire_center_speed is the
+                # speed angular_z_max and the MPC are actually tuned at.
+                return (
+                    self.reacquire_center_speed,
+                    angular_z,
+                    STATE_REACQUIRE_CENTER,
+                    False,
+                )
+
+            # Phase A -- searching.
             if in_row:
                 self._reacquire_distance += delta
             else:
@@ -920,10 +1188,24 @@ class MissionFSM:
                     self._suppress_flip = False
                 else:
                     self._turn_sign = -self._turn_sign
-                self._enter(STATE_FOLLOW_ROW, odom_pose)
-                return 0.0, 0.0, self.state, False
+                # Stay in REACQUIRE and centre. The odometry reference is
+                # re-stamped so reacquire_center_max_distance measures phase B
+                # alone rather than inheriting the search creep.
+                self._reacquire_latched = True
+                self._reacquire_center_distance = 0.0
+                self._entry_xy = (odom_pose[0], odom_pose[1])
+                self._reacquire_last = 0.0
+                return (
+                    self.reacquire_center_speed,
+                    0.0,
+                    STATE_REACQUIRE_CENTER,
+                    False,
+                )
             if travelled >= self.reacquire_max_distance:
                 # No corridor where a row should be: no rows left. Stop.
+                # ⚠ Reachable in phase A ONLY. "I can see a row but am not yet
+                # centred in it" must never be reported as "there are no rows
+                # left" -- phase B has its own, non-terminal backstop above.
                 self._enter(STATE_DONE, odom_pose)
                 return 0.0, 0.0, self.state, True
             # Steer while creeping. Driving dead straight for up to

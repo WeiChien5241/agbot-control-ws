@@ -320,6 +320,24 @@ class RowExitDetector:
         self._last_distance = None
         self._last_now = None
 
+    def resync(self, now, distance_in_row):
+        """Move the delta references forward without crediting any evidence.
+
+        For a caller that legitimately stops feeding the detector for a while
+        and then resumes -- MissionFSM's occlusion nudge, which drives blind
+        for nudge_distance and must not be charged for it. Every accumulator
+        here works on the delta between consecutive samples, so without this
+        the first frame back banks the entire gap in one step: _MAX_DT of
+        blocked seconds and the whole nudge distance.
+
+        ⚠ It deliberately does NOT clear the accumulators. reset() is for "a
+        new row, forget everything"; this is for "no new evidence arrived,
+        keep what you had". A crop wall that survives the nudge must still
+        confirm on the evidence banked before it.
+        """
+        self._last_now = now
+        self._last_distance = distance_in_row
+
     @property
     def open_streak_start(self):
         """distance_in_row at which the current open streak began, or None.

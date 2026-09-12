@@ -180,9 +180,11 @@ class VisionNavNode(object):
                 first_turn_direction=rospy.get_param("~first_turn_direction", "left"),
                 row_spacing=rospy.get_param("~row_spacing", 0.75),
                 traverse_distance=rospy.get_param("~traverse_distance", 0.6),
+                traverse_speed=rospy.get_param("~traverse_speed", 0.5),
                 headland_clearance=rospy.get_param("~headland_clearance", 1.0),
-                turn_rate=rospy.get_param("~turn_rate", 0.4),
-                yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 5.0),
+                turn_rate=rospy.get_param("~turn_rate", 0.7),
+                backout_turn_rate=rospy.get_param("~backout_turn_rate", 0.4),
+                yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 1.5),
                 reacquire_speed=rospy.get_param("~reacquire_speed", 0.08),
                 reacquire_confirm_distance=rospy.get_param(
                     "~reacquire_confirm_distance", 0.12
@@ -191,9 +193,33 @@ class VisionNavNode(object):
                     "~reacquire_steering_enabled", True
                 ),
                 reacquire_max_distance=rospy.get_param("~reacquire_max_distance", 2.0),
+                reacquire_center_tolerance=rospy.get_param(
+                    "~reacquire_center_tolerance", 0.06
+                ),
+                reacquire_center_confirm_distance=rospy.get_param(
+                    "~reacquire_center_confirm_distance", 0.10
+                ),
+                reacquire_center_speed=rospy.get_param(
+                    "~reacquire_center_speed", 0.15
+                ),
+                reacquire_center_max_distance=rospy.get_param(
+                    "~reacquire_center_max_distance", 0.5
+                ),
+                nudge_max_attempts=rospy.get_param("~nudge_max_attempts", 2),
+                nudge_distance=rospy.get_param("~nudge_distance", 0.12),
+                nudge_speed=rospy.get_param("~nudge_speed", 0.08),
+                nudge_trigger_seconds=rospy.get_param(
+                    "~nudge_trigger_seconds", 0.5
+                ),
+                nudge_min_corridor_rows=rospy.get_param(
+                    "~nudge_min_corridor_rows", 2
+                ),
+                nudge_min_healthy_distance=rospy.get_param(
+                    "~nudge_min_healthy_distance", 0.5
+                ),
                 backout_speed=rospy.get_param("~backout_speed", 0.10),
                 backout_enabled=self._rear_camera_enabled,
-                exit_clear_speed=rospy.get_param("~exit_clear_speed", 0.10),
+                exit_clear_speed=rospy.get_param("~exit_clear_speed", 0.25),
                 exit_revoke_enabled=rospy.get_param("~exit_revoke_enabled", True),
                 exit_revoke_distance=rospy.get_param("~exit_revoke_distance", 0.5),
                 exit_revoke_fail_distance=rospy.get_param(
@@ -244,6 +270,8 @@ class VisionNavNode(object):
         self._mission_done_logged = False
         self._revoked_logged = 0
         self._blocked_logged = 0
+        self._nudge_logged = 0
+        self._uncentered_logged = 0
         self._watchdog_stale = False
         self._timing = PipelineTimingStats()
 
@@ -512,6 +540,8 @@ class VisionNavNode(object):
             self._mission_done_logged = False
             self._revoked_logged = 0
             self._blocked_logged = 0
+            self._nudge_logged = 0
+            self._uncentered_logged = 0
             self._mission_done_pub.publish(Bool(data=False))
         if self._metrics is not None:
             self._metrics.mark_event("ENABLED" if enabled else "DISABLED")
@@ -805,6 +835,41 @@ class VisionNavNode(object):
                 self._blocked_logged += 1
                 if self._metrics is not None:
                     self._metrics.mark_event("BLOCKED")
+            # An occlusion nudge is the interesting half of a blocked signal:
+            # it says the robot saw a wall, moved 12 cm, and carried on --
+            # i.e. it was a leaf, not a dead end. Never throttled; two of
+            # these in a row is the back-out about to commit.
+            while self._nudge_logged < len(self._fsm.nudge_events):
+                row, dist = self._fsm.nudge_events[self._nudge_logged]
+                self._nudge_logged += 1
+                rospy.logwarn(
+                    "OCCLUSION NUDGE %d/%d: row %d at %.2f m -- no corridor at "
+                    "any scan row; creeping %.2f m and looking again",
+                    self._fsm.nudge_attempts,
+                    self._fsm.nudge_max_attempts,
+                    row,
+                    -1.0 if dist is None else dist,
+                    self._fsm.nudge_distance,
+                )
+                if self._metrics is not None:
+                    self._metrics.mark_event("NUDGE")
+            # REACQUIRE latched a row and ran out of centring distance without
+            # ever centring in it. FOLLOW_ROW is about to inherit exactly the
+            # error phase B exists to remove, so this is a warning, not a
+            # debug line.
+            while self._uncentered_logged < len(self._fsm.uncentered_handoffs):
+                row, off = self._fsm.uncentered_handoffs[self._uncentered_logged]
+                self._uncentered_logged += 1
+                rospy.logwarn(
+                    "REACQUIRE handed off UNCENTERED: row %d at offset_norm "
+                    "%.3f (tolerance %.3f) after %.2f m of centring",
+                    row,
+                    off,
+                    self._fsm.reacquire_center_tolerance,
+                    self._fsm.reacquire_center_max_distance,
+                )
+                if self._metrics is not None:
+                    self._metrics.mark_event("UNCENTERED_HANDOFF")
             if done and not self._mission_done_logged:
                 self._mission_done_logged = True
                 blocked = self._fsm.blocked_events
@@ -818,10 +883,13 @@ class VisionNavNode(object):
                 )
                 rospy.loginfo(
                     "Mission DONE: rows_driven=%d, blocked rows: %s, "
-                    "revoked exits: %d",
+                    "revoked exits: %d, occlusion nudges: %d, "
+                    "uncentered handoffs: %d",
                     self._fsm.rows_driven,
                     summary,
                     len(self._fsm.revoked_exits),
+                    len(self._fsm.nudge_events),
+                    len(self._fsm.uncentered_handoffs),
                 )
                 if self._metrics is not None:
                     self._metrics.mark_event("MISSION_DONE")
@@ -1122,11 +1190,12 @@ class VisionNavNode(object):
             g("blocked_min_obstacle_fraction"), g("blocked_arming_distance"),
         )
         rospy.loginfo(
-            "headland: clearance=%s m (min %s) speed=%s | traverse=%s "
-            "row_spacing=%s | turn=%s rad/s tol=%s deg",
+            "headland: clearance=%s m (min %s) speed=%s | traverse=%s m @ %s "
+            "m/s row_spacing=%s | turn=%s rad/s (backout %s) tol=%s deg",
             g("headland_clearance"), g("exit_clear_min_distance"),
-            g("exit_clear_speed"), g("traverse_distance"), g("row_spacing"),
-            g("turn_rate"), g("yaw_tolerance_deg"),
+            g("exit_clear_speed"), g("traverse_distance"),
+            g("traverse_speed"), g("row_spacing"),
+            g("turn_rate"), g("backout_turn_rate"), g("yaw_tolerance_deg"),
         )
         # Report the RESOLVED value, not the parameter: it is ANDed with
         # rear_camera_enabled, so the yaml can say true while the leg still
@@ -1147,6 +1216,26 @@ class VisionNavNode(object):
                 "revocation is the false-exit backstop",
                 "no rear camera" if not self._rear_camera_enabled
                 else "exit_clear_rear_steering is false",
+            )
+        rospy.loginfo(
+            "centring: |offset|<=%s over %s m @ %s m/s, hand off anyway after "
+            "%s m",
+            g("reacquire_center_tolerance"),
+            g("reacquire_center_confirm_distance"),
+            g("reacquire_center_speed"), g("reacquire_center_max_distance"),
+        )
+        if int(g("nudge_max_attempts", 0) or 0) > 0:
+            rospy.loginfo(
+                "occlusion: nudge %sx %s m @ %s m/s after %s s blocked "
+                "| needs %s m with >=%s corridor rows first",
+                g("nudge_max_attempts"), g("nudge_distance"),
+                g("nudge_speed"), g("nudge_trigger_seconds"),
+                g("nudge_min_healthy_distance"), g("nudge_min_corridor_rows"),
+            )
+        else:
+            rospy.loginfo(
+                "occlusion: nudge DISABLED -- a blocked signature stops the "
+                "robot and goes straight to the back-out"
             )
         rospy.loginfo(
             "recovery: reacquire speed=%s confirm=%s m max=%s m steering=%s "

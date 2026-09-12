@@ -21,6 +21,7 @@ from agbot_vision_nav.mission_fsm import (
     STATE_EXIT_CLEAR,
     STATE_FOLLOW_ROW,
     STATE_REACQUIRE,
+    STATE_REACQUIRE_CENTER,
     STATE_TRAVERSE,
     STATE_TURN_1,
     STATE_TURN_2,
@@ -202,12 +203,19 @@ def run_headland(fsm, pose, turn_sign):
     return (x, y, yaw)
 
 
-def reacquire_into_row(fsm, pose, result=None, meters=0.4, step=0.05):
-    """Creep forward feeding an in-row view until REACQUIRE latches.
+# Both phases of REACQUIRE report themselves as "in REACQUIRE"; only the
+# label differs, so a helper waiting for the state to END must wait for both.
+REACQUIRE_STATES = (STATE_REACQUIRE, STATE_REACQUIRE_CENTER)
+
+
+def reacquire_into_row(fsm, pose, result=None, meters=0.8, step=0.05):
+    """Creep forward feeding an in-row view until REACQUIRE hands off.
 
     The latch is confirmed over reacquire_confirm_distance METERS, so the
     robot has to actually move -- feeding frames from a parked pose never
-    latches.
+    latches. Since 2026-09-12 latching is only half of it: the state then
+    centres over reacquire_center_confirm_distance before entering
+    FOLLOW_ROW, so the default travel here covers both phases.
     """
     result = corridor_result() if result is None else result
     x, y, yaw = pose
@@ -215,9 +223,26 @@ def reacquire_into_row(fsm, pose, result=None, meters=0.4, step=0.05):
     for i in range(1, int(round(meters / step)) + 1):
         p = (x + i * step * math.cos(yaw), y + i * step * math.sin(yaw), yaw)
         _, _, state, _ = update(fsm, result, p, WIDTH)
-        if state != STATE_REACQUIRE:
+        if state not in REACQUIRE_STATES:
             return p, state
     return p, state
+
+
+def reacquire_to_latch(fsm, pose, result=None, meters=0.8, step=0.05):
+    """Creep only until the row LATCHES (phase A ends), returning the travel.
+
+    Separate from reacquire_into_row because the two phases answer different
+    questions: phase A is "is there a row here at all", phase B is "am I
+    centred in it", and a test about one must not be paid for by the other.
+    """
+    result = corridor_result() if result is None else result
+    x, y, yaw = pose
+    for i in range(1, int(round(meters / step)) + 1):
+        p = (x + i * step * math.cos(yaw), y + i * step * math.sin(yaw), yaw)
+        _, _, state, _ = update(fsm, result, p, WIDTH)
+        if state != STATE_REACQUIRE:
+            return p, state, i * step
+    return p, state, meters
 
 
 def test_full_transition_cycle_and_direction_flip():
@@ -874,13 +899,12 @@ def test_reacquire_latches_at_same_distance_at_any_frame_rate():
     for step in (0.04, 0.004):      # 2 Hz and 20 Hz at 0.08 m/s
         fsm, pose = enter_reacquire()
         view = corridor_result()
-        x, y, yaw = pose
-        i = 0
-        while fsm.state == STATE_REACQUIRE:
-            i += 1
-            assert i * step < 1.0, "never latched"
-            update(fsm, view, (x + i * step, y, yaw), WIDTH)
-        latched_at.append(i * step)
+        # The LATCH is the end of phase A, which the state label announces;
+        # fsm.state stays STATE_REACQUIRE through the centring phase, so
+        # waiting on it would time the two phases together.
+        _, state, travelled = reacquire_to_latch(fsm, pose, result=view, step=step)
+        assert state == STATE_REACQUIRE_CENTER, "never latched"
+        latched_at.append(travelled)
     slow, fast = latched_at
     assert abs(slow - fast) <= 0.04 + 1e-9      # one coarse sample
     assert all(0.12 <= d <= 0.12 + 0.04 for d in latched_at)

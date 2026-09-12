@@ -32,6 +32,10 @@ PASSTHROUGH_FIELDS = (
     "first_turn_direction",
     "linear_x_cruise",
     "angular_z_max",
+    # Separate from linear_x_cruise on purpose: cruise is the in-row knob that
+    # gets pushed to 0.9 m/s in speed testing, and the blind headland crossing
+    # must not follow it up there.
+    "traverse_speed",
 )
 
 BOOLEAN_FIELDS = (
