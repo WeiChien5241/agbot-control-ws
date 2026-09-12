@@ -121,6 +121,10 @@ STATE_NUDGE = "NUDGE"
 # phases are the two halves of the defect this state was rebuilt to fix, and
 # a CSV that renders them identically cannot show which half is slow.
 STATE_REACQUIRE_CENTER = "REACQUIRE (CENTER)"
+
+# Ceiling on the measured-tick floor under _turn_stop_tolerance(). One delayed
+# frame mid-turn must not licence stopping 30 deg early.
+_MAX_TURN_STOP_TOLERANCE = math.radians(15.0)
 STATE_DONE = "DONE"
 STATE_BACKOUT = "BACKOUT"
 STATE_BACKOUT_CLEAR = "BACKOUT_CLEAR"
@@ -442,6 +446,7 @@ class MissionFSM:
         self._revoke_fail = 0.0         # m of continuous near-row corn
         self._revoke_last_distance = None
         self._last_yaw = None      # previous yaw sample, for sweep integration
+        self._last_yaw_step = None  # |yaw| one control tick buys, measured
         self._swept = 0.0          # accumulated yaw swept in current turn
         self._reacquire_distance = 0.0   # m of in-row view banked (leaky)
         self._reacquire_last = None      # previous REACQUIRE distance sample
@@ -492,6 +497,7 @@ class MissionFSM:
         self.state = state
         self._entry_xy = (odom_pose[0], odom_pose[1]) if odom_pose else None
         self._last_yaw = odom_pose[2] if odom_pose else None
+        self._last_yaw_step = None
         self._swept = 0.0
         self._reacquire_distance = 0.0
         self._reacquire_last = None
@@ -553,6 +559,7 @@ class MissionFSM:
         self.state = STATE_FOLLOW_ROW
         self._entry_xy = self._row_entry_xy
         self._last_yaw = odom_pose[2] if odom_pose else None
+        self._last_yaw_step = None
         self._swept = 0.0
         # The robot drove blind and straight; whatever the rate limiter was
         # holding predates the occlusion.
@@ -581,9 +588,42 @@ class MissionFSM:
             return abs(self._swept)
         yaw = odom_pose[2]
         if self._last_yaw is not None:
-            self._swept += _wrap_angle(yaw - self._last_yaw)
+            step = _wrap_angle(yaw - self._last_yaw)
+            self._swept += step
+            # How much yaw one control tick buys, MEASURED. The turn can only
+            # stop on a sample, so this is the quantum the stop condition is
+            # allowed to resolve -- see _turn_stop_tolerance().
+            self._last_yaw_step = abs(step)
         self._last_yaw = yaw
         return abs(self._swept)
+
+    def _turn_stop_tolerance(self):
+        """How far short of 90 deg a turn may stop, given the control rate.
+
+        yaw_tolerance_deg is a one-sided stop-early band, so the turn ends at
+        the first SAMPLE past `pi/2 - tolerance`. That makes the achievable
+        error a property of the sample spacing, not of the tolerance: with a
+        yaw step of `q` per tick the error lands in [-tolerance, q - tolerance].
+        Set the band far below q and the whole interval sits on the overshoot
+        side -- measured in sim at 7 Hz and 0.7 rad/s (q = 10.6 deg), where a
+        1.5 deg band produced turns of 89.7 to 95.9 deg.
+
+        Half a tick is the band that centres that interval on 90 deg, so this
+        floors the configured tolerance at q/2. On a fast machine q/2 is well
+        under the configured value and nothing changes (the field robot's
+        58 Hz gives 0.35 deg against a 1.5 deg band); on a slow one it stops
+        the turn from being systematically long. It is a FLOOR, never a
+        ceiling: a tolerance deliberately set wide stays wide.
+
+        ⚠ Capped, because q is one measured sample: a single delayed frame
+        during a turn must not licence an arbitrarily early stop.
+        """
+        if self._last_yaw_step is None:
+            return self.yaw_tolerance
+        return min(
+            max(self.yaw_tolerance, 0.5 * self._last_yaw_step),
+            _MAX_TURN_STOP_TOLERANCE,
+        )
 
     def backout_progress(self, odom_pose):
         """(meters reversed so far or None, target meters) while in
@@ -1080,7 +1120,7 @@ class MissionFSM:
         if self.state in turn_table:
             sign_mult, next_state = turn_table[self.state]
             swept = self._integrate_yaw(odom_pose)
-            if swept >= math.pi / 2.0 - self.yaw_tolerance:
+            if swept >= math.pi / 2.0 - self._turn_stop_tolerance():
                 self._enter(next_state, odom_pose)
                 return 0.0, 0.0, self.state, False
             # The back-out S-turn keeps its own rate: it is the one turn that
