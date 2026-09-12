@@ -162,7 +162,7 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 259 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 262 passed
 cd ../agbot_gps_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 161 passed
 ```
