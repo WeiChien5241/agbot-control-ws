@@ -372,13 +372,19 @@ yaw_tolerance_deg: 1.5     # stop turning within this much of 90 degrees.
                            # swept 1.477-1.483 rad = pi/2 - 5 deg exactly, so
                            # TURN_1 + TURN_2 handed REACQUIRE a repeatable
                            # ~10 deg heading bias to absorb.
-                           # ⚠ The floor is one control tick of turning:
-                           # turn_rate / frame_rate. At the field robot's
-                           # ~58 Hz (17 ms inference) and 0.7 rad/s that is
-                           # 0.7 deg, so 1.5 has 2x margin. On the 2 Hz CPU
-                           # Jackal one tick is 20 deg and this pairing would
-                           # overshoot badly -- raise it there, or lower
-                           # turn_rate.
+                           # ⚠ It is a FLOOR, not the achieved accuracy. The
+                           # turn can only stop on a sample, so with a yaw
+                           # quantum q per control tick the error lands in
+                           # [-tol, q - tol]: below q the whole interval sits
+                           # on the OVERSHOOT side. mission_fsm's
+                           # _turn_stop_tolerance() therefore floors this at
+                           # q/2 from the MEASURED tick, which re-centres that
+                           # interval on 90 deg -- so a slow machine widens the
+                           # band by itself instead of turning long. At the
+                           # field robot's ~58 Hz and 0.7 rad/s q/2 is 0.35 deg,
+                           # well under 1.5, so this value is what applies
+                           # there. Sim at 5-7 Hz (q = 13.4 deg): 89.7-95.9 deg
+                           # before the floor, -3.1 to +1.4 deg after.
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
 reacquire_confirm_distance: 0.12  # m of sustained in-row view before re-entering
                            # FOLLOW_ROW (= the old 3 frames at 2 Hz and

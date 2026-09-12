@@ -201,3 +201,39 @@ and looks again, up to twice, before the back-out is allowed to commit — total
 forward creep 0.24 m, against a standoff the blocked signature leaves well
 clear of a real crop wall. `nudge_max_attempts:=0` restores the old behaviour
 for an A/B.
+
+### Sim validation of the changes (2026-09-12)
+
+Small maize world, 3 rows, `linear_x_cruise:=0.6 rear_camera_enabled:=true`,
+`~/agbot_logs/vision_nav_20260912_124548.csv`. Mission reached
+`rows_driven=3`. ⚠ The dev laptop runs the pipeline at **5.3 Hz** (inference
+median 0.190 s, e2e 0.335 s) against the field robot's 58 Hz, so this run
+validates the LOGIC and the sequencing, not the timing — its 31
+`WATCHDOG_ZERO` events are the known laptop/MPC cost, not a regression.
+
+| leg | commanded | got |
+|---|---|---|
+| EXIT_CLEAR | 0.25 m/s | 0.25 |
+| TRAVERSE | 0.5 m/s | 0.5 |
+| REACQUIRE search | 0.08 m/s | 0.08 |
+| REACQUIRE (CENTER) | 0.15 m/s | 0.15 |
+| NUDGE | 0.08 m/s | 0.08 |
+
+**Turns**: −2.8°, −3.1°, −2.1°, +1.4° against the field's flat −5.0°. The first
+sim attempt (before `_turn_stop_tolerance`) gave +1.6, −0.3, +5.9, 0.0 — a
+6.2° spread biased long, because one control tick at this rate is 13.4° and the
+1.5° band cannot resolve it.
+
+**REACQUIRE handoffs**: −0.043 and +0.004, both inside the 0.06 tolerance,
+against the field's 0.06–0.26. The first sim attempt logged one
+`UNCENTERED_HANDOFF` at +0.171 and the run still completed — the backstop
+behaving as designed.
+
+**The nudge fired twice, unscripted**, at 4.96 m into row 3 (CSV index 229):
+the corridor degraded 3 → 2 → 1 → 0 scan rows, `blocked_seconds` reached 0.63,
+and the FSM creeped 0.12 m, found it still occluded, creeped 0.11 m more, and
+the view returned. The robot then drove the remaining 1.37 m and finished the
+row. Two details worth having on record from that trace: `blocked_seconds`
+**froze** at 0.63 for the whole blind leg (`resync` not charging the nudge),
+and `distance_in_row` resumed at 5.33 m rather than restarting at 0 — the row
+reference survived, which is the `_resume_follow_row` path doing its job.
