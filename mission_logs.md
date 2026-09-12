@@ -132,3 +132,72 @@ timestamp columns are written at full precision.
    would have prevented both of run 1's rescues and probably run 3's failure.
 3. **0.9 m/s is not a perception limit, it is a clamp.** Re-run it with the
    coupled knobs scaled before concluding anything about top speed.
+
+---
+
+## What was changed in response (2026-09-12)
+
+Commits `1db0c8a` (implementation) and `efaf3a2` (tests). Every number below is
+from the logs in `mission_logs/`; nothing here was tuned by taste.
+
+**Takeaway 1 — 0.6 m/s is validated.** `linear_x_cruise` is untouched (0.15
+default, set per run from the operator panel), and it is now the IN-ROW speed
+and nothing else. TRAVERSE and BACKOUT_TRAVERSE used to read it directly, so a
+0.9 m/s test run also crossed the headland blind at 0.9; they have their own
+`traverse_speed` (0.5). `exit_clear_speed` 0.10 → 0.25.
+
+**Takeaway 2 — REACQUIRE is the top defect.** It is now two phases. Phase A
+latches the row exactly as before; phase B stays in REACQUIRE (logged as
+`REACQUIRE (CENTER)`) and steers at 0.15 m/s until `|offset_norm| <= 0.06`
+holds over 0.10 m, or warns and hands off at 0.5 m. The residual column in the
+table above is the acceptance test: it should read ≤ 0.06 everywhere.
+`reacquire_max_distance` → DONE is now reachable in phase A only.
+
+**Takeaway 3 — 0.9 m/s is a clamp, not a perception limit.** `angular_z_max`
+is deliberately left at 0.175 for the retry rather than scaled by
+`speed_args.py`. Both inputs to that run's overshoot — the 0.237 handoff and
+the turn undershoot below — are fixed, so the retry measures the clamp with
+nothing else in front of it. The number to report is the % of FOLLOW_ROW frames
+at `|angular_z| >= 0.1749`; 28.5% is the figure to beat.
+
+### Two further findings from the same logs
+
+**4. Every turn undershoots by exactly `yaw_tolerance_deg`.** All 12 logged
+`TURN_1` legs swept 1.477–1.483 rad, and `pi/2 - 5°` is 1.4835 — the test is
+`swept >= pi/2 - tol`, so the tolerance is a one-sided stop-early band and not
+a ± band. TURN_1 + TURN_2 therefore handed REACQUIRE a repeatable ~10° heading
+bias to absorb, upstream of takeaway 2. Now 1.5°, which at the measured 58 Hz
+(`inference_s` median 0.017 s) and the raised 0.7 rad/s turn rate is still 2×
+one control tick. ⚠ On the 2 Hz CPU Jackal one tick at 0.7 rad/s is 20° and
+this pairing does not port.
+
+**5. The rear-steered EXIT_CLEAR leg never terminates on the rear camera.**
+12 of the 13 logged legs ran 1.498–1.520 m — `exit_clear_max_distance` (1.5)
+exactly, which the FSM treats as a ceiling that turns anyway. The rear-open
+terminator is not firing in the field, so the "positive evidence that the tail
+has cleared the last plants" the design is built around is not being collected;
+the leg is an open-loop 1.5 m in practice. **Not addressed here** — raising
+`exit_clear_speed` makes that leg 2.5× faster but does not change its length.
+It needs its own session with the rear debug view (`(REAR)` on the HUD) and the
+`exit_clear_detector` status line.
+
+### The leaf-occlusion deadlock (runs 102012 and 102256)
+
+Both back-out test runs contain the same sequence, and it is not a back-out
+test result — it is a false positive:
+
+| index | state | trav | obst | distance_in_row | linear_x |
+|---|---|---|---|---|---|
+| 114 | FOLLOW_ROW | 0.131 | 0.868 | 2.540 | 0.5 |
+| 119 | FOLLOW_ROW | 0.000 | 1.000 | 2.640 | **0** |
+| 139 | FOLLOW_ROW | 0.001 | 0.999 | **2.798** | 0 |
+| 209 | FOLLOW_ROW | 0.008 | 0.992 | **2.798** | 0 |
+| 214 | BACKOUT | 0.001 | 0.999 | 2.798 | 0 — `BLOCKED` |
+
+`distance_in_row` is frozen at 2.798 m for 90 frames. The robot stopped, which
+is the one response that guarantees the leaf never leaves the view, and 4 s
+later backed out of a row that was not blocked. `STATE_NUDGE` now creeps 0.12 m
+and looks again, up to twice, before the back-out is allowed to commit — total
+forward creep 0.24 m, against a standoff the blocked signature leaves well
+clear of a real crop wall. `nudge_max_attempts:=0` restores the old behaviour
+for an A/B.
