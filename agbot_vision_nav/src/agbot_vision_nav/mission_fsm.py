@@ -200,11 +200,11 @@ class MissionFSM:
         first_turn_direction="left",
         row_spacing=0.75,
         traverse_distance=0.6,
-        traverse_speed=None,
+        traverse_speed=0.5,
         headland_clearance=1.0,
-        turn_rate=0.4,
-        backout_turn_rate=None,
-        yaw_tolerance_deg=5.0,
+        turn_rate=0.7,
+        backout_turn_rate=0.4,
+        yaw_tolerance_deg=1.5,
         reacquire_speed=0.08,
         reacquire_confirm_distance=0.12,
         reacquire_steering_enabled=True,
@@ -791,11 +791,13 @@ class MissionFSM:
         would creep forward into something it has never once seen a corridor
         past -- a row entered straight into an obstacle, say.
 
-        ⚠ The accumulator is HELD, not cleared, once a nudge cycle is under
-        way (_nudge_attempts > 0). Clearing it on the very frames the nudge
-        exists to handle would let exactly one nudge ever fire: after the
-        first one the view is still occluded, so the evidence would be gone
-        and nudge_max_attempts could never be reached.
+        ⚠ A bad view DECAYS the evidence by the distance driven; it does not
+        clear it. That distinction is the whole mechanism. An occlusion stops
+        the robot, so no distance passes and the evidence survives the frames
+        the nudge exists to handle -- clearing it there would destroy the
+        precondition on the very first blocked frame and no nudge could ever
+        fire. Driving on with a poor view still spends it, at exactly the rate
+        a good view banks it.
         """
         status = self._detector.last_status
         if distance_in_row is None or status is None:
@@ -812,8 +814,8 @@ class MissionFSM:
             # The view is back: refund the budget so a second leaf later in
             # the same row is handled like the first one.
             self._nudge_attempts = 0
-        elif self._nudge_attempts == 0:
-            self._healthy_distance = 0.0
+        else:
+            self._healthy_distance = max(0.0, self._healthy_distance - delta)
 
     def _should_nudge(self, distance_in_row):
         """True when this frame's blocked signature is worth testing by moving.

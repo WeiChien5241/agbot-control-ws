@@ -20,6 +20,7 @@ from agbot_vision_nav.mission_fsm import (
     STATE_DONE,
     STATE_EXIT_CLEAR,
     STATE_FOLLOW_ROW,
+    STATE_NUDGE,
     STATE_REACQUIRE,
     STATE_REACQUIRE_CENTER,
     STATE_TRAVERSE,
@@ -365,18 +366,32 @@ def drive_row_to_block(fsm, start=(0.0, 0.0, 0.0)):
     """Follow a row past arming, then feed blocked frames until BACKOUT.
 
     Returns the pose at which the block fired (the robot's block point).
+
+    ⚠ Since 2026-09-12 the blocked signature no longer goes straight to the
+    back-out: the FSM first spends its occlusion-nudge budget, creeping
+    nudge_distance forward per attempt to find out whether the "wall" is a
+    leaf on the lens. The helper therefore has to MOVE the robot while the
+    state is NUDGE, exactly as the real one does, and a real dead end simply
+    commits the back-out 0.24 m further up the row.
     """
     corridor = corridor_result()
     blocked = blocked_result()
     x0, y0, yaw = start
     pose = None
+    d = 0.0
     for i in range(30):  # 3 m in-row
         d = 0.1 * (i + 1)
         pose = (x0 + d * math.cos(yaw), y0 + d * math.sin(yaw), yaw)
         _, _, state, _ = update(fsm, corridor, pose, WIDTH)
         assert state == STATE_FOLLOW_ROW
-    for _ in range(3):  # blocked signature, debounced over 3 frames
+    done = False
+    for _ in range(400):
+        if fsm.state == STATE_NUDGE:
+            d += 0.02
+            pose = (x0 + d * math.cos(yaw), y0 + d * math.sin(yaw), yaw)
         _, _, state, done = update(fsm, blocked, pose, WIDTH)
+        if state not in (STATE_FOLLOW_ROW, STATE_NUDGE):
+            break
     return pose, state, done
 
 
@@ -650,7 +665,11 @@ def test_backout_states_stop_without_odom():
 
 
 def test_controller_reset_on_backout_entry():
-    fsm = make_fsm(num_rows=3)
+    # nudge_max_attempts=0 so this measures the BACKOUT entry alone: each
+    # occlusion nudge legitimately resets the controller too (it drove blind
+    # and straight, so the rate-limiter history predates the occlusion), and
+    # counting those here would say nothing about the back-out.
+    fsm = make_fsm(num_rows=3, nudge_max_attempts=0)
     resets_before = fsm._controller.reset_calls
     drive_row_to_block(fsm)
     assert fsm._controller.reset_calls == resets_before + 1
@@ -1526,3 +1545,340 @@ def test_the_constructor_and_reset_agree_on_what_a_fresh_mission_is():
                   "_swept", "_reacquire_distance", "_reacquire_last",
                   "_backout_target", "_suppress_flip", "_turn_sign"):
         assert getattr(used, field) == getattr(fresh, field), field
+
+
+# --------------------------------------- headland speeds and turn geometry --
+# All five added 2026-09-12, after the 2026-09-09 field test (mission_logs.md).
+
+
+def test_traverse_uses_its_own_speed_not_cruise():
+    """TRAVERSE read linear_x_cruise, so the blind sideways leg inherited the
+    operator's in-row speed knob -- which is swept up to 0.9 m/s in testing."""
+    fsm = make_fsm(num_rows=3, traverse_speed=0.5)
+    assert fsm._controller.linear_x_cruise == 0.15   # deliberately different
+    pose, _, _ = drive_row_to_exit(fsm)
+    x, y, yaw = pose
+    open_r = open_result()
+    # EXIT_CLEAR -> TURN_1 -> TRAVERSE
+    for i in range(1, 15):
+        p = (x + i * 0.1 * math.cos(yaw), y + i * 0.1 * math.sin(yaw), yaw)
+        _, _, state, _ = update(fsm, open_r, p, WIDTH)
+        if state == STATE_TURN_1:
+            x, y = p[0], p[1]
+            break
+    for i in range(1, 40):
+        _, _, state, _ = update(fsm, open_r, (x, y, yaw + i * 0.05), WIDTH)
+        if state == STATE_TRAVERSE:
+            yaw = yaw + i * 0.05
+            break
+    assert fsm.state == STATE_TRAVERSE
+    lin, ang, _, _ = update(
+        fsm, open_r, (x + 0.05 * math.cos(yaw), y + 0.05 * math.sin(yaw), yaw),
+        WIDTH,
+    )
+    assert lin == pytest.approx(0.5)
+    assert ang == 0.0
+
+
+def test_traverse_speed_none_falls_back_to_cruise():
+    """The pre-2026-09-12 behaviour is still reachable, for a caller that has
+    never heard of this knob."""
+    fsm = make_fsm(num_rows=3, traverse_speed=None)
+    fsm.state = STATE_TRAVERSE
+    fsm._entry_xy = (0.0, 0.0)
+    lin, _, _, _ = update(fsm, corridor_result(), (0.05, 0.0, 0.0), WIDTH)
+    assert lin == pytest.approx(0.15)
+
+
+def test_backout_turn_keeps_its_own_rate():
+    """The headland turns were sped up 75%; the S-turn out of a blocked row
+    starts beside whatever blocked the robot and has no validation there."""
+    fsm = make_fsm(num_rows=3, turn_rate=0.7, backout_turn_rate=0.4)
+    view = corridor_result()
+
+    fsm.state = STATE_TURN_1
+    fsm._entry_xy = (0.0, 0.0)
+    fsm._last_yaw = 0.0
+    _, ang, _, _ = update(fsm, view, (0.0, 0.0, 0.05), WIDTH)
+    assert abs(ang) == pytest.approx(0.7)
+
+    fsm.state = STATE_BACKOUT_TURN_1
+    fsm._last_yaw = 0.0
+    fsm._swept = 0.0
+    _, ang, _, _ = update(fsm, view, (0.0, 0.0, 0.05), WIDTH)
+    assert abs(ang) == pytest.approx(0.4)
+
+
+def test_turns_stop_at_ninety_degrees_not_short():
+    """yaw_tolerance_deg is tested as `swept >= pi/2 - tol`, so it is a
+    one-sided STOP-EARLY band: every field turn undershot by exactly 5 deg
+    (12 of 12 TURN_1 legs swept 1.477-1.483 rad, 2026-09-09), and TURN_1 plus
+    TURN_2 handed REACQUIRE a repeatable ~10 deg bias."""
+    fsm = make_fsm(num_rows=3, yaw_tolerance_deg=1.5)
+    view = corridor_result()
+    fsm.state = STATE_TURN_1
+    fsm._entry_xy = (0.0, 0.0)
+    fsm._last_yaw = 0.0
+    swept = 0.0
+    for _ in range(2000):
+        swept += 0.002                      # far finer than one control tick
+        _, _, state, _ = update(fsm, view, (0.0, 0.0, swept), WIDTH)
+        if state == STATE_TRAVERSE:
+            break
+    assert fsm.state == STATE_TRAVERSE
+    assert swept >= math.pi / 2.0 - math.radians(1.5) - 1e-9
+    assert swept <= math.pi / 2.0 + math.radians(1.5)
+
+
+# ---------------------------------------------- REACQUIRE phase B: centring --
+
+
+def make_centering_fsm(**kw):
+    """FSM whose REACQUIRE actually steers, so phase B can converge."""
+    return MissionFSM(
+        SteeringStubController(),
+        RowExitDetector(
+            exit_confirm_distance=0.2,
+            blocked_confirm_seconds=1.0,
+            min_in_row_distance=2.0,
+        ),
+        num_rows=3,
+        **kw
+    )
+
+
+def test_reacquire_latches_into_centering_not_follow_row():
+    """The defect the field test found: latching a row and being fit to hand
+    it to FOLLOW_ROW were the same event, so REACQUIRE handed over whatever
+    lateral error the headland turn had left (0.10 typical, 0.26 worst)."""
+    fsm, pose = enter_reacquire(make_centering_fsm())
+    _, state, _ = reacquire_to_latch(fsm, pose, result=corridor_result(shift=20))
+    assert state == STATE_REACQUIRE_CENTER
+    assert fsm.state == STATE_REACQUIRE      # still REACQUIRE, not FOLLOW_ROW
+
+
+def test_reacquire_holds_until_the_row_is_centred():
+    off_centre = corridor_result(shift=20)
+    assert abs(off_centre.offset_norm) > 0.06     # outside the tolerance
+    fsm, pose = enter_reacquire(make_centering_fsm())
+    x, y, yaw = pose
+    # A whole metre of a row that never centres: still not handed off, and
+    # crucially never DONE either.
+    for i in range(1, 21):
+        _, _, state, done = update(fsm, off_centre, (x + i * 0.02, y, yaw), WIDTH)
+        assert not done
+    assert state == STATE_REACQUIRE_CENTER
+
+    # The same row, now centred, hands off over
+    # reacquire_center_confirm_distance.
+    centred = corridor_result()
+    assert abs(centred.offset_norm) <= 0.06
+    for i in range(21, 31):
+        _, _, state, _ = update(fsm, centred, (x + i * 0.02, y, yaw), WIDTH)
+        if state == STATE_FOLLOW_ROW:
+            break
+    assert state == STATE_FOLLOW_ROW
+
+
+def test_reacquire_never_reports_done_once_a_row_is_latched():
+    """reacquire_max_distance -> DONE means 'no rows left'. Once a row IS
+    latched, no amount of failing to centre in it may be reported that way."""
+    fsm, pose = enter_reacquire(
+        make_centering_fsm(reacquire_max_distance=0.3,
+                           reacquire_center_max_distance=5.0)
+    )
+    off_centre = corridor_result(shift=20)
+    x, y, yaw = pose
+    _, state, _ = reacquire_to_latch(fsm, pose, result=off_centre, step=0.02)
+    assert state == STATE_REACQUIRE_CENTER
+    for i in range(1, 100):                 # 2 m, far past reacquire_max_distance
+        _, _, state, done = update(fsm, off_centre, (x + i * 0.02, y, yaw), WIDTH)
+        assert not done
+        assert state != STATE_DONE
+    assert fsm.state != STATE_DONE
+
+
+def test_reacquire_gives_up_centring_at_the_backstop_and_records_it():
+    fsm, pose = enter_reacquire(
+        make_centering_fsm(reacquire_center_max_distance=0.3)
+    )
+    off_centre = corridor_result(shift=20)
+    x, y, yaw = pose
+    _, state, _ = reacquire_to_latch(fsm, pose, result=off_centre, step=0.02)
+    assert state == STATE_REACQUIRE_CENTER
+    assert fsm.uncentered_handoffs == []
+    for i in range(1, 40):
+        _, _, state, _ = update(fsm, off_centre, (x + i * 0.02, y, yaw), WIDTH)
+        if state == STATE_FOLLOW_ROW:
+            break
+    assert state == STATE_FOLLOW_ROW
+    # Recorded, not swallowed: FOLLOW_ROW is inheriting exactly the error
+    # phase B exists to remove, and the node logs this as a warning.
+    assert len(fsm.uncentered_handoffs) == 1
+    row, residual = fsm.uncentered_handoffs[0]
+    assert residual == pytest.approx(abs(off_centre.offset_norm))
+
+
+def test_centring_runs_at_its_own_speed_not_the_search_creep():
+    fsm, pose = enter_reacquire(
+        make_centering_fsm(reacquire_speed=0.08, reacquire_center_speed=0.15)
+    )
+    off_centre = corridor_result(shift=20)
+    x, y, yaw = pose
+    lin, _, state, _ = update(fsm, off_centre, (x + 0.01, y, yaw), WIDTH)
+    assert state == STATE_REACQUIRE and lin == pytest.approx(0.08)
+    _, state, _ = reacquire_to_latch(fsm, pose, result=off_centre, step=0.02)
+    assert state == STATE_REACQUIRE_CENTER
+    # Still well inside reacquire_center_max_distance, so this is the centring
+    # speed and not the give-up handoff.
+    lin, _, state, _ = update(fsm, off_centre, (x + 0.2, y, yaw), WIDTH)
+    assert state == STATE_REACQUIRE_CENTER
+    assert lin == pytest.approx(0.15)
+
+
+# --------------------------------------------------------- occlusion nudge --
+# A leaf on the lens and a crop wall ahead produce the SAME blocked signature.
+# Standing still is the one response that guarantees a leaf never leaves the
+# view: field 2026-09-09 (vision_nav_20260909_102256.csv) went 99% obstacle at
+# 2.80 m into the row, froze there for 4 s and backed out of a row that was
+# not blocked. The discriminator is 10-15 cm of travel.
+
+
+def make_nudge_fsm(**kw):
+    kw.setdefault("num_rows", 3)
+    return MissionFSM(
+        StubController(),
+        RowExitDetector(
+            exit_confirm_distance=0.2,
+            blocked_confirm_seconds=4.0,
+            min_in_row_distance=2.0,
+        ),
+        **kw
+    )
+
+
+def drive_healthy(fsm, meters=1.2, step=0.1, t=0.0, dt=0.1, d=0.0):
+    """Drive a plain corridor so the nudge's 'there WAS a path' gate is met."""
+    corridor = corridor_result()
+    while d < meters - 1e-9:
+        d += step
+        t += dt
+        _, _, state, _ = update(fsm, corridor, (d, 0.0, 0.0), WIDTH, now=t)
+        assert state == STATE_FOLLOW_ROW
+    return d, t
+
+
+def occlude(fsm, d, t, frames, dt=0.1):
+    """Feed blocked frames from a parked pose -- the robot has stopped."""
+    blocked = blocked_result()
+    state = fsm.state
+    for _ in range(frames):
+        t += dt
+        _, _, state, _ = update(fsm, blocked, (d, 0.0, 0.0), WIDTH, now=t)
+        if state != STATE_FOLLOW_ROW:
+            break
+    return state, t
+
+
+def test_occlusion_nudge_creeps_instead_of_standing_still():
+    fsm = make_nudge_fsm()
+    d, t = drive_healthy(fsm)
+    state, t = occlude(fsm, d, t, frames=20)
+    assert state == STATE_NUDGE
+    assert fsm.nudge_events and fsm.nudge_events[0][0] == 1
+    lin, ang, _, _ = update(fsm, blocked_result(), (d + 0.01, 0.0, 0.0), WIDTH,
+                            now=t + 0.1)
+    assert lin == pytest.approx(fsm.nudge_speed)
+    # Blind: there is no corridor in the mask to steer on, and a reading taken
+    # through a leaf is worse than the heading the robot already had.
+    assert ang == 0.0
+
+
+def test_nudge_returns_to_the_same_row_not_a_new_one():
+    """The nudge happens mid-row. Re-entering FOLLOW_ROW through _enter would
+    re-stamp the row entry and reset the detector, re-arming the exit over
+    another min_in_row_distance and discarding the open evidence banked on the
+    way up the row."""
+    fsm = make_nudge_fsm()
+    d, t = drive_healthy(fsm, meters=2.5)
+    rows_before = fsm.rows_driven
+    entry_before = fsm._row_entry_xy
+    state, t = occlude(fsm, d, t, frames=20)
+    assert state == STATE_NUDGE
+
+    corridor = corridor_result()
+    for i in range(1, 20):                      # the leaf clears
+        t += 0.1
+        _, _, state, _ = update(fsm, corridor, (d + i * 0.02, 0.0, 0.0), WIDTH,
+                                now=t)
+        if state == STATE_FOLLOW_ROW:
+            break
+    assert state == STATE_FOLLOW_ROW
+    assert fsm.rows_driven == rows_before
+    assert fsm._row_entry_xy == entry_before
+    # distance_in_row kept counting through the nudge, so the exit detector is
+    # still armed rather than starting its 2 m again.
+    assert fsm._detector.last_status.open_armed
+
+
+def test_nudge_budget_exhausts_and_a_real_dead_end_still_backs_out():
+    fsm = make_nudge_fsm(nudge_max_attempts=2, backout_enabled=True)
+    d, t = drive_healthy(fsm, meters=1.0)
+    blocked = blocked_result()
+    state = STATE_FOLLOW_ROW
+    for i in range(400):                        # the wall does not go away
+        t += 0.1
+        if fsm.state == STATE_NUDGE:
+            d += 0.02
+        _, _, state, _ = update(fsm, blocked, (d, 0.0, 0.0), WIDTH, now=t)
+        if state == STATE_BACKOUT:
+            break
+    assert state == STATE_BACKOUT
+    assert len(fsm.nudge_events) == 2           # the budget, and no more
+    assert fsm.blocked_events                   # the back-out still committed
+    # Total forward creep spent testing the wall, the number that decides
+    # whether this is safe in front of real corn.
+    assert len(fsm.nudge_events) * fsm.nudge_distance == pytest.approx(0.24)
+
+
+def test_nudge_can_be_disabled_reproducing_the_old_stop():
+    fsm = make_nudge_fsm(nudge_max_attempts=0, backout_enabled=True)
+    d, t = drive_healthy(fsm, meters=1.0)
+    blocked = blocked_result()
+    for i in range(400):
+        t += 0.1
+        _, _, state, _ = update(fsm, blocked, (d, 0.0, 0.0), WIDTH, now=t)
+        assert state != STATE_NUDGE
+        if state == STATE_BACKOUT:
+            break
+    assert state == STATE_BACKOUT
+    assert fsm.nudge_events == []
+
+
+def test_nudge_needs_a_healthy_corridor_first():
+    """Without the precondition the robot would creep forward into something
+    it has never once seen a corridor past -- a row entered straight into an
+    obstacle."""
+    fsm = make_nudge_fsm(nudge_min_healthy_distance=5.0)
+    d, t = drive_healthy(fsm, meters=1.0)       # nowhere near 5 m
+    state, t = occlude(fsm, d, t, frames=60)
+    assert state != STATE_NUDGE
+    assert fsm.nudge_events == []
+
+
+def test_nudge_budget_is_refunded_when_the_view_comes_back():
+    """A second leaf later in the same row gets its own budget."""
+    fsm = make_nudge_fsm()
+    d, t = drive_healthy(fsm)
+    state, t = occlude(fsm, d, t, frames=20)
+    assert state == STATE_NUDGE
+    assert fsm.nudge_attempts == 1
+    corridor = corridor_result()
+    for i in range(1, 30):
+        t += 0.1
+        d += 0.02
+        _, _, state, _ = update(fsm, corridor, (d, 0.0, 0.0), WIDTH, now=t)
+        if state == STATE_FOLLOW_ROW and fsm.nudge_attempts == 0:
+            break
+    assert state == STATE_FOLLOW_ROW
+    assert fsm.nudge_attempts == 0

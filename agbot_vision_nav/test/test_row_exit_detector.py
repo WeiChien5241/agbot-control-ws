@@ -713,3 +713,30 @@ def test_near_row_width_and_edges_reported():
     s = det.last_status
     assert 0.8 <= s.near_row_width < 1.0        # wide enough...
     assert s.near_row_edges == (0.0, 0.0)       # ...but corn in both strips
+
+
+def test_resync_moves_the_references_without_crediting_evidence():
+    """For a caller that legitimately stops feeding the detector and resumes --
+    MissionFSM's occlusion nudge, which drives blind for nudge_distance and
+    must not be charged for it. Every accumulator here works on the delta
+    between consecutive samples, so without resync the first frame back banks
+    the whole gap in one step."""
+    det = RowExitDetector(
+        blocked_confirm_seconds=4.0,
+        min_in_row_distance=2.0,
+        blocked_arming_distance=0.3,
+    )
+    blocked = estimate_centerline(make_blocked_ahead_mask())
+    det.update(blocked, WIDTH, 1.0, now=0.0)
+    det.update(blocked, WIDTH, 1.0, now=0.5)
+    banked = det.last_status.blocked_seconds
+    assert banked == pytest.approx(0.5)
+
+    # 3 s and 0.12 m pass with no updates (the robot is nudging).
+    det.resync(3.5, 1.12)
+    det.update(blocked, WIDTH, 1.12, now=3.6)
+    # Only the 0.1 s since the resync is charged -- not the whole gap.
+    assert det.last_status.blocked_seconds == pytest.approx(banked + 0.1)
+    # And the evidence banked BEFORE the gap survives: a crop wall that lives
+    # through the nudge must still confirm promptly. reset() is the other call.
+    assert det.last_status.blocked_seconds > banked
