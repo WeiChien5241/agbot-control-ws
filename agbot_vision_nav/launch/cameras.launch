@@ -28,8 +28,14 @@
 
   <!-- Device paths: by-id links from the robot -->
   <arg name="front_device"      default="/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0" />
-  <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" />
-  <arg name="brio_rear_device"  default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
+  <!-- 2026-09-14: the two Brio units were physically SWAPPED between mounts,
+       so these serials are swapped to match. The rear mount now carries
+       2511LVF11WK8 and the (retired, disabled) front slot 2512LVC36YS8.
+       Do not "correct" this back against older notes - verify with
+       `ls -l /dev/v4l/by-id/` and `rostopic hz /brio_rear/image_raw/compressed`
+       on the robot instead. -->
+  <arg name="brio_front_device" default="/dev/v4l/by-id/usb-046d_MX_Brio_2512LVC36YS8-video-index0" />
+  <arg name="brio_rear_device"  default="/dev/v4l/by-id/usb-046d_MX_Brio_2511LVF11WK8-video-index0" />
 
   <!-- Shared image settings: keep 640x480@30 so new footage matches the
        existing training data and the vision-nav input resolution. -->
