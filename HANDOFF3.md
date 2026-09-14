@@ -1,18 +1,293 @@
 # HANDOFF3.md
 
-Handoff for the P-AgBot work, updated end of session 2026-09-07.
-**Read §0h first** — the GPS module now drives trailer → row entrance → hands
-off to vision nav → three corridors → DONE, end to end in simulation, and §0h
-lists the five defects that integration exposed. §0g is the GPS module's first
-increment and the heading measurement that corrected `GPS_plan.md`'s premise.
-§0f (0.5 m/s ran over the corn) is the vision-nav state and is unchanged;
-everything below it is older still.
+Handoff for the P-AgBot work, updated end of session 2026-09-14.
+**Read §0i first** — the first multi-row FIELD test (2026-09-09) is in, 0.6 m/s
+is validated over 20 rows with zero in-row interventions, and §0i is the
+headland rebuilt against what that test exposed: per-leg speeds, faster turns
+that no longer stop 5° short, a REACQUIRE that re-centres before handing off,
+and an occlusion nudge. §0h is the GPS→vision handoff end to end in sim. §0g is
+the GPS module's first increment and the heading measurement that corrected
+`GPS_plan.md`'s premise. §0f (0.5 m/s ran over the corn) is superseded in part
+by §0i — read §0i's `angular_z_max` decision before acting on §0f.
 
 ⚠ **The dev machine IS the ROS1 Noetic box** — see §0g. Earlier sessions
 believed otherwise and handed every ROS command to the user.
 
-⚠ **Nothing since 2026-08-06 has reached the GPU robot** (cpr-j100-0864, last
-updated to `0936f3b`). See the bundle flow in §0b; `catkin build` is required.
+⚠ **End every sim session with `rosrun agbot_bringup sim_teardown.sh`.** A
+PARTLY killed session is far worse than one left running and its symptom points
+nowhere near the cause — §0i's 2026-09-14 incident cost a session. Never clean
+up with a bare `pkill -f` one-liner; it kills its own shell.
+
+⚠ **Which commit the GPU robot carries is UNKNOWN.** This file used to say
+"nothing since 2026-08-06 has reached it (`0936f3b`)"; the 2026-09-09 field
+logs disprove that — they contain `EXIT_CLEAR (REAR)` states and per-run
+metrics CSVs, so it runs code at least as new as §0e (2026-08-07). Establish
+the actual commit before the next deployment. See the bundle flow in §0b;
+`catkin build` is required. **Nothing from §0i has reached it.**
+
+---
+
+## 0i. SESSION 2026-09-12 / 09-14 — the headland rebuilt against a real field test, and a stale roscore that cost a session
+
+### The input: the 2026-09-09 field test (the first multi-row field data)
+
+Five mission-mode runs on the real Jackal, 09:06–09:31. **Full analysis is in
+`mission_logs.md`**; the CSVs are in `mission_logs/` (untracked, as model
+weights and logs are). Headline:
+
+- **453.2 m driven, 441.6 m autonomous, 29 rows, 4 in-row interventions.**
+- **0.6 m/s is validated**: runs 2/4/5 = 3 runs, 20 rows, **310.5 m, ZERO
+  in-row interventions**. MDBI has no mean there, only a bound: ≥ 302.9 m.
+- 0.30 m/s (run 1) took 2 rescues; **0.90 m/s (run 3) was aborted at 3 rows.**
+- `angular_z_max` stayed at its 0.15 m/s default of **0.175 rad/s in every
+  run** — `speed_args.py` was not used, so run 3 was a steering-authority
+  failure and not a perception one: 28.5% of its in-row frames sat pinned at
+  the clamp against 7–16% at 0.6 m/s.
+
+⚠ **Timestamps in those CSVs are unusable.** `metrics_logger._fmt` formats
+every float with `%.6g`, which on a 1.79-billion epoch leaves ~1000 s of
+resolution, so `t_ros`/`t_wall`/`frame_stamp` are identical within a file and
+`analyze_run.py` reports duration 0 s. Distances, offsets and intervention
+counts are unaffected. **Not fixed** — any future test has the same hole until
+the timestamp columns are written at full precision.
+
+### ⚠ Two findings the first read of those logs missed
+
+**1. Every turn stopped exactly `yaw_tolerance_deg` short.** All 12 logged
+`TURN_1` legs swept **1.477–1.483 rad**, and `pi/2 - 5°` = 1.4835. The test is
+`swept >= pi/2 - tolerance`, so the knob is a one-sided **stop-early band**,
+not a ± tolerance. TURN_1 + TURN_2 were handing REACQUIRE a repeatable **~10°
+heading bias** — upstream of the REACQUIRE defect everyone was looking at.
+
+**2. The rear-steered EXIT_CLEAR leg never terminates on the rear camera.**
+12 of the 13 logged legs ran **1.498–1.520 m** — `exit_clear_max_distance`
+(1.5) exactly, which the FSM treats as a ceiling that turns anyway. The whole
+point of §0e's rear steering is *positive evidence that the tail has cleared
+the last plants*, and that evidence is not being collected: in practice the leg
+is an open-loop 1.5 m. **STILL OPEN — see Next action.** Raising
+`exit_clear_speed` makes the leg faster, not shorter, so nothing this session
+touched it.
+
+### The five changes (`1db0c8a`, `efaf3a2`, `adea895`)
+
+**1. Every mission leg has its own speed, and none of them is
+`linear_x_cruise`.**
+
+| leg | was | now |
+|---|---|---|
+| TRAVERSE / BACKOUT_TRAVERSE | `linear_x_cruise` | `traverse_speed` **0.5** |
+| EXIT_CLEAR | 0.10 | `exit_clear_speed` **0.25** |
+| REACQUIRE search / centring | 0.08 | 0.08 / `reacquire_center_speed` **0.15** |
+| occlusion nudge | — | `nudge_speed` **0.08** |
+
+⚠ TRAVERSE read `self._controller.linear_x_cruise` directly. That coupled a **blind, odometry-bounded** leg to the operator's
+in-row knob — the one deliberately swept to 0.9 m/s in speed testing. Nobody
+had noticed because the two had never needed to differ.
+
+**2. `turn_rate` 0.4 → 0.7 rad/s (+75%), headland turns only.** The blocked-row
+S-turn gets its own `backout_turn_rate` (0.4): it is the one turn that starts
+beside whatever blocked the robot, and it has no validation at the raised rate.
+All four turns used to share one knob; the `turn_table` now selects per state.
+
+**3. `yaw_tolerance_deg` 5.0 → 1.5, plus `_turn_stop_tolerance()`.** The band
+alone was not enough, and the sim found why. **The turn can only stop on a
+SAMPLE**, so with a yaw quantum `q` per control tick the achievable error is
+`[-tol, q - tol]` — set `tol` far below `q` and the whole interval moves onto
+the OVERSHOOT side. Measured in sim at 0.7 rad/s: with `q` = 10.6°
+(e2e 0.265 s) a 1.5° band gave turns of **89.7, 90.0, 91.6 and 95.9°**.
+`_turn_stop_tolerance()` floors the configured tolerance at **half a MEASURED
+tick** (`_last_yaw_step`, taken in `_integrate_yaw`), which re-centres that
+interval on 90°. Same sim after, on an even coarser `q` = 13.4° (e2e 0.335 s):
+**−2.8, −3.1, −2.1, +1.4°** — every one inside half a tick, where before the
+spread had been 6.2° and biased long. It is a floor and never a ceiling, and it is
+capped at 15° so one delayed frame cannot licence stopping early. On the field
+robot half a tick is 0.35° against the 1.5° band, so the configured value is
+what applies there.
+
+**4. REACQUIRE is two phases.** Latching a row and being fit to hand it to
+FOLLOW_ROW were the same event, so REACQUIRE handed over whatever lateral error
+the headland turn had left. Field residuals at handoff: **0.10 typical, 0.26
+worst — and the two worst handoffs of that morning are the two rows that needed
+a rescue.**
+- **Phase A** (unchanged): latch on corn-both-sides over
+  `reacquire_confirm_distance` (0.12 m).
+- **Phase B** (new): STAY in REACQUIRE — reported as `REACQUIRE (CENTER)`, a
+  label only, `self.state` is still `STATE_REACQUIRE` — steering at 0.15 m/s
+  until `|offset_norm| <= reacquire_center_tolerance` (0.06) holds over
+  `reacquire_center_confirm_distance` (0.10 m), or **warn** and hand off at
+  `reacquire_center_max_distance` (0.5 m), appending to `uncentered_handoffs`.
+- ⚠ `reacquire_max_distance` → `STATE_DONE` ("no rows left") is now reachable
+  in **phase A only**. Gating the existing accumulator on centring instead
+  would have made "I can see a row but am not centred in it" terminate the
+  mission — which is why it is two phases and not one stricter condition.
+
+**5. `STATE_NUDGE` — tell a leaf on the lens apart from a dead end by moving.**
+The blocked signature is produced by a crop wall AND by a leaf over the lens,
+and from one frame they are identical. The old response was to stop, which is
+**the one action that guarantees the leaf never leaves the view**:
+`mission_logs/vision_nav_20260909_102256.csv` goes 99% obstacle at index 119,
+`distance_in_row` freezes at **2.798 m for 90 frames**, and 4 s later BLOCKED
+fires and the robot backs out of a row that was not blocked. Both back-out test
+runs that morning contain it.
+- Trigger: the detector's own blocked signature (read off
+  `detector.last_status`, never recomputed, so it cannot drift from
+  `row_exit_detector.py`), plus `nudge_trigger_seconds` (0.5) of the existing
+  leaky blocked timer — reusing that timer is what debounces it for free — plus
+  `nudge_min_healthy_distance` (0.5 m) of driving with `nudge_min_corridor_rows`
+  (2) in view.
+- Action: creep `nudge_distance` (0.12 m) at `nudge_speed` with **`angular_z`
+  pinned to 0.0** (there is no corridor to steer on), up to
+  `nudge_max_attempts` (2). **Total forward creep before a real back-out =
+  0.24 m.** `nudge_max_attempts:=0` restores the old behaviour exactly.
+- ⚠ **Three things that would silently break it**, all now handled:
+  - Returning to FOLLOW_ROW must NOT go through `_enter()` — that re-stamps
+    `_row_entry_xy` and resets the detector, which mid-row re-arms the exit over
+    another `min_in_row_distance` (2.0 m) and discards the open evidence banked
+    up the row. `_resume_follow_row()` is the path.
+  - The detector must not be charged for the blind leg.
+    `RowExitDetector.resync(now, distance_in_row)` moves the delta references
+    forward without crediting anything; without it the first frame back banks
+    `_MAX_DT` of blocked seconds and the whole nudge distance in one step. It
+    deliberately does NOT clear the accumulators — a wall that survives the
+    nudge must still confirm promptly.
+  - The "there WAS a corridor" evidence must **decay by distance driven, never
+    be cleared**. An occlusion stops the robot, so no distance passes and the
+    evidence survives the very frames the nudge exists to handle. The first
+    implementation cleared it and **no nudge could ever fire** — the tests
+    caught it.
+
+### ⚠ The `angular_z_max` decision — it contradicts CLAUDE.md on purpose
+
+The clamp is **deliberately held at 0.175** for the 0.9 m/s retry;
+`speed_args.py` scaling was NOT applied. CLAUDE.md's "never raise
+`linear_x_cruise` alone" rests on a **sim** run (2026-09-02, §0f) at a 0.431 s
+control period. The field contradicts it: 20 rows and 310.5 m at 0.6 m/s on the
+unscaled clamp with zero in-row interventions. Run 3 failed at 0.9, but it
+*also* started each row from a 0.237 handoff error and a ~10° turn undershoot,
+both fixed above.
+
+**So: retry 0.9 m/s with the clamp unchanged and MEASURE the saturation first.**
+The number to report is the % of FOLLOW_ROW frames at `|angular_z| >= 0.1749`;
+**28.5% is the run-3 figure to beat.** If it is still ~28% with a clean handoff,
+the clamp is the next thing to move and `speed_args.py` is how. Do not scale it
+pre-emptively: 0.583 at 0.5 m/s is 3.3× more authority than anything driven in
+a real row, and REACQUIRE, the nudge and BACKOUT all reuse that same clamp at
+0.08–0.15 m/s.
+
+### Sim validation (small world, 3 rows, 0.6 m/s, rear camera)
+
+`~/agbot_logs/vision_nav_20260912_124548.csv`, `rows_driven=3`. ⚠ The laptop
+runs the pipeline at **5.3 Hz** (inference median 0.190 s, e2e 0.335 s) against
+the field robot's 58 Hz, so this validates the LOGIC and sequencing, not the
+timing; its 31 `WATCHDOG_ZERO` events are §0f's known cost.
+
+- Every leg commanded its own speed.
+- Turns **−2.8 / −3.1 / −2.1 / +1.4°** (field: a flat −5.0°).
+- REACQUIRE handoffs **−0.043 and +0.004** (field: 0.06–0.26).
+- **The nudge fired twice, unscripted**, at 4.96 m into row 3: corridor
+  degraded 3 → 2 → 1 → 0 scan rows, `blocked_seconds` hit 0.63, the FSM creeped
+  0.12 m, found it still occluded, creeped 0.11 m more, and the view returned.
+  It then drove the remaining 1.37 m and finished the row instead of backing
+  out of it. Two details from that trace worth keeping: `blocked_seconds`
+  **froze at 0.63** for the whole blind leg (`resync` working), and
+  `distance_in_row` resumed at **5.33 m rather than 0** (`_resume_follow_row`
+  working).
+
+### ⚠ THE 2026-09-14 INCIDENT — a partly-killed session, and how it presented
+
+Two mission launches from the operator panel each printed the full config block
+and `vision_nav_node ready`, then exited "cleanly". **The robot never moved and
+both metrics CSVs had a header and no rows.** It looked exactly like a bug in
+the new FSM code. It was not: nothing in the mission logic ever ran.
+
+**Root cause: a roscore and Gazebo left running 33 hours earlier** (`ps` said
+`ELAPSED 1-09:07:45`) by a cleanup that had silently killed itself. It broke the
+next session in two independent ways:
+
+1. **A node killed with `SIGKILL` never unregisters.** `/vision_nav_node` was
+   still registered on that master with the URI of a long-dead process —
+   `master.log` shows it registered 2026-09-12 12:45:44 at `http://User:33227/`
+   and not dropped until 2026-09-14 11:48:22, with nothing listening on that
+   port. Every new node of that name was evicted **~1.5 s after registering**,
+   while it was still loading the model; rospy does not interrupt `__init__`,
+   so the constructor ran to completion and reported for duty on a node the
+   master had already discarded. `rosnode cleanup` clears a stale name;
+   restarting roscore always does.
+2. **The Jackal stack had died piecemeal.** Only `/gazebo`, `/gazebo_gui` and
+   `/rosout` were left — no EKF, no `robot_state_publisher`, no `twist_mux`,
+   wheel controller unloaded, Gazebo logging `Can't accept new commands.
+   Controller is not running.` at 10 Hz and no `/odometry/filtered` at all.
+   Nothing could have moved the robot, and the mission FSM would have stayed
+   unarmed anyway (`distance_in_row is None` keeps the detector unarmed by
+   design).
+
+⚠ **THE TRAP, and it is worth internalising: `pkill -f <name>` matches the FULL
+COMMAND LINE of every process, INCLUDING THE SHELL RUNNING IT** if that shell's
+command line contains the word. The cleanup was
+
+```bash
+pkill -9 -f roslaunch; pkill -9 -f gzserver; pkill -9 -f vision_nav_node; pkill -9 -f rosmaster
+```
+
+which killed itself on the **first** pattern; the rest never ran, and it looked
+like it had worked. Fixed two ways (`7627157`):
+
+- **`agbot_bringup/scripts/sim_teardown.sh`** tears a session down completely
+  and explicitly excludes its own process ancestry. Takes `--dry-run`. **Run it
+  at the end of every sim session, and before starting one.**
+- **The node now names the failure** instead of announcing `ready`: it checks
+  `rospy.is_shutdown()` before that `loginfo` and logs a `logerr` pointing at
+  the stale registration and at `rosnode cleanup`.
+
+Symptom to recognise instantly: **`vision_nav_node ready` followed by
+`process has finished cleanly`, and a metrics CSV with one line in it.**
+
+### Operator panel
+
+Now carries `linear_x_cruise`, `angular_z_max`, **`traverse_speed`** and
+**`exit_clear_speed`** (`35c071a`). The last two are the legs driven blind
+alongside the corn the robot is about to re-enter, so they are the ones worth
+backing off between runs. Blank still means "do not pass", so `params.yaml`
+stays the source of truth. ⚠ `exit_clear_speed` changes how FAST that leg is,
+**not how far** — it is distance-bounded, so the robot stops in the same place
+either way.
+
+### 243 → 264 tests
+
+`test_mission_fsm.py` +18, `test_row_exit_detector.py` +1 (`resync`),
+`test_launch_args.py` +2. Two lessons from writing them, both real:
+- `drive_row_to_block()` now has to MOVE the robot while the state is NUDGE, as
+  the real one does; a genuine dead end commits the back-out 0.24 m further up
+  the row. `test_controller_reset_on_backout_entry` pins
+  `nudge_max_attempts=0` so it still measures the BACKOUT entry alone.
+- `corridor_result(shift=40)` puts the corridor off the image-centre column
+  entirely and comes back INVALID, which is a different failure from
+  "off centre". Use `shift=20` (offset_norm 0.2) for an off-centre row.
+
+### Next action
+
+1. **Retry 0.9 m/s in the field**, after a 0.6 m/s run to confirm no
+   regression against the 20-row baseline. Report the clamp-saturation % — see
+   the `angular_z_max` decision above. This is the one number that decides the
+   next tuning move.
+2. **The rear-steered EXIT_CLEAR leg is not doing what §0e designed it to do**
+   (12 of 13 legs on the 1.5 m ceiling). Needs its own session with the rear
+   debug view (`(REAR)` on the HUD) and the `exit_clear_detector` status line.
+   It is the largest unexamined thing in the vision stack.
+3. **Nothing from this session has run on the robot.** All of it is sim- and
+   unit-tested only. ⚠ The header's "nothing since 2026-08-06 has reached the
+   GPU robot" is now WRONG — the 2026-09-09 logs contain `EXIT_CLEAR (REAR)`
+   states and metrics CSVs, so the robot carries code at least as new as §0e
+   (2026-08-07) — but **which commit is unknown**. Establish that before the
+   next deployment.
+4. **Fix the `%.6g` timestamp precision in `metrics_logger._fmt`** before the
+   next field test, or that test has no wall-clock duration either.
+5. `traverse_distance` (0.6 m) is still `params.yaml`-only. It is the knob that
+   changes WHERE the headland leg ends, so it is the one to reach for if the
+   robot clips the next section — worth putting on the panel next to the two
+   speeds.
+
+Everything in §0h and §0g (GPS) is unchanged and untouched by this session.
 
 ---
 
