@@ -127,6 +127,36 @@ to live in `agbot_bringup/`; it was removed on 2026-08-06 — the maize worlds a
 the only simulation option now, because segmentation quality is much better on
 their visuals. Recover it from git history if it is ever needed again.
 
+⚠ **End a sim session with `rosrun agbot_bringup sim_teardown.sh`, and start
+one by checking nothing is already up.** A PARTLY killed session is far worse
+than one left running, and its symptom does not point anywhere near the cause.
+2026-09-14: two mission launches from the operator panel each printed the full
+config block and `vision_nav_node ready`, then exited "cleanly"; the robot
+never moved and both metrics CSVs had a header and no rows. A roscore and
+Gazebo left running **33 hours earlier** were the cause, in two independent
+ways:
+- A node killed with `SIGKILL` **never unregisters**, so `/vision_nav_node` was
+  still registered on that master with the URI of a long-dead process. Every
+  new node of that name was evicted ~1.5 s after registering — while it was
+  still loading the model, so it finished `__init__` and reported ready on a
+  node the master had already thrown away. `rosnode cleanup` clears a stale
+  name; restarting roscore always does. The node now logs a `logerr` naming
+  this instead of announcing "ready".
+- The Jackal's own stack had died piecemeal, leaving the wheel controller
+  unloaded and Gazebo logging `Can't accept new commands. Controller is not
+  running.` at 10 Hz, with no `/odometry/filtered` at all. Nothing could have
+  moved the robot, and the mission FSM would have stayed unarmed anyway
+  (`distance_in_row is None` keeps the exit detector unarmed by design).
+
+⚠ **Never clean up with a bare `pkill -f <name>` one-liner.** `pkill -f`
+matches the FULL COMMAND LINE of every process, **including the shell running
+it** if that shell's command line contains the word — so
+`pkill -f roslaunch; pkill -f gzserver; pkill -f rosmaster` kills itself on the
+first pattern and the rest silently never run. That is exactly how the
+33-hour-old roscore above survived a cleanup that looked like it worked.
+`sim_teardown.sh` excludes its own process ancestry for this reason; it takes
+`--dry-run`.
+
 **Camera topics** (simulation): front `/camera/image_raw`, rear `/camera_rear/image_raw` (both `sensor_msgs/Image`, raw, 640×480, 30 Hz). The rear camera is only consumed in mission mode with `rear_camera_enabled:=true` (blocked-row back-out). `roslaunch agbot_bringup display.launch.xml` shows the URDF in RViz without Gazebo (camera-placement iteration).
 When launching the vision-nav controller in simulation:
 ```bash

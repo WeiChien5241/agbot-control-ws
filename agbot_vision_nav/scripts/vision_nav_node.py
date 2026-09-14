@@ -408,6 +408,31 @@ class VisionNavNode(object):
 
         self._log_config()
         self._mission_done_pub.publish(Bool(data=False))
+        if rospy.is_shutdown():
+            # Say so, loudly, instead of announcing "ready" and exiting.
+            #
+            # Loading the model takes seconds, and rospy accepts a shutdown
+            # during it without interrupting __init__ -- so the constructor
+            # runs to completion and reports for duty on a node the master has
+            # already evicted. The process then exits "cleanly", the robot
+            # never moves, and the metrics CSV has a header and no rows.
+            #
+            # The cause is always the same: another /vision_nav_node is
+            # registered. Usually it is a STALE registration rather than a
+            # live process -- a node killed with SIGKILL never unregisters, so
+            # the name sits on the master until roscore restarts, and every
+            # launch after that dies this way. Sim 2026-09-14: a registration
+            # left by a node killed 33 h earlier ate two mission launches
+            # before anyone looked at the master log.
+            rospy.logerr(
+                "vision_nav_node was SHUT DOWN while loading the model and is "
+                "exiting without processing a frame -- another "
+                "/vision_nav_node is registered on the master. Check "
+                "`rosnode list` and `rosnode ping vision_nav_node`; if the "
+                "name answers but no process owns it, the registration is "
+                "stale -- `rosnode cleanup`, or restart roscore."
+            )
+            return
         rospy.loginfo("vision_nav_node ready, listening on %s%s", camera_topic,
                       "" if self._is_enabled() else "  [DISABLED at startup]")
 
