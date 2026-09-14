@@ -236,11 +236,16 @@ class OperatorPanel(QWidget):
         self._angular_z.setPlaceholderText("blank = params.yaml (0.175 rad/s)")
         form.addRow("angular_z_max", self._angular_z)
 
-        # The headland crossing, which is NOT linear_x_cruise: that one is the
-        # in-row speed being swept in testing, and this leg is driven blind.
+        # The two headland legs, which are NOT linear_x_cruise: that one is the
+        # in-row speed being swept in testing, and both of these are driven
+        # blind, alongside the corn the robot is about to re-enter.
         self._traverse_speed = QLineEdit()
         self._traverse_speed.setPlaceholderText("blank = params.yaml (0.5 m/s)")
         form.addRow("traverse_speed", self._traverse_speed)
+
+        self._exit_clear_speed = QLineEdit()
+        self._exit_clear_speed.setPlaceholderText("blank = params.yaml (0.25 m/s)")
+        form.addRow("exit_clear_speed", self._exit_clear_speed)
 
         hint = QLabel(
             "Blank fields are not passed, so config/params.yaml decides them.\n"
@@ -294,6 +299,7 @@ class OperatorPanel(QWidget):
             linear_x_cruise=self._linear_x.text(),
             angular_z_max=self._angular_z.text(),
             traverse_speed=self._traverse_speed.text(),
+            exit_clear_speed=self._exit_clear_speed.text(),
         )
 
     def _toggle_mission(self):

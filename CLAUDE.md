@@ -192,7 +192,7 @@ Architecture (rospy-free algorithmic core, unit-testable without ROS):
 Run unit tests (no ROS or `lightly_train` needed):
 ```bash
 cd agbot_vision_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 262 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 264 passed
 cd ../agbot_gps_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 161 passed
 ```
@@ -457,9 +457,12 @@ fixed the 2026-07-24 field failure).
 ⚠ **`linear_x_cruise` is now the IN-ROW speed and nothing else** (2026-09-12).
 EXIT_CLEAR, TRAVERSE/BACKOUT_TRAVERSE, REACQUIRE and the occlusion nudge each
 have their own knob (see the `mission_fsm.py` bullet above), so sweeping cruise
-for a speed test no longer drags the blind headland legs up with it. Only
-`linear_x_cruise` and `angular_z_max` — plus `traverse_speed` — are on the
-operator panel; everything else is `params.yaml` or a launch arg.
+for a speed test no longer drags the blind headland legs up with it. The operator
+panel carries `linear_x_cruise` and `angular_z_max` plus the two headland legs,
+`traverse_speed` and `exit_clear_speed` — those two are the ones driven blind
+alongside the corn the robot is about to re-enter, so they are the ones worth
+being able to back off between runs. Everything else is `params.yaml` or a
+launch arg.
 
 ⚠ **The field contradicts the sim run above, and the clamp is deliberately
 being held.** The 2026-09-09 field test drove 20 rows and 310.5 m at 0.6 m/s

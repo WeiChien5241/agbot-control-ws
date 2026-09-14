@@ -146,3 +146,24 @@ def test_frame_source_is_always_the_real_cameras():
     assert cameras_launch_args() == ["agbot_vision_nav", "cameras.launch"]
     with pytest.raises(TypeError):
         cameras_launch_args(sim=True)
+
+
+def test_headland_leg_speeds_are_passed_independently_of_cruise():
+    """The two legs driven alongside the corn the robot is about to re-enter.
+    They must be settable WITHOUT touching linear_x_cruise -- that is the whole
+    reason they stopped being the same knob (2026-09-12)."""
+    argv = mission_launch_args(
+        MODEL, traverse_speed="0.4", exit_clear_speed="0.15",
+    )
+    assert args_of(argv) == {
+        "model_path": MODEL,
+        "traverse_speed": "0.4",
+        "exit_clear_speed": "0.15",
+    }
+
+
+def test_a_blank_headland_speed_leaves_params_yaml_alone():
+    argv = mission_launch_args(
+        MODEL, linear_x_cruise="0.6", traverse_speed="", exit_clear_speed="  ",
+    )
+    assert args_of(argv) == {"model_path": MODEL, "linear_x_cruise": "0.6"}
