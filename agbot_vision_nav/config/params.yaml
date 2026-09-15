@@ -350,41 +350,48 @@ exit_clear_min_distance: 0.2  # m always driven after the exit confirms, even
 exit_revoke_enabled: true
 exit_revoke_distance: 0.5      # m after confirming during which revert is possible
 exit_revoke_fail_distance: 0.25  # m of continuous corn beside the near row => revert
-turn_rate: 0.7             # rad/s during the HEADLAND in-place 90-degree
-                           # turns (TURN_1, TURN_2). Was 0.4; raised 75% on
-                           # 2026-09-12 after the field test showed the turns
-                           # are the slowest part of a headland and nothing
-                           # about them is perception-limited -- they run on
-                           # integrated odometry yaw with the robot stopped.
+turn_rate: 0.4             # rad/s during the HEADLAND in-place 90-degree
+                           # turns (TURN_1, TURN_2).
+                           # ⚠ REVERTED to 0.4 on 2026-09-15, after 0.7
+                           # overshot on the robot. It was raised to 0.7 on
+                           # 2026-09-12 because the turns are the slowest part
+                           # of a headland and nothing about them is
+                           # perception-limited -- but they are not free of
+                           # PHYSICS: the stop test fires on integrated yaw
+                           # and the robot then has to decelerate, so a 75%
+                           # faster turn coasts 75% further past the stop.
+                           # Raise it only together with yaw_tolerance_deg,
+                           # and only on a measured headland sweep.
                            # ⚠ The back-out S-turn does NOT use this; see
                            # backout_turn_rate.
 backout_turn_rate: 0.4     # rad/s during BACKOUT_TURN_1 / BACKOUT_TURN_2.
-                           # Deliberately left at the pre-2026-09-12 rate: the
-                           # S-turn out of a blocked row is the one maneuver
-                           # that starts next to whatever blocked the robot,
-                           # and it has no independent validation at 0.7.
-yaw_tolerance_deg: 1.5     # stop turning within this much of 90 degrees.
+                           # Same as turn_rate again now, but kept as its own
+                           # knob: the S-turn out of a blocked row starts next
+                           # to whatever blocked the robot, so it must not
+                           # inherit a headland speed experiment.
+yaw_tolerance_deg: 5.0     # stop turning within this much of 90 degrees.
                            # ⚠ Read the code before changing it: the test is
                            # `swept >= pi/2 - yaw_tolerance`, so this is a
                            # one-sided STOP-EARLY band, not a +/- tolerance --
-                           # every turn undershoots by exactly this much.
-                           # Field 2026-09-09 measured it: all 12 TURN_1 legs
-                           # swept 1.477-1.483 rad = pi/2 - 5 deg exactly, so
-                           # TURN_1 + TURN_2 handed REACQUIRE a repeatable
-                           # ~10 deg heading bias to absorb.
-                           # ⚠ It is a FLOOR, not the achieved accuracy. The
-                           # turn can only stop on a sample, so with a yaw
-                           # quantum q per control tick the error lands in
-                           # [-tol, q - tol]: below q the whole interval sits
-                           # on the OVERSHOOT side. mission_fsm's
-                           # _turn_stop_tolerance() therefore floors this at
-                           # q/2 from the MEASURED tick, which re-centres that
-                           # interval on 90 deg -- so a slow machine widens the
-                           # band by itself instead of turning long. At the
-                           # field robot's ~58 Hz and 0.7 rad/s q/2 is 0.35 deg,
-                           # well under 1.5, so this value is what applies
-                           # there. Sim at 5-7 Hz (q = 13.4 deg): 89.7-95.9 deg
-                           # before the floor, -3.1 to +1.4 deg after.
+                           # every turn stops that far short of 90 deg by
+                           # DESIGN. Field 2026-09-09 measured it: all 12
+                           # TURN_1 legs swept 1.477-1.483 rad = pi/2 - 5 deg
+                           # exactly.
+                           # ⚠ REVERTED to 5.0 on 2026-09-15. Reading that
+                           # as a pure defect and cutting it to 1.5 made the
+                           # headland WORSE on the robot: the turn ended past
+                           # 90 deg and REACQUIRE started facing the plants
+                           # instead of down the corridor. The band is not
+                           # only a sampling allowance -- it is also the
+                           # deceleration allowance for a turn that is stopped
+                           # on integrated yaw, which is why the ~10 deg
+                           # TURN_1 + TURN_2 bias it "caused" was so
+                           # repeatable and why REACQUIRE absorbed it fine.
+                           # If the bias is ever worth removing, measure the
+                           # coast-down first (command 0 mid-turn and log how
+                           # much more yaw accrues) and take the band down by
+                           # what is actually left over -- do not reason about
+                           # it from the sim, where the wheels stop dead.
 reacquire_speed: 0.08      # m/s creep while searching for the next corridor
 reacquire_confirm_distance: 0.12  # m of sustained in-row view before re-entering
                            # FOLLOW_ROW (= the old 3 frames at 2 Hz and

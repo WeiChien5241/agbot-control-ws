@@ -229,8 +229,11 @@
   <arg name="backout_turn_rate"    default="" /><!-- rad/s, BACKOUT_TURN_1 / _2 -->
   <arg name="yaw_tolerance_deg"    default="" /><!-- STOP-EARLY band, not a plus/minus tolerance:
                                                       every turn undershoots by exactly this much.
-                                                      Floor is one control tick of turning,
-                                                      turn_rate / frame_rate. -->
+                                                      It is also the deceleration allowance for a
+                                                      turn stopped on integrated yaw: cutting it to
+                                                      1.5 with turn_rate 0.7 overshot on the robot
+                                                      (2026-09-15). 5.0 with 0.4 is the validated
+                                                      pair; move the two together. -->
 
   <arg name="rear_camera_enabled" default="" />
   <arg name="rear_camera_topic"

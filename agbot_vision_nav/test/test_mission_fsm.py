@@ -1884,7 +1884,7 @@ def test_nudge_budget_is_refunded_when_the_view_comes_back():
     assert fsm.nudge_attempts == 0
 
 
-def turn_error_deg(yaw_step, turn_rate=0.7, yaw_tolerance_deg=1.5):
+def turn_error_deg(yaw_step, turn_rate=0.4, yaw_tolerance_deg=5.0):
     """Drive one TURN_1 at a fixed yaw quantum; return the achieved sweep."""
     fsm = make_fsm(num_rows=3, turn_rate=turn_rate,
                    yaw_tolerance_deg=yaw_tolerance_deg)
@@ -1900,28 +1900,31 @@ def turn_error_deg(yaw_step, turn_rate=0.7, yaw_tolerance_deg=1.5):
     raise AssertionError("turn never completed")
 
 
-def test_turn_stop_is_centred_on_ninety_at_any_control_rate():
-    """The stop condition can only fire on a SAMPLE, so the achievable error
-    is set by the yaw step per tick, not by yaw_tolerance_deg. Sim at 7 Hz and
-    0.7 rad/s (10.6 deg/tick) with a 1.5 deg band turned 89.7-95.9 deg: the
-    whole error interval had moved onto the overshoot side."""
-    coarse = math.radians(10.6)          # the sim's measured quantum
-    errors = [turn_error_deg(coarse * f) for f in (1.0, 0.93, 1.07, 0.87)]
-    # Centred on 90, not systematically long: no sample may be more than half
-    # a tick off in either direction.
-    assert all(abs(e) <= 10.6 / 2.0 + 1e-6 for e in errors), errors
-    assert max(errors) <= 6.0
+def test_the_turn_stops_on_the_first_sample_past_the_band():
+    """yaw_tolerance_deg is the whole stop rule again (2026-09-15). A
+    measured-tick floor was tried on 2026-09-12 -- it re-centred the error
+    interval on 90 deg in sim, and on the robot it removed the deceleration
+    allowance the band was really providing, so the turn ended PAST 90 deg
+    facing the plants. The error therefore lands in [-tol, q - tol] by design,
+    and at the robot's rate that is a small UNDERSHOOT, which REACQUIRE has
+    always absorbed."""
+    tol = 5.0
+    for step_deg in (0.7, 5.0, 10.6):
+        err = turn_error_deg(math.radians(step_deg))
+        assert -tol - 1e-6 <= err <= step_deg - tol + 1e-6, (step_deg, err)
 
 
-def test_a_fast_machine_still_honours_the_configured_tolerance():
-    """The tick floor is a FLOOR. At the field robot's 58 Hz one tick is
-    0.7 deg, well under the 1.5 deg band, so nothing changes."""
-    fine = math.radians(0.7)
-    err = turn_error_deg(fine)
-    assert -1.5 - 1e-6 <= err <= 0.0
+def test_a_fine_control_rate_undershoots_by_the_configured_band():
+    """At the field robot's 58 Hz and 0.4 rad/s one tick is 0.4 deg, so the
+    turn stops within one tick of `90 - yaw_tolerance_deg` -- the repeatable
+    bias measured across all 12 TURN_1 legs on 2026-09-09."""
+    err = turn_error_deg(math.radians(0.4))
+    assert -5.0 - 1e-6 <= err <= -4.6 + 1e-6
 
 
-def test_the_tick_floor_is_capped():
-    """One delayed frame mid-turn must not licence stopping 30 deg early."""
-    err = turn_error_deg(math.radians(60.0))
-    assert err >= -15.0 - 1e-6
+def test_the_turn_rate_and_band_defaults_are_the_field_validated_pair():
+    """0.7 rad/s with a 1.5 deg band overshot on the robot; 0.4 with 5.0 is
+    what 310.5 m of field driving was collected on."""
+    fsm = make_fsm(num_rows=3)
+    assert fsm.turn_rate == pytest.approx(0.4)
+    assert fsm.yaw_tolerance == pytest.approx(math.radians(5.0))

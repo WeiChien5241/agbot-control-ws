@@ -182,9 +182,9 @@ class VisionNavNode(object):
                 traverse_distance=rospy.get_param("~traverse_distance", 0.6),
                 traverse_speed=rospy.get_param("~traverse_speed", 0.5),
                 headland_clearance=rospy.get_param("~headland_clearance", 1.0),
-                turn_rate=rospy.get_param("~turn_rate", 0.7),
+                turn_rate=rospy.get_param("~turn_rate", 0.4),
                 backout_turn_rate=rospy.get_param("~backout_turn_rate", 0.4),
-                yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 1.5),
+                yaw_tolerance_deg=rospy.get_param("~yaw_tolerance_deg", 5.0),
                 reacquire_speed=rospy.get_param("~reacquire_speed", 0.08),
                 reacquire_confirm_distance=rospy.get_param(
                     "~reacquire_confirm_distance", 0.12
