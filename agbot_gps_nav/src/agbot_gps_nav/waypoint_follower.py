@@ -183,10 +183,12 @@ class WaypointFollower(object):
         self._staging = None
         self._last_distance = None
         self._last_heading_error = None
+        self._slow_on_arrival = True
 
     # ---- goal handling ---------------------------------------------------
 
-    def set_goal(self, goal_xy, approach_bearing=None, approach_distance=None):
+    def set_goal(self, goal_xy, approach_bearing=None, approach_distance=None,
+                 heading_init=True, slow_on_arrival=True):
         """Accept a new goal (x, y) in the map frame, and start driving.
 
         A new goal always restarts from GOTO, including out of ARRIVED -- that
@@ -203,13 +205,25 @@ class WaypointFollower(object):
         heading is then forced by geometry rather than trusted from the heading
         estimate -- which matters, because that estimate is unbounded at rest
         and was measured 74 degrees wrong on a cold start (HANDOFF3 0g).
+
+        `heading_init=False` skips the bootstrap for this goal, and
+        `slow_on_arrival=False` holds cruise all the way to it instead of
+        ramping down to approach_speed. RouteRunner uses both for every leg
+        after the first: the heading was already verified on leg 1 and has
+        been corrected by motion ever since, and a pass-through point is not
+        somewhere to arrive carefully.
         """
         self._goal = (float(goal_xy[0]), float(goal_xy[1]))
+        self._slow_on_arrival = bool(slow_on_arrival)
         self._last_distance = None
         self._last_heading_error = None
         self._closest_distance = None
         self._init_start_xy = None
-        self._heading_init_converged = None
+        if heading_init:
+            # A leg that skips the bootstrap KEEPS the previous verdict: it is
+            # still the one the heading rests on, and the node reports it.
+            self._heading_init_converged = None
+            self._heading_init_error = None
         self._approach_attempts = 0
         self._approach_start_xy = None
         self._approach_course_error = None
@@ -223,7 +237,8 @@ class WaypointFollower(object):
             self._approach_bearing = bearing
             self._staging = (self._goal[0] - back * math.cos(bearing),
                              self._goal[1] - back * math.sin(bearing))
-        self.state = (STATE_HEADING_INIT if self.heading_init_distance > 0.0
+        self.state = (STATE_HEADING_INIT
+                      if heading_init and self.heading_init_distance > 0.0
                       else STATE_GOTO)
 
     def clear_goal(self):
@@ -492,7 +507,7 @@ class WaypointFollower(object):
         # rather than stopping dead the instant it crosses the tolerance. At
         # distance 0 this is exactly approach_speed -- the ramp IS the floor,
         # which is why there is no second derate here (see the module docstring).
-        if distance < self.approach_distance:
+        if self._slow_on_arrival and distance < self.approach_distance:
             base = self.approach_speed + (
                 self.linear_x_cruise - self.approach_speed
             ) * (distance / self.approach_distance)
