@@ -94,6 +94,11 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
   changed) and cost a session's worth of "the user must run this" hedging.
   The **robot** is still a separate machine reached by git bundle (HANDOFF3 §0b).
 - `agbot_control_ws` is used as a catkin workspace root; `src/` holds the packages directly. Build from the workspace root, not from inside `src/`.
+- ⚠ **This laptop (2026-09-22) has no `scipy`, `torch`, `lightly_train` or
+  model weights**, so vision nav cannot run here and most of the
+  `agbot_vision_nav` suite fails to collect (`test_launch_files.py` /
+  `test_launch_args.py` still run). `pytest` came from `apt install
+  python3-pytest` — there is no pip on the system Python.
 - The segmentation model (`lightly_train` + `torch`) has so far only been trained/run on **Google Colab** — never on the ROS1 Noetic box. ROS1 Noetic on Ubuntu 20.04 ships system Python 3.8; whether `lightly_train`'s dependencies even install there is unconfirmed.
 
 ## agbot_bringup — simulation launch package
@@ -213,7 +218,7 @@ Run unit tests (no ROS or `lightly_train` needed):
 cd agbot_vision_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 264 passed
 cd ../agbot_gps_nav
-PYTHONPATH=src python3 -m pytest test/ -v      # expected: 161 passed
+PYTHONPATH=src python3 -m pytest test/ -v      # expected: 193 passed
 ```
 `agbot_vision_nav/test/test_launch_files.py` walks the WHOLE workspace, so it
 covers `agbot_gps_nav`'s and `agbot_bringup`'s launch files too — which is why
@@ -304,12 +309,33 @@ teleport the robot with `/gazebo/set_model_state`** and expect the map-frame
 heading to follow — the EKF's yaw is dead-reckoned and a teleport is invisible
 to it. Restart the sim at the pose you want.
 
-- `src/agbot_gps_nav/geo.py` — WGS84 ↔ local ENU about a datum. Local tangent
+- `src/agbot_gps_nav/geo.py` — ⚠ **two frames** (measured 2026-09-22):
+  `latlon_to_map`/`map_to_latlon` = navsat_transform's map frame, which in
+  robot_localization 2.7.7 is **UTM about the datum, 0.9996× true distance**
+  (20 cm short at 500 m); they match `/fromLL` to 0.1 mm. Use them for anything
+  the robot drives to. `latlon_to_enu`/`enu_to_latlon` = true metres, which is
+  hector's plugin model and therefore right ONLY for Gazebo world coordinates
+  (`rows_to_waypoints.py`). The tangent
   plane using the WGS84 meridional **and** prime-vertical radii at the datum
   latitude (they differ by 0.39 % at Purdue; using one for both is a real bug a
   round-trip test cannot see). No pyproj/geodesy — neither is installed and
   neither is needed. Measured against Vincenty: 1.5 mm at 280 m, 3.7 cm at
   1.4 km, 0.94 m at 7 km, so **the answer to a bigger site is a nearer datum**.
+- `src/agbot_gps_nav/route.py` — **multi-waypoint routes** (2026-09-22).
+  `Route` is the operator's lat/lon list (waypoints-file schema, so a generated
+  waypoints file loads as a route); `RouteRunner` walks it with one follower
+  and the same `update()` 4-tuple. Intermediate points are pass-through
+  (within `route_pass_radius` OR across the perpendicular plane — a radius
+  alone orbits a near miss); only the last point latches ARRIVED and gets the
+  bearing approach; the heading bootstrap runs on leg 1 only and the route
+  never advances out of it. ⚠ **`click_mode: queue` is the default**: a mapviz
+  click / RViz goal APPENDS to a pending route (`~route`, a mapviz layer) and
+  nothing moves until `~route/go`; `~route/{undo,clear,save,load}` and the
+  operator panel's section 4 do the rest. `click_mode:=direct` restores
+  one-click-goes. `gps_vision_mission.launch route_file:=...` drives a saved
+  route before the corridor entrance (supervisor → `~route_goal`, a Path where
+  an all-zero quaternion = no bearing). `~route/go` is refused while the node
+  is disabled — it used to reply "driving" and never move.
 - `src/agbot_gps_nav/waypoint_follower.py` — `IDLE → GOTO → APPROACH → ARRIVED`,
   same `update()` signature and 4-tuple return as `MissionFSM`. Turns in place
   above `turn_in_place_deg` (prevents the go-to-goal orbit, where a close
@@ -331,6 +357,15 @@ to it. Restart the sim at the pose you want.
   and looks like a broken tile source. The launch runs `initialize_origin.py`
   off the datum that `gps_nav_node` latches on `~datum_fix`, so the datum still
   has exactly one definition.
+- **Reach M2 driver: `reach_ros_node/`** (vendored 2026-09-22 from a
+  colleague's fork already run on this lab's M2 over USB-Ethernet TCP;
+  `roslaunch reach_ros_node reach_gps_fix.launch` → `/gps/fix` in
+  `navsat_link`). ⚠ It publishes nothing until it has BOTH GGA and GST — enable
+  GST in the Reach's NMEA output. ⚠ Fixed before first use: the colleague's
+  version reported **RTK float as RTK fixed** (status 2), which `min_fix_status:
+  2` would have accepted. `pagslam_mapping/` (their LiDAR mapping) is
+  gitignored, reference only; their heading "solution" was pointing the robot
+  east by phone compass at boot (GPS_plan.md §3.10).
 - `config/gps_datum.yaml` — ⚠ **the single definition of the field origin**,
   read by both `navsat_transform` (as `datum`) and, in sim, by
   `load_robot_description.sh` as `GAZEBO_WORLD_LAT/LON`. Setting them equal

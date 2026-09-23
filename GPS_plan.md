@@ -9,6 +9,10 @@
 > measurement) and §0h (the handoff, and the five defects integration exposed).
 > `CLAUDE.md` has the condensed version of both.
 >
+> **2026-09-22:** multi-waypoint routes (§1.6), the map-frame projection fix
+> (§3.9), the Reach M2 driver chosen and fixed (§5.2), and how the colleague's
+> P-AgSLAM setup handled heading (§3.10).
+>
 > Last updated end of session **2026-09-07 (second session, evening)**. That
 > session found and fixed the reason the transit had been unreliable — §3.1's
 > process-noise starvation — and added the two guards that would have caught it:
@@ -24,10 +28,11 @@
 | **Works today, in simulation** | trailer → GPS transit → arrive on the row axis → hand off → vision nav drives 3 corridors → DONE |
 | **Never run on the robot** | no Reach M2 yet; the whole GPS stack is sim-only |
 | **Datum** | Purdue ACRE `40.494928, −86.996323` — approximate, **read off a map, not surveyed** |
-| **Tests** | `agbot_gps_nav` 161, `agbot_vision_nav` 243, all passing |
+| **Tests** | `agbot_gps_nav` 193, `agbot_vision_nav` 243, all passing |
 | **Phases done** | 0 (sim-first), 2 (dual EKF), 4 (follower + node), 5 (RViz + mapviz, both now actually working), 6 (handoff) |
 | **Phase 3** | *bootstrap* half built and required; full course-over-ground estimator NOT built |
-| **Phase 1** | not started (Reach M2, NTRIP) |
+| **Phase 1** | driver chosen, fixed and bench-tested (`reach_ros_node`, §5.2); no hardware test, no corrections source yet |
+| **Routes** | built: click points in mapviz → queue → Go; save/load; supervisor `route_file:=` (§1.6) |
 | **Part A** | not done — `headland_clearance` 0.75 → 1.0, unrelated vision-nav fix, still open |
 | **Guards that stop a bad run** | heading bootstrap must converge or it logs a red error (§3.1); the handoff is refused if the arrival heading is >12° off (§3.5b); interactive goals are locked out during a mission (§3.7) |
 | **Known cost** | every open GUI eats real-time factor and shows up as `WATCHDOG_ZERO`; see §1.1 |
@@ -172,7 +177,10 @@ roslaunch agbot_bringup agbot_gps_sim.launch rviz:=true
 roslaunch agbot_gps_nav gps_nav.launch sim:=true
 ```
 
-Then give it a goal, three ways:
+Then give it a goal, three ways. ⚠ (a) and a mapviz click now **queue a
+route point** instead of driving (`click_mode: queue`, §1.6) — follow with
+`rosservice call /gps_nav_node/route/go`, or launch with `click_mode:=direct`
+for the old one-click-goes behaviour:
 
 ```bash
 # a) RViz: press "2D Nav Goal" and click.
@@ -219,6 +227,10 @@ time**: `gps_nav_node` latches the datum as a `NavSatFix` on `~datum_fix`, and
 be running. It is deliberately NOT `local_xy_origin: auto` against the robot's
 real fix topic — that anchors the map frame wherever the robot booted, which in
 the sim is the trailer 18 m south of the field.
+
+⚠ **Since 2026-09-22 clicks QUEUE a route (§1.6) and steer nothing until
+Go.** The history below is why that is the default; with `click_mode:=direct`
+it is all true again.
 
 ⚠ **CLICKING THE MAP STEERS THE ROBOT.** `point_click_publisher` fires on
 *every* click on `/gps_nav_node/goal_wgs84`, and clicking is also how you pan
@@ -292,6 +304,56 @@ Both nodes log a full resolved-config block at startup, right before
 robot mid-transit, and `IGNORING goal from ...` means the lock refused one.
 Both are §3.7.
 
+### 1.6 Multi-waypoint routes — click, queue, Go
+
+⚠ **Clicks queue, they do not drive** (`click_mode: queue`, the default since
+2026-09-22). A mapviz click or an RViz 2D Nav Goal APPENDS a point to a pending
+route, drawn in yellow on the mapviz `route` layer (`/gps_nav_node/route`), and
+nothing moves until Go. That also closes the §3.7 hazard at its root: a stray
+click while panning is now a point to undo, never a command.
+
+```bash
+# blank world, as in 1.2, plus the map
+roslaunch agbot_gps_nav mapviz.launch
+# click 3-4 points on the map, then either the operator panel's section 4
+# (Go / Undo / Clear / Save / Load / Pause GPS) or:
+rosservice call /gps_nav_node/route/go
+rosservice call /gps_nav_node/route/undo      # drop the last point
+rosservice call /gps_nav_node/route/clear     # ⚠ while driving this also STOPS
+rosservice call /gps_nav_node/route/save      # -> ~route_file (~/agbot_routes/route.yaml)
+rosservice call /gps_nav_node/route/load
+rostopic echo /gps_nav_node/route_status      # PENDING 3 pts / LEG 2/3 GOTO / DONE 3 pts
+```
+
+- Intermediate points are **pass-through**: no stop, no slow-down, no
+  re-bootstrap. Passed = within `route_pass_radius` (1.0 m) **or** across the
+  plane through the point perpendicular to the incoming leg (§3.2's lesson — a
+  radius alone turns a near miss into an orbit).
+- Only the **last** point latches ARRIVED. If it carries a bearing (a corridor
+  entry from the waypoints file does; a click never does) it gets the full
+  staging → ALIGN → on-axis approach.
+- The heading bootstrap runs on **leg 1 only**, and the route can never
+  advance out of it (it drives straight and can sail past point 1).
+- Routes are stored in **lat/lon** with the waypoints file's schema, so a
+  generated waypoints file loads as a route.
+- `~route/go` is **refused while the node is disabled** (its state after a
+  supervisor handoff) — it used to answer "driving" and never move.
+
+**Route → row mission.** Save a transit route, then:
+
+```bash
+roslaunch agbot_gps_nav gps_vision_mission.launch sim:=true num_rows:=3 \
+  route_file:=~/agbot_routes/route.yaml
+```
+
+The supervisor drives the route's points as via points and appends the
+`waypoint:=` corridor entrance (with its bearing) as the final point, on
+`/gps_nav_node/route_goal`. Blank `route_file` = the single straight leg.
+Measured 2026-09-22, blank world, vision nav stubbed (this laptop has no
+torch/scipy/model): 3 via points → corridor at map (−3, 12) facing north,
+ARRIVED 0.30 m, arrival heading **+0.5°**, handoff, FINISHED. ⚠ The maize-world
+version with real vision nav has **not** been run yet.
+
 ---
 
 ## 2. WHAT EXISTS
@@ -326,6 +388,8 @@ agbot_gps_nav/
   src/agbot_gps_nav/waypoint_follower.py IDLE > HEADING_INIT > GOTO > ALIGN >
                                          APPROACH > ARRIVED / FAILED (pure)
   src/agbot_gps_nav/handoff_fsm.py       TRANSIT > ROW_MISSION > FINISHED (pure)
+  src/agbot_gps_nav/route.py             Route (editable lat/lon list) +
+                                         RouteRunner (walks it) (pure)
   scripts/gps_nav_node.py                rospy: the follower
   scripts/mission_supervisor.py          rospy: the handoff
   scripts/rows_to_waypoints.py           dev tool: world -> waypoints
@@ -338,7 +402,7 @@ agbot_gps_nav/
   launch/gps_nav.launch                  localization + follower
   launch/gps_vision_mission.launch       the whole sequence
   launch/mapviz.launch                   mapviz + initialize_origin (see 1.3)
-  test/                                  161 tests, no ROS needed
+  test/                                  193 tests, no ROS needed
 
 agbot_bringup/
   config/agbot_maize_gps.yaml            maize world with a 20 m headland
@@ -592,6 +656,50 @@ there.
   still and the gyro drifts (§3.1) for that whole window. It is why the
   bootstrap has to exist rather than merely being nice to have.
 
+### 3.9 The map frame is UTM, not true metres — goals were 0.04 % short
+
+Measured 2026-09-22 by calling `navsat_transform`'s `/fromLL` against
+`geo.latlon_to_enu`. robot_localization 2.7.7 has no `use_local_cartesian`, so
+its map frame is UTM about the datum, scaled by **k0 = 0.9996** (it does remove
+the meridian convergence — a point 1 km due north comes back at x = 0.000):
+
+| distance from datum | tangent plane vs `/fromLL` |
+|---|---|
+| 50 m | 2.0 cm |
+| 200 m | 8.0 cm |
+| 500 m | 20 cm |
+| 1 km | 40 cm |
+
+Invisible in the 20 m sim; at field scale it is a real fraction of the 16 cm of
+clearance per side in a row. Goals are now converted with
+`geo.latlon_to_map` / `map_to_latlon`, which reproduce `/fromLL` to 0.1 mm out
+to 2 km (pinned in `test_geo.py` against recorded values). ⚠
+`latlon_to_enu` stays — it is hector's model, correct for **Gazebo world
+coordinates** (`rows_to_waypoints.py`) and for nothing the robot drives to. A
+side effect: in sim, map and Gazebo coordinates differ by the same 0.04 %
+(8 mm at 20 m), so "map coordinates = Gazebo coordinates" is true to that.
+mapviz draws through swri's own local projection; that is display-only.
+
+### 3.10 How the colleague's setup handled heading (P-AgSLAM) — it didn't, by design
+
+`pagslam_mapping/README.md` (kept locally, gitignored — it is LiDAR mapping,
+and this robot has no LiDAR): the checklist is **point the robot east by an
+iPhone compass before boot** and check `yaw_offset` in navsat_transform. Gyro
+zero is then ENU zero. After that, localization came from LiDAR SLAM
+(P-AgSLAM) and a T265, not from GPS heading. So heading was side-stepped, not
+estimated.
+
+The habit is still worth keeping on field days: our EKF also boots at yaw 0, so
+pointing the robot roughly east hands the bootstrap a near-correct start, which
+it then verifies (it does not trust it). Do not depend on it — a phone compass
+beside a metal robot is several degrees off, and the gyro drifts from boot.
+
+Clearpath's magnetometer calibration guide removes the static (hard-iron)
+error; it cannot remove the field of the drive motors, which changes with
+current, and that is exactly the warning. If an absolute heading is ever needed,
+the upgrade path stays a **second Reach M2 as a dual-antenna compass** (§5.3),
+not a magnetometer.
+
 ---
 
 ## 4. THE KNOBS THAT MATTER
@@ -613,6 +721,9 @@ argument overrides the file only when actually passed.
 | `geofence_radius_m` | 200.0 | max distance from the datum |
 | `min_fix_status` | 0 | ⚠ **0 accepts a non-RTK fix.** Correct for sim (hector reports 0 and cannot report anything else). **SET TO 2 BEFORE ANY FIELD RUN** |
 | `use_goal_orientation` | false | make RViz 2D Nav Goal's drag direction the approach bearing |
+| `click_mode` | queue | `queue`: clicks build a route, `~route/go` drives it. `direct`: every click is a goal at once (the old behaviour) |
+| `route_pass_radius` | 1.0 | when an intermediate route point counts as passed (or crossing its plane) |
+| `route_file` | `~/agbot_routes/route.yaml` | where `~route/save` / `~route/load` go |
 
 ---
 
@@ -639,12 +750,18 @@ moving the datum moves them all — re-record anything captured beforehand.
    (INCORS) if there is cell coverage at the field; otherwise a second Emlid as
    a local base on the trailer. **Decide before the first field trip** — without
    corrections you get ~2 m, not 2 cm, and the row-entrance waypoint is useless.
-4. Driver: `nmea_navsat_driver` (apt, **not installed**) for serial, or
-   `nmea_tcp_driver` for TCP. Publishes `sensor_msgs/NavSatFix` on `/gps/fix`.
-   The launch already computes `/navsat/fix` vs `/gps/fix` from `sim:=`.
-5. ✅ Acceptance: `rostopic echo /gps/fix` shows `status.status == 2`
-   (`STATUS_GBAS_FIX`, RTK **fixed**, not float) and `position_covariance`
-   around `0.0004`. Then set `min_fix_status: 2`.
+4. Driver: **`reach_ros_node`** (vendored in this repo, 2026-09-22), the one
+   the colleague already ran on this lab's M2 over **USB-Ethernet TCP**
+   (host `192.168.2.2`, Reach `192.168.2.15:7777`, Position output → TCP
+   server, NMEA). `roslaunch reach_ros_node reach_gps_fix.launch` publishes
+   `/gps/fix` in `navsat_link`. ⚠ **GGA and GST must both be enabled** in the
+   NMEA output — the driver publishes nothing until it has both. Serial via
+   `nmea_navsat_driver` remains the fallback.
+5. ✅ Acceptance: `rostopic echo /gps/fix` shows `status.status == 2` and
+   `position_covariance` around `0.0004`. Then set `min_fix_status: 2`.
+   ⚠ `status == 2` means RTK **fixed** only because of the 2026-09-22 driver
+   fix: the colleague's version reported RTK float (GGA 5) as 2 as well, which
+   would have let a decimetre-to-metre solution through this gate.
 
 ### 5.3 Phase 3 — the full heading estimator (bootstrap only, so far)
 
@@ -700,8 +817,11 @@ test beside `test_exit_clear_back_dates_to_first_sighting`.
   from the waypoints file.
 - **Whether GPS-driven metres should count** toward the autonomy metric in
   `metrics_logger` is undecided. Today the GPS leg is not logged at all.
-- **Multi-waypoint routes** (a saved YAML route walked in sequence) are not
-  built; the supervisor takes exactly one waypoint.
+- **Maize world + real vision nav with `route_file:=`** has not been run —
+  this laptop has no torch/scipy/model. Do it on the machine that has them.
+- **The course-over-ground heading estimator (§5.3)** has a better input
+  available now: `reach_ros_node` publishes `/tcpvel` (VTG, the receiver's own
+  course over ground).
 
 ---
 
