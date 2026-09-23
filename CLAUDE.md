@@ -316,7 +316,7 @@ to it. Restart the sim at the pose you want.
   the robot drives to. `latlon_to_enu`/`enu_to_latlon` = true metres, which is
   hector's plugin model and therefore right ONLY for Gazebo world coordinates
   (`rows_to_waypoints.py`). The tangent
-  plane using the WGS84 meridional **and** prime-vertical radii at the datum
+  plane uses the WGS84 meridional **and** prime-vertical radii at the datum
   latitude (they differ by 0.39 % at Purdue; using one for both is a real bug a
   round-trip test cannot see). No pyproj/geodesy — neither is installed and
   neither is needed. Measured against Vincenty: 1.5 mm at 280 m, 3.7 cm at
