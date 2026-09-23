@@ -35,6 +35,28 @@ CONVENTION. ENU, matching REP-103 and `robot_localization`'s map frame:
   east  = +x, north = +y, and yaw is measured CCW from east.
 That is deliberately NOT the compass convention (CW from north); see
 `bearing_to` for the one place the difference bites.
+
+⚠ TWO FRAMES, AND THEY ARE NOT THE SAME NUMBERS (measured 2026-09-22).
+`latlon_to_enu` is TRUE ground metres. `navsat_transform`'s map frame -- the
+one the EKF, and therefore the robot, lives in -- is NOT: robot_localization
+2.7.7 has no `use_local_cartesian`, so it goes through UTM, which scales every
+distance by k0 = 0.9996. Against `/fromLL` at this datum:
+
+  distance from datum     latlon_to_enu vs /fromLL
+  50 m                    2.0 cm
+  200 m                   8.0 cm
+  500 m                   20 cm
+  1 km                    40 cm
+
+A 0.75 m corridor leaves ~16 cm per side, so at field scale a goal converted
+with the tangent plane lands visibly off the row axis. Hence:
+
+  latlon_to_map / map_to_latlon   the navsat_transform map frame. Use these for
+                                  ANYTHING the robot drives to or reports.
+  latlon_to_enu / enu_to_latlon   the true-metre tangent plane. This is also
+                                  exactly hector's GPS plugin model, so it is
+                                  the right one for GAZEBO WORLD coordinates
+                                  (rows_to_waypoints.py) and nothing else.
 """
 
 import math
@@ -82,6 +104,97 @@ def enu_to_latlon(east, north, datum):
     r_m, r_n = radii_of_curvature(lat0)
     lat = lat0 + math.degrees(float(north) / r_m)
     lon = lon0 + math.degrees(float(east) / (r_n * math.cos(math.radians(lat0))))
+    return lat, lon
+
+
+UTM_K0 = 0.9996
+
+
+def _utm_zone(lon_deg):
+    return int((float(lon_deg) + 180.0) // 6.0) + 1
+
+
+def latlon_to_utm(lat_deg, lon_deg, zone):
+    """(lat, lon) -> (easting, northing) in UTM `zone` (northern hemisphere).
+
+    Snyder's series (USGS PP 1395, eqs. 8-9 to 8-13) -- the same formulation
+    as robot_localization's legacy LLtoUTM. Within a zone it agrees with the
+    GeographicLib projection navsat_transform now uses to well under a
+    millimetre over a field; only DIFFERENCES about a datum are used here, so
+    false easting/northing never matter.
+    """
+    lat = math.radians(float(lat_deg))
+    lon0 = math.radians((zone - 1) * 6.0 - 180.0 + 3.0)
+    lon = math.radians(float(lon_deg))
+    e2 = WGS84_E2
+    ep2 = e2 / (1.0 - e2)
+    sin_lat, cos_lat, tan_lat = math.sin(lat), math.cos(lat), math.tan(lat)
+    n = WGS84_A / math.sqrt(1.0 - e2 * sin_lat * sin_lat)
+    t = tan_lat * tan_lat
+    c = ep2 * cos_lat * cos_lat
+    a = cos_lat * (lon - lon0)
+    m = WGS84_A * ((1.0 - e2 / 4.0 - 3.0 * e2 ** 2 / 64.0 - 5.0 * e2 ** 3 / 256.0) * lat
+                   - (3.0 * e2 / 8.0 + 3.0 * e2 ** 2 / 32.0 + 45.0 * e2 ** 3 / 1024.0)
+                   * math.sin(2.0 * lat)
+                   + (15.0 * e2 ** 2 / 256.0 + 45.0 * e2 ** 3 / 1024.0) * math.sin(4.0 * lat)
+                   - (35.0 * e2 ** 3 / 3072.0) * math.sin(6.0 * lat))
+    easting = UTM_K0 * n * (a + (1.0 - t + c) * a ** 3 / 6.0
+                            + (5.0 - 18.0 * t + t * t + 72.0 * c - 58.0 * ep2)
+                            * a ** 5 / 120.0) + 500000.0
+    northing = UTM_K0 * (m + n * tan_lat * (
+        a * a / 2.0 + (5.0 - t + 9.0 * c + 4.0 * c * c) * a ** 4 / 24.0
+        + (61.0 - 58.0 * t + t * t + 600.0 * c - 330.0 * ep2) * a ** 6 / 720.0))
+    return easting, northing
+
+
+def _map_frame(datum):
+    """(zone, datum easting/northing, cos/sin of the meridian convergence).
+
+    navsat_transform rotates the UTM grid by the convergence at the datum so
+    the map frame's +y is TRUE north (measured: a point 1 km due north of the
+    datum comes back with x = 0.000, where a raw UTM grid would give -4 cm).
+    The convergence is taken numerically -- the grid direction of a small
+    northward step -- so it cannot disagree with the projection in sign.
+    """
+    lat0, lon0 = float(datum[0]), float(datum[1])
+    zone = _utm_zone(lon0)
+    e0, n0 = latlon_to_utm(lat0, lon0, zone)
+    e1, n1 = latlon_to_utm(lat0 + 1e-4, lon0, zone)
+    gamma = math.atan2(e1 - e0, n1 - n0)
+    return zone, e0, n0, math.cos(gamma), math.sin(gamma)
+
+
+def latlon_to_map(lat_deg, lon_deg, datum):
+    """(lat, lon) -> (x, y) in navsat_transform's map frame about `datum`.
+
+    Matches `/fromLL` to 0.1 mm out to 2 km (test_geo.py pins it against values
+    recorded from the running node). This, not `latlon_to_enu`, is where the
+    robot actually goes.
+    """
+    zone, e0, n0, cg, sg = _map_frame(datum)
+    e, n = latlon_to_utm(lat_deg, lon_deg, zone)
+    de, dn = e - e0, n - n0
+    return cg * de - sg * dn, sg * de + cg * dn
+
+
+def map_to_latlon(x, y, datum):
+    """Inverse of `latlon_to_map`, by fixed-point iteration.
+
+    The map frame is within 0.04 % of the tangent plane, so starting from the
+    tangent-plane inverse and correcting by the forward residual converges to
+    sub-millimetre in two or three steps. Cheaper to trust than a second
+    hand-typed series.
+    """
+    x, y = float(x), float(y)
+    ex, ny = x, y
+    lat, lon = enu_to_latlon(ex, ny, datum)
+    for _ in range(8):
+        fx, fy = latlon_to_map(lat, lon, datum)
+        dx, dy = x - fx, y - fy
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            break
+        ex, ny = ex + dx, ny + dy
+        lat, lon = enu_to_latlon(ex, ny, datum)
     return lat, lon
 
 

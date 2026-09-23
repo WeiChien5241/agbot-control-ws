@@ -200,3 +200,53 @@ def test_wrap_angle_takes_the_short_way_across_the_branch_cut():
     """Facing 179 deg with a goal at -179 deg is a 2 deg error, not 358."""
     err = geo.wrap_angle(math.radians(-179) - math.radians(179))
     assert abs(err) == pytest.approx(math.radians(2), abs=1e-9)
+
+
+# ---- navsat_transform's map frame -------------------------------------------
+#
+# Recorded 2026-09-22 from the running navsat_transform_node (robot_localization
+# 2.7.7) by calling /fromLL with the datum below: (lat, lon, map_x, map_y).
+# /fromLL returned 4 decimals, so 1e-3 m is a generous bound on a 0.1 mm match.
+NAVSAT_DATUM = (40.494928, -86.996323)
+FROM_LL = [
+    (40.494928000, -86.995733198, 49.9800, 0.0002),
+    (40.496201560, -86.994654787, 141.3621, 141.3661),
+    (40.499430713, -86.996323000, -0.0000, 499.8002),
+    (40.493387981, -87.001865330, -469.6691, -170.9269),
+    (40.494928000, -86.984526951, 999.6000, 0.0668),
+    (40.503933426, -86.996323000, -0.0000, 999.6008),
+    (40.488560202, -86.987981934, 706.8908, -706.7901),
+    (40.507663596, -87.013005133, -1413.3806, 1413.7831),
+]
+
+
+@pytest.mark.parametrize("lat, lon, x, y", FROM_LL)
+def test_latlon_to_map_matches_navsat_transform_fromLL(lat, lon, x, y):
+    mx, my = geo.latlon_to_map(lat, lon, NAVSAT_DATUM)
+    assert mx == pytest.approx(x, abs=1e-3)
+    assert my == pytest.approx(y, abs=1e-3)
+
+
+@pytest.mark.parametrize("lat, lon, x, y", FROM_LL)
+def test_map_to_latlon_inverts_latlon_to_map(lat, lon, x, y):
+    back = geo.map_to_latlon(*geo.latlon_to_map(lat, lon, NAVSAT_DATUM),
+                             datum=NAVSAT_DATUM)
+    assert back[0] == pytest.approx(lat, abs=1e-10)
+    assert back[1] == pytest.approx(lon, abs=1e-10)
+
+
+def test_tangent_plane_is_NOT_the_map_frame():
+    # The reason latlon_to_map exists: the UTM scale factor puts a 500 m goal
+    # 20 cm short in the frame the robot actually drives in. If this ever
+    # passes with the two equal, one of them has been "simplified" into the
+    # other and the field robot will miss row entrances again.
+    lat, lon = geo.enu_to_latlon(0.0, 500.0, NAVSAT_DATUM)
+    _, north_map = geo.latlon_to_map(lat, lon, NAVSAT_DATUM)
+    assert 500.0 - north_map == pytest.approx(0.2, abs=0.005)
+
+
+def test_map_frame_is_aligned_with_true_north():
+    # navsat_transform removes the meridian convergence; a raw UTM difference
+    # would put a point 1 km due north ~4 cm west.
+    x, _ = geo.latlon_to_map(NAVSAT_DATUM[0] + 0.009, NAVSAT_DATUM[1], NAVSAT_DATUM)
+    assert x == pytest.approx(0.0, abs=1e-3)

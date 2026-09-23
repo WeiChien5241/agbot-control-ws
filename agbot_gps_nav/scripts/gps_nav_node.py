@@ -247,7 +247,7 @@ class GpsNavNode(object):
         goal = (msg.pose.position.x, msg.pose.position.y)
         bearing = (_quaternion_to_yaw(msg.pose.orientation)
                    if self._use_goal_orientation else None)
-        lat, lon = geo.enu_to_latlon(goal[0], goal[1], self._datum)
+        lat, lon = geo.map_to_latlon(goal[0], goal[1], self._datum)
         rospy.loginfo("goal from RViz: map (%.2f, %.2f) = %.7f, %.7f%s",
                       goal[0], goal[1], lat, lon,
                       "" if bearing is None
@@ -267,7 +267,7 @@ class GpsNavNode(object):
                           "message carries x=LONGITUDE, y=latitude -- swapped?",
                           msg.point.x, msg.point.y)
             return
-        goal = geo.latlon_to_enu(lat, lon, self._datum)
+        goal = geo.latlon_to_map(lat, lon, self._datum)
         rospy.loginfo("goal from WGS84: lat %.7f, lon %.7f = map (%.2f, %.2f)",
                       lat, lon, goal[0], goal[1])
         self._accept_goal(goal, hint=self._swap_hint(lat, lon),
@@ -354,7 +354,7 @@ class GpsNavNode(object):
         legal one (|lat| <= 90) cannot be caught by a range check -- this is
         the check that actually names the mistake."""
         try:
-            east, north = geo.latlon_to_enu(lon, lat, self._datum)
+            east, north = geo.latlon_to_map(lon, lat, self._datum)
         except (ValueError, TypeError):
             return None
         if math.hypot(east, north) <= self._geofence_radius_m:

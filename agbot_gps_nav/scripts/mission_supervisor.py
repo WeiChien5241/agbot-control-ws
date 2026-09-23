@@ -53,7 +53,7 @@ class MissionSupervisor(object):
             rospy.logfatal("no waypoint '%s' in %s (have: %s)",
                            wanted, waypoint_file, names)
             raise rospy.ROSInitException("unknown waypoint")
-        self._goal_xy = geo.latlon_to_enu(entry["lat"], entry["lon"], self._datum)
+        self._goal_xy = geo.latlon_to_map(entry["lat"], entry["lon"], self._datum)
         self._bearing = math.radians(entry.get("approach_bearing_deg", 0.0))
         self._waypoint_name = wanted
 
