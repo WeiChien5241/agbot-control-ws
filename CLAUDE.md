@@ -38,11 +38,30 @@ git push -u origin feature/vision-nav-tuning
 
 **What NOT to commit**: `*.pt` model weights (tracked in .gitignore — distribute via Google Drive/shared storage), Gazebo generated world files (`~/.ros/virtual_maize_field/`), build artifacts (`build/`, `devel/`).
 
-**Third-party packages** (`jackal/`, `virtual_maize_field/`) are excluded from this repo via `.gitignore` — they are separate upstream repos cloned alongside the custom packages. To recreate the workspace from scratch:
+**Third-party packages** (`jackal/`, `jackal_simulator/`, `virtual_maize_field/`) are excluded from this repo via `.gitignore` — they are separate upstream repos cloned alongside the custom packages. ⚠ **Corrected 2026-09-22, verified on a from-scratch laptop setup**: the old two-clone version above was missing `jackal_simulator` entirely (it holds `jackal_gazebo`, which `agbot_gazebo.launch` `$(find)`s directly — without it `agbot_bringup` gets abandoned by `catkin build` with "Depends on unknown jobs"), and cloning `virtual_maize_field` with no branch arg gets its **default `ros2-gz` branch** (`ament_python` build type, unbuildable by catkin) instead of the ROS1 classic-Gazebo `main` branch that `simulation.launch` actually is. `jackal_simulator` has no `noetic-devel` branch — `melodic-devel` is the ROS1 one and builds fine under Noetic:
 ```bash
 cd ~/agbot_control_ws/src
 git clone https://github.com/jackal/jackal.git -b noetic-devel
-git clone https://github.com/FieldRobotEvent/virtual_maize_field.git
+git clone https://github.com/jackal/jackal_simulator.git -b melodic-devel
+git clone https://github.com/FieldRobotEvent/virtual_maize_field.git -b main
+```
+
+Then install dependencies. `rosdep` cannot resolve most of these on its own — Noetic hit end-of-life and dropped out of the rosdistro index rosdep queries, so `rosdep install` reports "Cannot locate rosdep definition" for perfectly normal ROS packages (`move_base`, `twist_mux`, `robot_localization`, etc.) even though they're still served from `packages.ros.org` under their `ros-noetic-*` apt names:
+```bash
+sudo apt-get install -y \
+  ros-noetic-move-base ros-noetic-twist-mux ros-noetic-velodyne-description \
+  ros-noetic-hector-gazebo-plugins ros-noetic-robot-localization ros-noetic-nmea-msgs \
+  python3-shapely python3-packaging \
+  ros-noetic-sick-tim ros-noetic-lms1xx ros-noetic-pointgrey-camera-description \
+  ros-noetic-flir-camera-description ros-noetic-interactive-marker-twist-server
+```
+The last five are `jackal_description`'s unconditional `xacro:include`s (accessory URDFs it always parses regardless of `JACKAL_LASER`/etc.) plus the RViz twist-drive marker `agbot_gazebo.launch` starts — none show up in `rosdep`'s own failure list because they're an artifact of running `catkin build` / `roslaunch` and only surface once you actually try it, not from `rosdep install --from-paths src` alone.
+
+Then build and generate the default world (nothing exists at `~/.ros/virtual_maize_field/` until you do):
+```bash
+cd ~/agbot_control_ws && catkin build && source devel/setup.bash
+bash src/agbot_bringup/scripts/generate_small_maize_world.sh
+roslaunch agbot_bringup agbot_gazebo.launch
 ```
 
 ---

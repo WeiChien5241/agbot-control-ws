@@ -1,5 +1,6 @@
 # Third-party ROS packages (clone separately — see CLAUDE.md for sources)
 jackal/
+jackal_simulator/
 virtual_maize_field/
 
 # Lab papers — kept locally, not published to GitHub
