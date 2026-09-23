@@ -18,6 +18,10 @@
 
   <arg name="sim" default="false"/>
   <arg name="waypoint" default="corridor_0"/>
+  <!-- Optional transit route (saved from mapviz clicks with ~route/save): its
+       points are driven first, then the corridor entrance above. Blank = one
+       straight transit leg, as before. -->
+  <arg name="route_file" default=""/>
   <arg name="waypoint_file"
        default="$(find agbot_gps_nav)/config/waypoints_maize_gps.yaml"/>
   <arg name="num_rows" default="3"/>
@@ -118,6 +122,7 @@
   <node name="mission_supervisor" pkg="agbot_gps_nav"
         type="mission_supervisor.py" output="screen">
     <param name="waypoint_file"       value="$(arg waypoint_file)"/>
+    <param name="route_file"          value="$(arg route_file)"/>
     <param name="waypoint"            value="$(arg waypoint)"/>
     <param name="transit_timeout_sec" value="$(arg transit_timeout_sec)"/>
     <param name="mission_timeout_sec" value="$(arg mission_timeout_sec)"/>

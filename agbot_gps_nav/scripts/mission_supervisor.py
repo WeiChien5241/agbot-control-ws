@@ -7,6 +7,13 @@ plumbing around it.
 
     rosrun agbot_gps_nav mission_supervisor.py _waypoint:=corridor_0
 
+ROUTES. With ~route_file set (a route saved from mapviz clicks, see
+gps_nav_node), its points are driven FIRST, as pass-through points, and the
+~waypoint corridor entrance is appended as the final point with its approach
+bearing -- so the transit can go round an obstacle, a ditch or the trailer
+ramp, and still arrive on the row axis. Without it the transit is one straight
+leg, exactly as before.
+
 ⚠ EXACTLY ONE NODE MAY DRIVE AT A TIME, and this node is what guarantees it.
 Both gps_nav_node and vision_nav_node publish /cmd_vel, which twist_mux takes as
 ONE input at priority 1 -- it arbitrates by PRIORITY, not rate, so two
@@ -26,12 +33,14 @@ import sys
 import rospy
 import yaml
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import SetBool
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from agbot_gps_nav import geo  # noqa: E402
+from agbot_gps_nav.route import Route  # noqa: E402
 from agbot_gps_nav.handoff_fsm import (  # noqa: E402
     GPS_ARRIVED, GPS_FAILED, HandoffFSM,
 )
@@ -57,6 +66,18 @@ class MissionSupervisor(object):
         self._bearing = math.radians(entry.get("approach_bearing_deg", 0.0))
         self._waypoint_name = wanted
 
+        # Optional transit route, driven before the corridor entrance. Its own
+        # bearings are dropped: only the LAST point of a route is arrived at,
+        # and that is always the corridor entrance.
+        route_file = os.path.expanduser(str(rospy.get_param("~route_file", "") or ""))
+        self._via = []
+        if route_file:
+            route = Route.load(route_file)
+            self._via = [geo.latlon_to_map(w.lat, w.lon, self._datum)
+                         for w in route.waypoints]
+            rospy.loginfo("route: %d via points from %s, then %s",
+                          len(self._via), route_file, wanted)
+
         self._fsm = HandoffFSM(
             transit_timeout_sec=rospy.get_param("~transit_timeout_sec", 300.0),
             mission_timeout_sec=rospy.get_param("~mission_timeout_sec", 1800.0),
@@ -72,6 +93,8 @@ class MissionSupervisor(object):
 
         self._goal_pub = rospy.Publisher(
             "/gps_nav_node/goal_pose", PoseStamped, queue_size=1, latch=True)
+        self._route_pub = rospy.Publisher(
+            "/gps_nav_node/route_goal", Path, queue_size=1, latch=True)
         self._status_pub = rospy.Publisher("~status", String, queue_size=1, latch=True)
         rospy.Subscriber("/gps_nav_node/status", String, self._gps_status_cb, queue_size=1)
         rospy.Subscriber("/vision_nav_node/mission_done", Bool,
@@ -178,8 +201,25 @@ class MissionSupervisor(object):
             goal.pose.position.x, goal.pose.position.y = self._goal_xy
             goal.pose.orientation.z = math.sin(self._bearing / 2.0)
             goal.pose.orientation.w = math.cos(self._bearing / 2.0)
-            self._goal_pub.publish(goal)
-            rospy.loginfo("goal sent: %s", self._waypoint_name)
+            if self._via:
+                # ~route_goal convention: an ALL-ZERO quaternion is "no
+                # bearing" (pass-through); the last pose's orientation is the
+                # approach bearing.
+                path = Path()
+                path.header = goal.header
+                for x, y in self._via:
+                    via = PoseStamped()
+                    via.header = goal.header
+                    via.pose.position.x, via.pose.position.y = x, y
+                    via.pose.orientation.w = 0.0
+                    path.poses.append(via)
+                path.poses.append(goal)
+                self._route_pub.publish(path)
+                rospy.loginfo("route sent: %d via points -> %s",
+                              len(self._via), self._waypoint_name)
+            else:
+                self._goal_pub.publish(goal)
+                rospy.loginfo("goal sent: %s", self._waypoint_name)
 
         self._status_pub.publish(String(
             data="%s%s" % (tick.state, (" -- " + tick.reason) if tick.reason else "")))
