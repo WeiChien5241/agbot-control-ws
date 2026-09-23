@@ -469,8 +469,18 @@ class GpsNavNode(object):
     def _route_go_srv(self, _req):
         with self._state_lock:
             points = self._route.to_map(self._datum)
+            enabled = self._enabled
         if not points:
             return TriggerResponse(success=False, message="route is empty")
+        # ⚠ A disabled node accepts a goal and then never moves -- it is silent
+        # on cmd_vel by design. Saying "driving" here would be a lie the
+        # operator has no way to catch (found 2026-09-22: a panel Go after a
+        # supervisor handoff reported success and nothing happened).
+        if not enabled:
+            return TriggerResponse(
+                success=False,
+                message="gps_nav_node is DISABLED (a supervisor handed the robot "
+                        "to vision nav); ~set_enabled true first")
         # The on-axis approach is for the LAST point only, and only when it
         # carries a bearing (a click never does; a loaded corridor entry does).
         error = self._start_route(points, source="~route/go")
@@ -679,8 +689,18 @@ class GpsNavNode(object):
     def _control_cb(self, _event):
         now = rospy.Time.now()
         with self._state_lock:
-            if not self._enabled:
-                return          # silent; another node owns the robot
+            enabled = self._enabled
+            if not enabled:
+                # Silent on cmd_vel -- another node owns the robot -- but NOT on
+                # ~route_status: the operator panel paints it, and a frozen
+                # "DONE" there reads as a node that has hung.
+                route_status = "DISABLED | " + self._route_status_text(STATE_IDLE)
+        if not enabled:
+            if route_status != self._last_route_status:
+                self._last_route_status = route_status
+                self._route_status_pub.publish(String(data=route_status))
+            return
+        with self._state_lock:
             reason = self._blocking_reason(now)
             if reason is not None:
                 changed = reason != self._block_reason

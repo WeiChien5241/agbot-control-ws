@@ -18,6 +18,10 @@ block is the part worth reading. roslaunch's own output still goes to the
 terminal this was started from -- that is where the startup config block and
 the detector lines appear.
 
+Section 4 drives the GPS transit's ROUTE (gps_nav_node): click points in
+mapviz -- they queue, nothing moves -- then Go. Undo/Clear edit the queue;
+Save/Load use the route-file field (blank = gps_nav_node's ~route_file).
+
 What it is NOT: a monitoring tool. The debug image
 (rqt_image_view /vision_nav_node/debug/image) and that console are still where
 you read what the robot is thinking. This panel starts things and stops them.
@@ -50,7 +54,7 @@ import time
 import rosgraph
 import rospy
 from std_msgs.msg import String
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Trigger
 
 from agbot_vision_nav.launch_args import cameras_launch_args, mission_launch_args
 
@@ -70,6 +74,7 @@ from python_qt_binding.QtWidgets import (
 )
 
 NODE_NAMESPACE = "/vision_nav_node"
+GPS_NAMESPACE = "/gps_nav_node"
 
 
 class LaunchProcess(object):
@@ -155,11 +160,14 @@ class OperatorPanel(QWidget):
         self._mission = LaunchProcess("vision_nav")
         self._status_text = "(no status yet)"
         self._paused = False
+        self._route_text = "(gps_nav_node not running)"
+        self._gps_paused = False
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_cameras_box())
         layout.addWidget(self._build_mission_box())
         layout.addWidget(self._build_control_box())
+        layout.addWidget(self._build_route_box())
 
         self._status_label = QLabel(self._status_text)
         self._status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -172,6 +180,9 @@ class OperatorPanel(QWidget):
 
         rospy.Subscriber(
             NODE_NAMESPACE + "/status", String, self._status_cb, queue_size=1
+        )
+        rospy.Subscriber(
+            GPS_NAMESPACE + "/route_status", String, self._route_cb, queue_size=1
         )
         timer = QTimer(self)
         timer.timeout.connect(self._refresh)
@@ -273,6 +284,35 @@ class OperatorPanel(QWidget):
         row.addWidget(note)
         return box
 
+    def _build_route_box(self):
+        box = QGroupBox("4. GPS route (gps_nav_node)")
+        form = QFormLayout(box)
+        buttons = QHBoxLayout()
+        for label, handler in (("Go", lambda: self._route_call("go")),
+                               ("Undo", lambda: self._route_call("undo")),
+                               ("Clear", lambda: self._route_call("clear")),
+                               ("Save", lambda: self._route_call("save")),
+                               ("Load", lambda: self._route_call("load"))):
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        self._gps_pause_btn = QPushButton("Pause GPS")
+        self._gps_pause_btn.clicked.connect(self._toggle_gps_pause)
+        buttons.addWidget(self._gps_pause_btn)
+        form.addRow(buttons)
+        self._route_file = QLineEdit()
+        self._route_file.setPlaceholderText(
+            "blank = gps_nav_node ~route_file (~/agbot_routes/route.yaml)")
+        form.addRow("route file", self._route_file)
+        self._route_label = QLabel(self._route_text)
+        form.addRow("route", self._route_label)
+        note = QLabel(
+            "mapviz clicks QUEUE points (nothing moves) -- Go drives them in "
+            "order. Clear while driving STOPS the robot.")
+        note.setWordWrap(True)
+        form.addRow("", note)
+        return box
+
     # ------------------------------------------------------------ actions --
     def _toggle_cameras(self):
         if self._cameras.running():
@@ -347,11 +387,39 @@ class OperatorPanel(QWidget):
         except (rospy.ROSException, rospy.ServiceException) as exc:
             self._log("pause failed (is the node running?): %s" % exc)
 
+    def _route_call(self, action):
+        name = GPS_NAMESPACE + "/route/" + action
+        try:
+            if action in ("save", "load") and self._route_file.text().strip():
+                rospy.set_param(GPS_NAMESPACE + "/route_file",
+                                self._route_file.text().strip())
+            rospy.wait_for_service(name, timeout=2.0)
+            response = rospy.ServiceProxy(name, Trigger)()
+            self._log("route %s -> %s%s" % (
+                action, "" if response.success else "FAILED: ", response.message))
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            self._log("route %s failed (is gps_nav_node running?): %s"
+                      % (action, exc))
+
+    def _toggle_gps_pause(self):
+        target = not self._gps_paused
+        try:
+            rospy.wait_for_service(GPS_NAMESPACE + "/pause", timeout=2.0)
+            response = rospy.ServiceProxy(GPS_NAMESPACE + "/pause", SetBool)(target)
+            self._gps_paused = target
+            self._log("gps pause -> %s" % response.message)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            self._log("gps pause failed (is gps_nav_node running?): %s" % exc)
+
     # -------------------------------------------------------------- status --
     def _status_cb(self, msg):
         # rospy thread: touch only plain attributes, never widgets.
         self._status_text = msg.data
         self._paused = msg.data.startswith("paused")
+
+    def _route_cb(self, msg):
+        # rospy thread: plain attribute only, painted by _refresh.
+        self._route_text = msg.data
 
     def _log(self, text):
         rospy.loginfo("operator_panel: %s", text)
@@ -387,6 +455,8 @@ class OperatorPanel(QWidget):
         )
         self._pause_btn.setText("Resume" if self._paused else "Pause")
         self._status_label.setText("status: %s" % self._status_text)
+        self._route_label.setText(self._route_text)
+        self._gps_pause_btn.setText("Resume GPS" if self._gps_paused else "Pause GPS")
 
     def closeEvent(self, event):
         # Closing the window must not leave a robot driving itself.
