@@ -47,6 +47,9 @@
        and a mapviz click. Blank keeps params.yaml's true, which is right when
        driving this node by hand. gps_vision_mission.launch passes false. -->
   <arg name="external_goals_enabled" default=""/>
+  <!-- queue (params.yaml default) | direct. See params.yaml. -->
+  <arg name="click_mode"         default=""/>
+  <arg name="route_file"         default=""/>
   <arg name="max_approach_attempts" default=""/>
   <arg name="staging_distance"   default=""/>
   <arg name="staging_tolerance"  default=""/>
@@ -96,6 +99,8 @@
     <param name="goal_tolerance"     value="$(arg goal_tolerance)"     if="$(eval arg('goal_tolerance') != '')"/>
     <param name="arrival_cross_tolerance" value="$(arg arrival_cross_tolerance)" if="$(eval arg('arrival_cross_tolerance') != '')"/>
     <param name="external_goals_enabled" value="$(arg external_goals_enabled)" if="$(eval arg('external_goals_enabled') != '')"/>
+    <param name="click_mode"         value="$(arg click_mode)"         if="$(eval arg('click_mode') != '')"/>
+    <param name="route_file"         value="$(arg route_file)"         if="$(eval arg('route_file') != '')"/>
     <param name="max_approach_attempts" value="$(arg max_approach_attempts)" if="$(eval arg('max_approach_attempts') != '')"/>
     <param name="staging_distance"   value="$(arg staging_distance)"   if="$(eval arg('staging_distance') != '')"/>
     <param name="staging_tolerance"  value="$(arg staging_tolerance)"  if="$(eval arg('staging_tolerance') != '')"/>

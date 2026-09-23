@@ -5,8 +5,13 @@
 #   sudo apt install ros-noetic-mapviz ros-noetic-mapviz-plugins ros-noetic-tile-map
 #
 # RUN:
-#   rosrun mapviz mapviz
-#   then File > Open Config and pick this file.
+#   roslaunch agbot_gps_nav mapviz.launch
+#   ⚠ NOT `rosrun mapviz mapviz` + File > Open Config: nothing then publishes
+#   /local_xy_origin and the canvas is blank grey (GPS_plan.md 1.3).
+#
+# CLICKS QUEUE A ROUTE (gps_nav_node ~click_mode: queue, the default): each
+# click appends a point, drawn in yellow by the "route" layer below, and the
+# robot does not move until ~route/go (or Go on the operator panel).
 #
 # ⚠ PLUGIN ORDER MATTERS. tile_map is FIRST on purpose: mapviz draws plugins in
 # list order, so a tile layer listed later paints over everything above it and
@@ -72,6 +77,13 @@ displays:
       position_tolerance: 0.2
       buffer_size: 300
       show_covariance: true
+  - type: mapviz_plugins/path
+    name: route (pending / active)
+    config:
+      visible: true
+      collapsed: false
+      topic: /gps_nav_node/route
+      color: "#ffd000"
   - type: mapviz_plugins/point_click_publisher
     name: click to set a goal
     config:

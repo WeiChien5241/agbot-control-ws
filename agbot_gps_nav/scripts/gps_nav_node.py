@@ -19,8 +19,21 @@ TOPICS
                                                         control directly.
        /move_base_simple/goal     PoseStamped           RViz "2D Nav Goal"
        ~goal_wgs84                PointStamped          x=LONGITUDE, y=latitude
+       ~goal_pose                 PoseStamped           supervisor, one goal
+       ~route_goal                nav_msgs/Path         supervisor, a route
   out  /cmd_vel                   Twist
        ~status                    String (latched)
+       ~route                     nav_msgs/Path (latched) pending/active route
+       ~route_status              String (latched)
+  srv  ~route/go ~route/undo ~route/clear ~route/save ~route/load  (Trigger)
+
+⚠ CLICKS QUEUE, THEY DO NOT DRIVE (~click_mode: queue, the default). A mapviz
+click or RViz 2D Nav Goal APPENDS a point to a pending route, drawn on ~route,
+and nothing moves until ~route/go. That is the multi-waypoint feature, and it
+is also the fix for the 2026-09-07 hijack at its root: clicking is how you pan
+the map, and a stray click is now an extra point to undo, never a command.
+~click_mode: direct restores one-click-goes. ~goal_pose and ~route_goal are the
+supervisor's programmatic channels and always drive immediately.
 
 ⚠ ONE SUBSCRIBER SERVES BOTH GEO GOAL SOURCES. mapviz's point_click_publisher
 emits a PointStamped in a "wgs84" frame with x=longitude and y=latitude -- note
@@ -54,13 +67,16 @@ import math
 import threading
 
 import rospy
+import os
+
 from geometry_msgs.msg import PointStamped, PoseStamped, Twist
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import NavSatFix, NavSatStatus
 from std_msgs.msg import Float32, String
-from std_srvs.srv import SetBool, SetBoolResponse
+from std_srvs.srv import SetBool, SetBoolResponse, Trigger, TriggerResponse
 
 from agbot_gps_nav import geo
+from agbot_gps_nav.route import Route, RouteRunner
 from agbot_gps_nav.waypoint_follower import (
     STATE_ARRIVED, STATE_FAILED, STATE_HEADING_INIT, STATE_IDLE, WaypointFollower)
 
@@ -112,6 +128,18 @@ class GpsNavNode(object):
                 "~arrival_cross_tolerance", 0.35),
             max_approach_attempts=rospy.get_param("~max_approach_attempts", 3),
         )
+        # EVERY goal is driven through the runner -- a single goal is a
+        # one-point route -- so there is one code path, not two.
+        self._runner = RouteRunner(
+            self._follower,
+            pass_radius=rospy.get_param("~route_pass_radius", 1.0))
+        # The operator's pending route, in LAT/LON (see route.py). Kept after
+        # ~route/go so it stays on the map and can be saved or re-run.
+        self._route = Route()
+        self._click_mode = str(rospy.get_param("~click_mode", "queue"))
+        if self._click_mode not in ("queue", "direct"):
+            rospy.logwarn("~click_mode '%s' unknown; using 'queue'", self._click_mode)
+            self._click_mode = "queue"
         # RViz's 2D Nav Goal carries an orientation (you drag to set it), but a
         # plain click sends a meaningless one, and honouring that would impose
         # "arrive facing east" on every casual click plus the staging detour it
@@ -182,6 +210,10 @@ class GpsNavNode(object):
         # the placeholder.
         self._datum_fix_pub = rospy.Publisher(
             "~datum_fix", NavSatFix, queue_size=1, latch=True)
+        self._route_pub = rospy.Publisher("~route", Path, queue_size=1, latch=True)
+        self._route_status_pub = rospy.Publisher(
+            "~route_status", String, queue_size=1, latch=True)
+        self._last_route_status = None
 
         odom_topic = rospy.get_param("~odom_topic", "/odometry/filtered/global")
         fix_topic = rospy.get_param("~gps_fix_topic", "/gps/fix")
@@ -191,17 +223,27 @@ class GpsNavNode(object):
                          queue_size=1)
         rospy.Subscriber("~goal_wgs84", PointStamped, self._wgs84_goal_cb, queue_size=1)
         rospy.Subscriber("~goal_pose", PoseStamped, self._pose_goal_cb, queue_size=1)
+        rospy.Subscriber("~route_goal", Path, self._route_goal_cb, queue_size=1)
 
         rospy.Service("~pause", SetBool, self._pause_srv)
         rospy.Service("~set_enabled", SetBool, self._set_enabled_srv)
+        rospy.Service("~route/go", Trigger, self._route_go_srv)
+        rospy.Service("~route/undo", Trigger, self._route_undo_srv)
+        rospy.Service("~route/clear", Trigger, self._route_clear_srv)
+        rospy.Service("~route/save", Trigger, self._route_save_srv)
+        rospy.Service("~route/load", Trigger, self._route_load_srv)
 
         self._publish_datum_fix()
         self._log_config(cmd_vel_topic, odom_topic, fix_topic)
         self._timer = rospy.Timer(rospy.Duration(1.0 / self._control_rate),
                                   self._control_cb)
         rospy.on_shutdown(self._on_shutdown)
-        rospy.loginfo("gps_nav_node ready; waiting for a goal on "
-                      "/move_base_simple/goal or ~goal_wgs84")
+        self._publish_route()
+        rospy.loginfo("gps_nav_node ready; %s",
+                      "click points in mapviz/RViz to build a route, then "
+                      "call ~route/go" if self._click_mode == "queue" else
+                      "waiting for a goal on /move_base_simple/goal or "
+                      "~goal_wgs84")
 
     def _publish_datum_fix(self):
         """Latch the datum as a NavSatFix, for mapviz's origin. See __init__."""
@@ -248,6 +290,9 @@ class GpsNavNode(object):
         bearing = (_quaternion_to_yaw(msg.pose.orientation)
                    if self._use_goal_orientation else None)
         lat, lon = geo.map_to_latlon(goal[0], goal[1], self._datum)
+        if self._click_mode == "queue":
+            self._queue_point(lat, lon, bearing, "RViz (/move_base_simple/goal)")
+            return
         rospy.loginfo("goal from RViz: map (%.2f, %.2f) = %.7f, %.7f%s",
                       goal[0], goal[1], lat, lon,
                       "" if bearing is None
@@ -266,6 +311,9 @@ class GpsNavNode(object):
             rospy.logwarn("ignoring goal_wgs84 (%.6f, %.6f): out of range. This "
                           "message carries x=LONGITUDE, y=latitude -- swapped?",
                           msg.point.x, msg.point.y)
+            return
+        if self._click_mode == "queue":
+            self._queue_point(lat, lon, None, "mapviz/WGS84 (~goal_wgs84)")
             return
         goal = geo.latlon_to_map(lat, lon, self._datum)
         rospy.loginfo("goal from WGS84: lat %.7f, lon %.7f = map (%.2f, %.2f)",
@@ -293,14 +341,52 @@ class GpsNavNode(object):
                       "%.0f deg", goal[0], goal[1], math.degrees(bearing))
         self._accept_goal(goal, approach_bearing=bearing, source="~goal_pose")
 
+    def _route_goal_cb(self, msg):
+        """A whole route from the supervisor. Map frame, drives immediately.
+
+        A pose whose quaternion is ALL ZEROS carries no approach bearing (an
+        all-zero quaternion is not a rotation, so it cannot be mistaken for
+        "arrive facing east"); any other orientation IS the bearing. In
+        practice only the last pose has one -- RouteRunner ignores the rest.
+        """
+        frame = msg.header.frame_id.lstrip("/")
+        if frame and frame != "map":
+            rospy.logwarn("ignoring route_goal in frame '%s' -- map only.", frame)
+            return
+        points = []
+        for stamped in msg.poses:
+            q = stamped.pose.orientation
+            bearing = (None if (q.x, q.y, q.z, q.w) == (0.0, 0.0, 0.0, 0.0)
+                       else _quaternion_to_yaw(q))
+            points.append((stamped.pose.position.x, stamped.pose.position.y,
+                           bearing))
+        if not points:
+            rospy.logwarn("ignoring an empty route_goal")
+            return
+        rospy.loginfo("route from ~route_goal: %d points, last map (%.2f, %.2f)",
+                      len(points), points[-1][0], points[-1][1])
+        route = Route()
+        for x, y, bearing in points:
+            lat, lon = geo.map_to_latlon(x, y, self._datum)
+            route.append(lat, lon, None if bearing is None else math.degrees(bearing))
+        with self._state_lock:
+            self._route = route
+        self._start_route(points, source="~route_goal")
+
     def _accept_goal(self, goal_xy, hint=None, approach_bearing=None,
                      source="?", external=False):
-        """Common goal entry point.
+        """Common single-goal entry point: a one-point route."""
+        self._start_route([(goal_xy[0], goal_xy[1], approach_bearing)],
+                          hint=hint, source=source, external=external)
+
+    def _start_route(self, points, hint=None, source="?", external=False):
+        """Common goal entry point, for one point or many.
 
         Refuses anything outside the geofence, refuses interactive goals while
         those are locked out, and says so LOUDLY when a goal displaces one
-        already being driven.
+        already being driven. Returns an error string, or None on success.
         """
+        goal_xy = points[-1][:2]
         if external and not self._external_goals_enabled:
             rospy.logwarn(
                 "IGNORING goal from %s: map (%.2f, %.2f). Interactive goals are "
@@ -310,7 +396,7 @@ class GpsNavNode(object):
                 source, goal_xy[0], goal_xy[1])
             self._refuse("IGNORED goal from %s: a supervisor owns this node"
                          % source)
-            return
+            return "a supervisor owns this node"
 
         # ⚠ A goal landing on top of one already being driven is nearly always
         # a mistake, and it used to be indistinguishable from the first goal in
@@ -327,20 +413,166 @@ class GpsNavNode(object):
                 "going somewhere else.",
                 source, previous[0], previous[1], goal_xy[0], goal_xy[1])
 
-        distance = math.hypot(goal_xy[0], goal_xy[1])
-        if distance > self._geofence_radius_m:
-            rospy.logerr("REFUSING goal %.1f m from the datum; geofence is %.1f m. "
-                         "Either the datum is wrong or the goal is.%s",
-                         distance, self._geofence_radius_m,
-                         (" " + hint) if hint else "")
-            self._refuse("REFUSED: goal %.0f m out, geofence %.0f m%s"
-                         % (distance, self._geofence_radius_m,
-                            ("; " + hint) if hint else ""))
-            return
+        for index, point in enumerate(points):
+            distance = math.hypot(point[0], point[1])
+            if distance > self._geofence_radius_m:
+                which = ("goal" if len(points) == 1
+                         else "route point %d/%d" % (index + 1, len(points)))
+                rospy.logerr("REFUSING %s %.1f m from the datum; geofence is "
+                             "%.1f m. Either the datum is wrong or the goal is.%s",
+                             which, distance, self._geofence_radius_m,
+                             (" " + hint) if hint else "")
+                self._refuse("REFUSED: %s %.0f m out, geofence %.0f m%s"
+                             % (which, distance, self._geofence_radius_m,
+                                ("; " + hint) if hint else ""))
+                return "%s is outside the geofence" % which
         with self._state_lock:
-            self._follower.set_goal(goal_xy, approach_bearing=approach_bearing)
+            self._runner.start(points)
             self._block_reason = None
             self._refusal = None
+        self._publish_route()
+        return None
+
+    # ---- the operator's route ---------------------------------------------
+
+    def _route_running(self):
+        return self._runner.active and self._runner.leg_count > 0
+
+    def _queue_point(self, lat, lon, bearing, source):
+        """A click in queue mode: append to the pending route, move nothing."""
+        if not self._external_goals_enabled:
+            rospy.logwarn("IGNORING click from %s: interactive goals are locked "
+                          "out (~external_goals_enabled false) -- a supervisor "
+                          "owns this node.", source)
+            self._refuse("IGNORED click from %s: a supervisor owns this node"
+                         % source)
+            return
+        with self._state_lock:
+            if self._route_running():
+                running = True
+            else:
+                running = False
+                self._route.append(lat, lon,
+                                   None if bearing is None else math.degrees(bearing))
+                count = len(self._route)
+        if running:
+            rospy.logwarn("IGNORING click from %s: a route is being driven. "
+                          "Pause and clear it first.", source)
+            self._refuse("IGNORED click: a route is running")
+            return
+        x, y = geo.latlon_to_map(lat, lon, self._datum)
+        rospy.loginfo("route point %d queued from %s: lat %.7f, lon %.7f = map "
+                      "(%.2f, %.2f)  -- nothing moves until ~route/go",
+                      count, source, lat, lon, x, y)
+        self._publish_route()
+
+    def _route_go_srv(self, _req):
+        with self._state_lock:
+            points = self._route.to_map(self._datum)
+        if not points:
+            return TriggerResponse(success=False, message="route is empty")
+        # The on-axis approach is for the LAST point only, and only when it
+        # carries a bearing (a click never does; a loaded corridor entry does).
+        error = self._start_route(points, source="~route/go")
+        if error is not None:
+            return TriggerResponse(success=False, message=error)
+        rospy.loginfo("ROUTE GO: %d points", len(points))
+        return TriggerResponse(success=True, message="driving %d points" % len(points))
+
+    def _route_undo_srv(self, _req):
+        with self._state_lock:
+            if self._route_running():
+                return TriggerResponse(success=False,
+                                       message="a route is running; pause and clear it")
+            dropped = self._route.undo()
+            count = len(self._route)
+        self._publish_route()
+        if dropped is None:
+            return TriggerResponse(success=False, message="route is empty")
+        return TriggerResponse(success=True,
+                               message="removed %s, %d left" % (dropped.name, count))
+
+    def _route_clear_srv(self, _req):
+        """Clear the route. ⚠ While one is running this also STOPS the robot:
+        clear is an explicit operator action, and a route that no longer
+        exists must not keep driving."""
+        with self._state_lock:
+            was_running = self._route_running()
+            self._route.clear()
+            self._runner.stop()
+        if was_running:
+            self._publish_twist(0.0, 0.0)
+            rospy.logwarn("route CLEARED while running -- stopped")
+        self._publish_route()
+        return TriggerResponse(success=True,
+                               message="cleared%s" % (" and stopped" if was_running else ""))
+
+    def _route_file(self):
+        return os.path.expanduser(str(rospy.get_param(
+            "~route_file", "~/agbot_routes/route.yaml")))
+
+    def _route_save_srv(self, _req):
+        path = self._route_file()
+        with self._state_lock:
+            route = Route(self._route.waypoints)
+        if not len(route):
+            return TriggerResponse(success=False, message="route is empty")
+        try:
+            directory = os.path.dirname(path)
+            if directory and not os.path.isdir(directory):
+                os.makedirs(directory)
+            route.save(path, datum=self._datum)
+        except (IOError, OSError) as exc:
+            return TriggerResponse(success=False, message=str(exc))
+        rospy.loginfo("route saved: %d points -> %s", len(route), path)
+        return TriggerResponse(success=True, message="saved %d points to %s"
+                               % (len(route), path))
+
+    def _route_load_srv(self, _req):
+        path = self._route_file()
+        try:
+            route = Route.load(path)
+        except (IOError, OSError, KeyError, TypeError, ValueError) as exc:
+            return TriggerResponse(success=False, message="%s: %s" % (path, exc))
+        with self._state_lock:
+            if self._route_running():
+                return TriggerResponse(success=False,
+                                       message="a route is running; pause and clear it")
+            self._route = route
+        self._publish_route()
+        rospy.loginfo("route loaded: %d points <- %s", len(route), path)
+        return TriggerResponse(success=True, message="loaded %d points from %s"
+                               % (len(route), path))
+
+    def _publish_route(self):
+        """The pending or active route, map frame, for mapviz and RViz."""
+        with self._state_lock:
+            points = self._route.to_map(self._datum)
+        msg = Path()
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()
+        for x, y, bearing in points:
+            pose = PoseStamped()
+            pose.header = msg.header
+            pose.pose.position.x, pose.pose.position.y = x, y
+            yaw = 0.0 if bearing is None else bearing
+            pose.pose.orientation.z = math.sin(yaw / 2.0)
+            pose.pose.orientation.w = math.cos(yaw / 2.0)
+            msg.poses.append(pose)
+        self._route_pub.publish(msg)
+
+    def _route_status_text(self, state):
+        runner = self._runner
+        if runner.leg_count >= 1:
+            if state == STATE_ARRIVED:
+                return "DONE %d pts" % runner.leg_count
+            if state == STATE_FAILED:
+                return "FAILED leg %d/%d" % (runner.leg, runner.leg_count)
+            if state != STATE_IDLE:
+                return "LEG %d/%d %s" % (runner.leg, runner.leg_count, state)
+        if len(self._route):
+            return "PENDING %d pts" % len(self._route)
+        return "EMPTY"
 
     def _refuse(self, text):
         """Record a refusal so it survives on ~status long enough to be read."""
@@ -401,7 +633,7 @@ class GpsNavNode(object):
                 # Drop the goal: whatever it was, this node is no longer the
                 # one driving toward it, and a stale goal would resume the
                 # instant someone re-enabled the node.
-                self._follower.clear_goal()
+                self._runner.stop()
         if not enabled:
             self._publish_twist(0.0, 0.0, force=True)   # one zero, then silence
         if changed:
@@ -463,13 +695,20 @@ class GpsNavNode(object):
 
             # A blocked tick passes pose=None, which stops the robot without
             # touching the goal: the drive resumes when the gate clears.
-            linear_x, angular_z, state, done = self._follower.update(pose, now.to_sec())
+            linear_x, angular_z, state, done = self._runner.update(pose, now.to_sec())
             distance = self._follower.distance_remaining()
             init_done = (self._last_state == STATE_HEADING_INIT
                          and state != STATE_HEADING_INIT)
             arrived_now = done and self._last_state != STATE_ARRIVED
             failed_now = state == STATE_FAILED and self._last_state != STATE_FAILED
             self._last_state = state
+            route_status = self._route_status_text(state)
+            route_suffix = ("" if self._runner.leg_count <= 1 else
+                            " [leg %d/%d]" % (self._runner.leg, self._runner.leg_count))
+
+        if route_status != self._last_route_status:
+            self._last_route_status = route_status
+            self._route_status_pub.publish(String(data=route_status))
 
         if reason is not None and changed:
             rospy.logwarn("holding: %s", reason)
@@ -537,7 +776,8 @@ class GpsNavNode(object):
             if state == STATE_FAILED:
                 self._set_status("FAILED: goal receding, %.1f m away" % distance)
             else:
-                self._set_status("%s%s %.1f m to goal" % (state, axis, distance))
+                self._set_status("%s%s %.1f m to goal%s"
+                                 % (state, axis, distance, route_suffix))
 
     def _publish_twist(self, linear_x, angular_z, force=False):
         """Publish a command, unless this node has been disabled.
@@ -597,10 +837,17 @@ class GpsNavNode(object):
                                "blank world, NOT on the robot")
             rospy.loginfo("topics:   pose=%s fix=%s cmd=%s",
                           odom_topic, fix_topic, cmd_vel_topic)
-            rospy.loginfo("goals:    ~goal_pose always | RViz + mapviz clicks %s",
-                          "ACCEPTED" if self._external_goals_enabled else
-                          "LOCKED OUT (a supervisor owns this node, so a stray "
-                          "mapviz click cannot redirect the run)")
+            rospy.loginfo("goals:    ~goal_pose/~route_goal always | RViz + "
+                          "mapviz clicks %s",
+                          ("LOCKED OUT (a supervisor owns this node, so a stray "
+                           "mapviz click cannot redirect the run)")
+                          if not self._external_goals_enabled else
+                          "QUEUED into a route (~route/go drives it)"
+                          if self._click_mode == "queue" else
+                          "DRIVE IMMEDIATELY (~click_mode direct)")
+            rospy.loginfo("route:    pass-through radius %.2f m (or crossing the "
+                          "point's plane); file %s",
+                          self._runner.pass_radius, self._route_file())
             rospy.loginfo("enabled:  %s at startup (~set_enabled to hand over; "
                           "disabled = SILENT on cmd_vel, not zeros)",
                           "YES" if self._enabled else "NO")

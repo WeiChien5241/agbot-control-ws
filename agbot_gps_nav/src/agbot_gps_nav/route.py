@@ -86,9 +86,10 @@ class Route(object):
     # a saved route can be read by anything that reads that file.
 
     def to_dict(self, datum=None):
-        spec = {"waypoints": []}
+        spec = {}
         if datum is not None:
             spec["datum"] = [float(datum[0]), float(datum[1]), 0.0]
+        spec["waypoints"] = []
         for wp in self.waypoints:
             entry = {"name": wp.name, "lat": wp.lat, "lon": wp.lon}
             if wp.bearing_deg is not None:

@@ -188,6 +188,23 @@ start_enabled: true
 # its own node.
 external_goals_enabled: true
 
+# ---- multi-waypoint routes ------------------------------------------------------
+# queue: a mapviz click / RViz 2D Nav Goal APPENDS a point to a pending route
+#        (drawn on ~route); nothing moves until ~route/go. Undo, clear, save and
+#        load are services too, and buttons on the operator panel.
+# direct: the old behaviour -- every click is a goal and the robot goes at once.
+# ⚠ queue is the default because clicking is also how you pan the map; in queue
+# mode a stray click is a point to undo, never a command (the 2026-09-07 hijack).
+click_mode: queue
+# An intermediate point counts as passed within this radius OR once the robot
+# crosses the plane through it perpendicular to the incoming leg -- the plane is
+# what stops a near miss from turning into an orbit. It is pass-through: no
+# slow-down, no stop, no re-bootstrap. Only the LAST point is arrived at.
+route_pass_radius: 1.0
+# Where ~route/save and ~route/load read and write. Stored in lat/lon, same
+# schema as the generated waypoints file (which therefore loads as a route).
+route_file: ~/agbot_routes/route.yaml
+
 # ---- topics -----------------------------------------------------------------
 # ⚠ /odometry/filtered/global, NOT /odometry/filtered. The latter is the Jackal's
 # stock odom-frame EKF, which is smooth but not georeferenced.
