@@ -1,0 +1,29 @@
+<!-- Emlid Reach M2 -> sensor_msgs/NavSatFix on /gps/fix.
+
+     The Reach is on USB as a CDC-Ethernet device: give the host an address on
+     its subnet first (the interface name differs per machine, see `nmcli`):
+         sudo ifconfig enxXXXXXXXXXXXX 192.168.2.2 up
+         telnet 192.168.2.15 7777      # should stream $GNGGA / $GNGST ...
+     ReachView / Emlid Flow: Position output -> TCP server, port 7777, NMEA.
+
+     ⚠ GGA AND GST MUST BOTH BE IN THE NMEA OUTPUT. The driver only publishes
+     a fix once it has both (GST carries the covariance). Without GST nothing
+     is ever published, and nothing says why.
+
+     ⚠ frame_gps is navsat_link, not the driver's default "gps": navsat_transform
+     looks the fix's frame up in TF to apply the antenna offset, and an unknown
+     frame silently drops that offset. -->
+<launch>
+  <arg name="host"      default="192.168.2.15"/>
+  <arg name="port"      default="7777"/>
+  <arg name="frame_gps" default="navsat_link"/>
+  <arg name="fix_topic" default="/gps/fix"/>
+
+  <node pkg="reach_ros_node" type="nmea_tcp_driver" name="reach_ros_node" output="screen">
+    <param name="host"      value="$(arg host)"/>
+    <param name="port"      value="$(arg port)"/>
+    <param name="frame_gps" value="$(arg frame_gps)"/>
+    <param name="use_rostime" value="true"/>
+    <remap from="tcpfix" to="$(arg fix_topic)"/>
+  </node>
+</launch>

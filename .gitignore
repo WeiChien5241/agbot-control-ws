@@ -2,6 +2,9 @@
 jackal/
 jackal_simulator/
 virtual_maize_field/
+# Colleague's P-AgSLAM LiDAR mapping package: reference only, not used (no LiDAR on
+# this robot). Upstream: https://github.com/kimkt0408/pagslam_mapping
+pagslam_mapping/
 
 # Lab papers — kept locally, not published to GitHub
 Papers/
