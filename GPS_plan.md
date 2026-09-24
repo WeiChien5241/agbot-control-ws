@@ -697,7 +697,7 @@ beside a metal robot is several degrees off, and the gyro drifts from boot.
 Clearpath's magnetometer calibration guide removes the static (hard-iron)
 error; it cannot remove the field of the drive motors, which changes with
 current, and that is exactly the warning. If an absolute heading is ever needed,
-the upgrade path stays a **second Reach M2 as a dual-antenna compass** (§5.3),
+the upgrade path stays a **second Reach M2 as a dual-antenna compass** (§5.3; mounting and accuracy in §5.3a),
 not a magnetometer.
 
 ---
@@ -794,6 +794,74 @@ at 1 m) could replace it later.
 ⚠ **Do not "fix" the at-rest drift by fusing the IMU's absolute yaw.** That is
 the sim-only signal from §3.1.
 
+#### 5.3a Dual-antenna heading on a Jackal — analysis, 2026-09-23 (nothing built)
+
+The usual advice is to space the two antennas **≥ 0.5 m, ideally 1 m**. The
+Jackal's usable top plate is ~0.33 × 0.43 m, and nothing may widen the robot in
+a 0.75 m row. Both constraints can be met, and the accuracy is not what limits it.
+
+**Accuracy needed vs available.** σ_heading ≈ σ_rel / L. Two Reach M2s, both
+RTK-fixed against the same base (~1 cm each, partly correlated), give σ_rel of
+about 1.5–2 cm once the robot's own multipath is added:
+
+| baseline L | σ_rel 1.5 cm | σ_rel 2 cm |
+|---|---|---|
+| 0.30 m (across the plate) | ~2.9° | ~3.8° |
+| 0.45 m (plate diagonal) | ~1.9° | ~2.5° |
+| 0.60 m (fore-aft boom, below) | ~1.4° | ~1.9° |
+| 1.0 m | ~0.9° | ~1.1° |
+
+The stack's own thresholds are **12°** (`max_arrival_heading_error_deg` and the
+bootstrap tolerance), and the on-axis final leg forces the arrival heading
+anyway (§3.3, §3.5b). The 0.5–1 m advice is for sub-degree work like autosteer
+or surveying. A 0.3 m baseline is already several times better than anything
+here consumes. GPS is also off under the canopy, so the antennas never need
+sky inside a row.
+
+**Geometry: run the baseline fore-aft, never side to side.** Width is the only
+dimension a row constrains. The headland turn is in place, and the chassis
+(508 × 430 mm overall) already sweeps a circle of radius
+√(0.254² + 0.215²) ≈ **0.33 m**. A centred boom ~0.66 m long, with antennas at
+x ≈ ±0.30 m, gives a **~0.60 m baseline** inside that circle: no change to
+width, turn clearance or row clearance.
+- The cameras sit at x = ±0.19 m, low (`agbot_camera.urdf.xacro:171,186`).
+  The antennas overhang them by ~11 cm, so mount the boom above them. Add the
+  antennas to the URDF and check both views in `display.launch.xml` before
+  building, because the segmentation model has never seen a mast.
+- Keep the boom low, since there is no need for sky above the canopy. The
+  M2's helical antennas need no ground plane. Keep them away from the
+  computer and radios, because that multipath dominates σ_rel.
+- Keep it stiff: 5 mm of flex at 0.3 m is already ~0.5°.
+- Without a boom, the plate diagonal gives ~0.45 m centre to centre (~2°).
+
+**Two M2s are not a heading receiver.** As far as known, the Reach M2 has no
+moving-baseline heading output (see the Emlid threads in §7, and re-check on
+current firmware). So heading would come from differencing two independent
+fixes:
+- Both must be RTK **fixed**. Float is decimetres to a metre, which is useless
+  at these baselines. The 2026-09-22 driver fix (§5.2) is what lets the code
+  tell the two apart.
+- Pair fixes by **GPS epoch time from GGA**, not ROS receive time. At 0.4 m/s,
+  50 ms of mismatch is 2 cm, or ~2.5° on 0.45 m.
+- Both receivers need corrections: two NTRIP connections, or one local base.
+
+If hardware is bought for heading, a purpose-built dual-antenna receiver is the
+better buy: a u-blox F9P moving-base pair (e.g. the ArduSimple heading kit),
+a Unicore UM982 or a Septentrio mosaic-H. They resolve the baseline with carrier
+phase, are much better at short L and publish heading directly. Check the
+datasheet at your L. The M2 keeps doing position.
+
+**Probably not needed yet: do these first, in order.**
+1. **Measure the real Jackal's at-rest yaw drift.** Park it 5 min and log the
+   yaw on `/odometry/filtered`. The 17°/min above is the simulator's
+   `rateDrift` parameter, not a measurement.
+2. If it matters, **hold yaw while the wheels report zero motion** (a
+   zero-velocity update). That removes the at-rest drift with no hardware.
+3. Build the course-over-ground estimator above. `/tcpvel` from
+   `reach_ros_node` is a ready input (§5.5).
+4. Dual antenna only if a gap remains, e.g. turning in place toward a goal
+   before the robot has driven anywhere.
+
 ### 5.4 Part A — `headland_clearance` 0.75 → 1.0 (unrelated, still open)
 
 From the 2026-07-29 field run: after the exit fires the robot does not drive far
@@ -844,7 +912,7 @@ test beside `test_exit_clear_back_dates_to_first_sighting`.
 - **Publish to `/cmd_vel`**, never the controller/teleop topic, so twist_mux
   keeps the joystick (priority 9-10) above autonomy (priority 1).
 - **One Reach M2**, heading from course-over-ground. A second M2 as a
-  dual-antenna compass is a documented fallback, not the v1 design.
+  dual-antenna compass is a documented fallback, not the v1 design (§5.3a).
 - **The final waypoint sits on the row axis, a few metres out**, so driving that
   last leg physically forces the arrival heading. This is what makes a cheap
   heading estimate sufficient — and §3.2/§3.3 are what make it actually work.
