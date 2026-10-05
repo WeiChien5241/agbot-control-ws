@@ -124,7 +124,7 @@ parse_maps = {
         ("latitude_direction", str, 3),
         ("longitude", convert_longitude, 4),
         ("longitude_direction", str, 5),
-        ("fix_type", int, 6),
+        ("fix_type", safe_int, 6),     # empty (no satellites) -> 0 -> NO_FIX
         ("num_satellites", safe_int, 7),
         ("hdop", safe_float, 8),
         ("altitude", safe_float, 9),
