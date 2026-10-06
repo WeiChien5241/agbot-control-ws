@@ -421,9 +421,97 @@ Housekeeping:
   than the latest odom→base_link on TF, so they use the latest one (ms old).
   Harmless, and already listed under "Not bugs" in CLAUDE.md.
 
-### Next
-1. Turn off Base output (and GSA/GSV/ZDA/EBP in Position streaming 1) on `Reach:46:A2`.
-2. ~~Redo Stage 5~~ done, PASS. Find out why RTK falls to float when the robot starts moving (Reach logging on).
-3. ~~Stage 7~~ first leg PASS. Next: repeat from a 90° wrong start heading, try `goal_tolerance:=0.15`, then a 2–3 point route.
-4. Heading: estimate the gyro bias at rest (both IMUs), then revisit dual-antenna (GPS_plan).
-5. Optional: stop the Velodyne drivers at boot on this robot.
+### Plan for 10/7
+
+**Status going in:** NTRIP RTK works on one Reach (`Reach:46:A2`), no base
+needed. Stage 5 (localization) and Stage 7 (one GPS-driven leg, about 8 m,
+stopped 0.29 m from the goal by EKF and 0.50 m by raw GPS) both PASS. Heading
+converges within about 2–3 m of straight driving. Open issues: RTK
+occasionally drops to float (1–2 s flickers, and once about 2 min right after
+starting to drive), and nothing is in place yet for heading at rest.
+
+**Before going out (5 min)**
+1. Emlid Flow, `Reach:46:A2`: turn **Base output off**; turn **GSA/GSV/ZDA/EBP
+   off** in Position streaming 1 (keep GGA, GST, RMC, VTG); turn **Logging on**
+   (position + raw + corrections). Check GPS AR mode = fix-and-hold.
+2. iPhone hotspot on, "Maximize Compatibility" on. Keep the phone near the
+   robot but not over the antenna.
+3. If you want the recovered Stage 7 bag analysed: `rosbag reindex
+   ~/bags/stage7_*.bag.active`, rename it to `.bag`, and copy it to the laptop.
+
+**Startup on the Jackal (one tmux pane each)**
+```bash
+cd ~/agbot_control_ws && source devel/setup.bash
+ip -br addr | grep enx                    # enxca6d34048f2b for this Reach
+sudo ip addr add 192.168.2.2/24 dev enxca6d34048f2b && sudo ip link set enxca6d34048f2b up
+ping -c2 192.168.2.15
+rosnode list | grep -E "reach|gps_nav|ekf_map|navsat"   # nothing left over
+roslaunch reach_ros_node reach_gps_fix.launch             # pane 1
+rostopic echo -n1 /gps/fix | grep -A1 "status:"           # status: 2 before going on
+```
+Do NOT also start `gps_localization.launch`; `gps_nav.launch` brings its own.
+
+**Recording, every test (pane 2).** Stop with **Ctrl-C** in this pane, never a
+plain `kill`, or the bag is left as `.bag.active`.
+```bash
+rosbag record -O ~/bags/stage7_$(date +%H%M).bag /gps/fix /odometry/gps \
+  /odometry/filtered/global /odometry/filtered /jackal_velocity_controller/odom \
+  /imu/data /gx5/imu/data /cmd_vel /gps_nav_node/status /tf /tf_static
+```
+NMEA in its own pane 3 (it died after 26 s on 10/6; watch whether it exits):
+`nc 192.168.2.15 7777 > ~/bags/nmea_$(date +%H%M).log`
+
+**Navigation (pane 4)**
+```bash
+roslaunch agbot_gps_nav gps_nav.launch datum_file:=$HOME/lab_datum.yaml \
+  min_fix_status:=2 click_mode:=direct linear_x_cruise:=0.3 \
+  heading_init_distance:=3.0 heading_init_max_distance:=6.0 \
+  goal_tolerance:=0.15
+```
+Goal (x = LONGITUDE, y = latitude). Joystick to the spot first and read
+`rostopic echo -n1 /gps/fix`, then drive back:
+```bash
+rostopic pub -1 /gps_nav_node/goal_wgs84 geometry_msgs/PointStamped \
+  '{header: {frame_id: wgs84}, point: {x: <LON>, y: <LAT>}}'
+```
+Stop: release the deadman, or `rosservice call /gps_nav_node/pause "data: true"`.
+
+**Tests, in order**
+- **A. Repeat of 10/6 with `goal_tolerance:=0.15`.** Same goal, same start.
+  Pass: ARRIVED, and raw `/gps/fix` within about 0.25 m of the goal (10/6:
+  0.50 m at 0.3 tolerance). Watch for orbiting or creeping near the goal. If it
+  circles, go back to 0.3.
+- **B. Bad start heading.** Same goal, but start the robot pointing about **90°
+  away** from it, with 6 m of clear ground ahead in that direction. Pass:
+  `heading bootstrap converged` (not a `logerr` about the backstop), then it
+  turns and arrives. Note how far the bootstrap drove. Optionally repeat at
+  about 180°.
+- **C. Longer leg, 20–30 m**, at `linear_x_cruise:=0.4` (the default). Pass:
+  arrives; no `HOLD fix status` mid-leg, or if there is one, it resumes and
+  the NMEA log says why.
+- **D. 2–3 point route.** Relaunch **without** `click_mode:=direct` (the
+  default `queue`), so goals are appended and nothing moves until go:
+  ```bash
+  rostopic pub -1 /gps_nav_node/goal_wgs84 ...   # point 1
+  rostopic pub -1 /gps_nav_node/goal_wgs84 ...   # point 2 (and 3)
+  rostopic echo -n1 /gps_nav_node/route          # check the queue
+  rosservice call /gps_nav_node/route/go
+  ```
+  Pass: passes through the intermediate points (within `route_pass_radius`
+  1.0 m) without stopping, and ARRIVES at the last one.
+- **E. (if time) Parked 5-min bag at a fresh spot** with the NMEA log running,
+  to see whether the float flickers follow the location (sky view) or happen
+  everywhere.
+
+**Afterwards (laptop):** copy back every `stage7_*.bag` and `nmea_*.log`.
+Analyse arrival error vs raw GPS, bootstrap distance from the 90° start, and
+whether every float/HOLD lines up with GGA quality 5 and a correction-age jump.
+
+**Longer-term (not tomorrow)**
+- Heading at rest: estimate gyro bias while parked (both IMUs; the Jackal IMU
+  reads +0.10°/s, the GX5 −0.07°/s), then revisit a dual antenna (GPS_plan §5.3).
+- Make the Reach driver log fix-quality transitions (`RTK fixed -> float (GGA
+  5), age 0.4 s`) so the terminal shows them live; needs a bundle to the robot.
+- Survey a real field datum with this same NTRIP setup before saving any field
+  waypoint (`gps_datum.yaml` is still the TODO placeholder).
+- Optional: stop the leftover Velodyne drivers at boot.
