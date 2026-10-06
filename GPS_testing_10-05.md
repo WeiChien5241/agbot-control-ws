@@ -296,7 +296,7 @@ much sharper once the robot moves (1 cm position noise over 1 m of travel is
 about 0.6°), but there is still no absolute heading at boot and the drift at
 rest is still unbounded.
 
-### Stage 5, localization on real data: ran, but GPS fusion is NOT confirmed
+### Stage 5, first attempt: dead reckoning only (driver was stopped)
 
 `gps_localization.launch datum_file:=~/lab_datum.yaml` (datum = 10/5's single
 fix) started cleanly. `tf_echo map base_link` while joysticking about 6.7 m
@@ -313,20 +313,66 @@ forward and back (not perfectly straight):
 
 `navsat_transform`'s "Transform world frame pose" log line does **not** prove a
 fix arrived: with `wait_for_datum` the transform comes from the datum alone.
-The likely cause is that `/gps/fix` was not being published at that moment
-(driver stopped, or the `ip addr` was lost). Recheck **before** driving:
-```bash
-rostopic hz /gps/fix               # 1 Hz
-rostopic echo -n1 /odometry/gps    # should be near (-3, 3) here, NOT (0, 0)
-rostopic echo -n1 /odometry/filtered/global
-```
-Then redo Stage 5 with a bag (`/gps/fix /odometry/gps /odometry/filtered/global
-/odometry/filtered /tf /tf_static`), ideally driving out and back to a marked
-start point so the end position has a ground truth.
+Confirmed: the Reach driver had been stopped, so `/gps/fix` was silent and
+`/odometry/gps` never published. After relaunching it, `/odometry/gps` read
+`(−3.08, 3.98)`, as predicted.
+
+### Stage 5 rerun with GPS fused (`stage5_rtk_1553.bag`, 252 s): PASS, with one RTK caveat
+
+Parked ~75 s, then about 13 m straight out at 0.5 m/s, back in reverse to the
+tape, a square at 0.4 m/s, and back to the tape. The bag is on the laptop
+(`src/stage5_rtk_1553.bag`), not committed.
+
+**Return to the tape (GPS-measured map position):**
+
+| | map x, y (m) | off the start |
+|---|---|---|
+| start, parked | (−3.066, 3.951) | |
+| far end of the line | (−0.935, −8.855) | 12.98 m away |
+| back after the line | (−3.158, 3.881) | **11.5 cm** (RTK float, see below) |
+| back after the square | (−3.087, 3.937) | **2.5 cm** (RTK fixed) |
+
+Part of each residual is how precisely the robot was driven back onto the tape.
+
+**Heading: converges from any start within about 1.5 m of driving.** The map
+yaw at power-up is arbitrary, and it also drifted 1.5° → 16° while parked
+(~6.7°/min). The EKF heading compared against GPS course over ground on
+straight segments:
+
+| time after starting to drive | heading error |
+|---|---|
+| 0.6 s | 107° |
+| 1.6 s | 73° |
+| 2.6 s | 17° |
+| 3.6 s (≈1.7 m) onward | **within ±5°, typically 0–3°**, on every later straight (out, reverse, all four sides of the square) |
+
+The `0.3` yaw process noise from the sim A/B (2026-09-07) behaves the same on
+hardware. While the robot is moving at walking pace with RTK, **heading is
+solved**. At boot and at rest it is not (unbounded 6–7°/min drift). The
+bootstrap (`heading_init_distance`) remains required before any GPS-steered
+leg, and 2–3 m of straight driving is enough here.
+
+⚠ **RTK dropped to FLOAT the moment the robot started moving, and stayed float
+for about 2 minutes.** `/gps/fix` was status 2 while parked, then status 1
+from t = 87 s (first second of motion) to t ≈ 209 s. It came back to status 2
+part-way through the square, while moving. Two consequences:
+- With `min_fix_status:=2`, Stage 7 would have refused to drive for those
+  2 minutes. That is correct behaviour, but it means fix continuity is now the
+  thing to fix.
+- The covariance reported in float stayed at 1–4e-4 m² (σ 1–2 cm, from GST).
+  That is optimistic for float, so the EKF trusts float fixes as much as fixed
+  ones.
+
+Not yet known why. Candidates: someone walking next to the antenna and
+blocking sky at the start, the antenna or its housing vibrating, the phone
+hotspot dropping corrections while carried, or the Reach's AR settings. Next
+time, turn on the Reach's own **logging (position + raw + corrections)** in
+Emlid Flow, watch the solution and "age of corrections" while driving, and
+check GPS AR mode (fix-and-hold) and the elevation mask.
 
 ### Next
 1. Turn off Base output (and GSA/GSV/ZDA/EBP in Position streaming 1) on `Reach:46:A2`.
-2. Redo Stage 5 with `/odometry/gps` confirmed (above).
+2. ~~Redo Stage 5~~ done, PASS. Find out why RTK falls to float when the robot starts moving (Reach logging on).
 3. Stage 7, the GPS-driven leg: `min_fix_status:=2`, open ground, someone on the deadman, phone near the robot.
 4. Heading: estimate the gyro bias at rest (both IMUs), then revisit dual-antenna (GPS_plan).
 5. Optional: stop the Velodyne drivers at boot on this robot.
