@@ -370,9 +370,60 @@ time, turn on the Reach's own **logging (position + raw + corrections)** in
 Emlid Flow, watch the solution and "age of corrections" while driving, and
 check GPS AR mode (fix-and-hold) and the elevation mask.
 
+### Stage 7, first GPS-driven leg: PASS
+
+The robot drove itself to a lat/lon goal under RTK, about 8 m, with someone on
+the deadman.
+
+```bash
+roslaunch agbot_gps_nav gps_nav.launch datum_file:=$HOME/lab_datum.yaml \
+  min_fix_status:=2 click_mode:=direct linear_x_cruise:=0.3 \
+  heading_init_distance:=3.0 heading_init_max_distance:=6.0
+rostopic pub -1 /gps_nav_node/goal_wgs84 geometry_msgs/PointStamped \
+  '{header: {frame_id: wgs84}, point: {x: -86.92031549666666, y: 40.422157911666666}}'
+```
+The goal was taken by joysticking to the spot and reading `/gps/fix`, then
+driving back.
+
+| t after goal (s) | event |
+|---|---|
+| 0 | goal → map (−1.99, −5.45), 7.9 m away; `HEADING_INIT` (straight, no steering) |
+| 10.6 | `heading bootstrap converged: yaw vs course driven = -7.2 deg`, after the 3.0 m minimum |
+| 10.6 → 28.5 | `GOTO`, then `APPROACH` for the last 2 m at 0.15 m/s |
+| 28.5 | `ARRIVED (0.29 m from goal)` by the EKF pose |
+
+Raw `/gps/fix` after it stopped: **0.50 m from the goal** (0.50 m N, 0.05 m E).
+The planner stops as soon as it enters `goal_tolerance: 0.3` m, so it
+always lands about 0.3 m short along the approach. The remaining ~0.2 m is the
+EKF pose vs the raw fix, plus coasting. With RTK, `goal_tolerance` can be
+lowered (try `0.15`) to land closer.
+
+Observed while parked after arrival: **RTK flickered to float for 1–2 s at a
+time** (`HOLD fix status 1 below required 2` at +72 s, +90 s, +97 s). The
+gate held the robot and released it each time, as designed. The NMEA from this
+spot shows 16 satellites and HDOP 2.3, against 20–26 satellites and HDOP 1.1
+earlier, so the geometry here was weaker. The final `HOLD GNSS fix stale` is
+the Reach driver being stopped with Ctrl-C (expected).
+
+Housekeeping:
+- **The bag was lost as `stage7_*.bag.active`** because `rosbag record` was
+  not stopped cleanly. Recover it with `rosbag reindex <file>.bag.active`, then
+  rename it to `.bag`. Next time, stop it with Ctrl-C in its own pane, or with
+  `kill -INT`.
+- `nmea_1620.log` holds only 26 s (16:20:25–16:20:50, all GGA quality 4,
+  correction age 0.4 s). `nc` stopped long before the 16:24 run. Run it in its
+  own pane to see why, or use the Reach's own logging.
+- The traceback at Ctrl-C (`publish() to a closed topic` in
+  `gps_nav_node._publish_twist`) is a harmless shutdown race.
+- `Transform from odom to base_link was unavailable for the time requested.
+  Using latest instead`, every ~2 s: `navsat_transform`/`ekf_map` look the
+  transform up at the GPS message's own timestamp, which is a few ms newer
+  than the latest odom→base_link on TF, so they use the latest one (ms old).
+  Harmless, and already listed under "Not bugs" in CLAUDE.md.
+
 ### Next
 1. Turn off Base output (and GSA/GSV/ZDA/EBP in Position streaming 1) on `Reach:46:A2`.
 2. ~~Redo Stage 5~~ done, PASS. Find out why RTK falls to float when the robot starts moving (Reach logging on).
-3. Stage 7, the GPS-driven leg: `min_fix_status:=2`, open ground, someone on the deadman, phone near the robot.
+3. ~~Stage 7~~ first leg PASS. Next: repeat from a 90° wrong start heading, try `goal_tolerance:=0.15`, then a 2–3 point route.
 4. Heading: estimate the gyro bias at rest (both IMUs), then revisit dual-antenna (GPS_plan).
 5. Optional: stop the Velodyne drivers at boot on this robot.
