@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>agbot_nav</name>
+  <version>0.0.1</version>
+  <description>LiDAR transit for P-AgBot: 2D map (slam_toolbox) + AMCL + move_base on the horizontal 3D Velodyne, to drive trailer -> row entrance -> trailer around the camera-driven in-row mission.</description>
+  <maintainer email="weichien241@gmail.com">weichien241</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>actionlib</exec_depend>
+  <exec_depend>move_base_msgs</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>map_server</exec_depend>
+  <exec_depend>amcl</exec_depend>
+  <exec_depend>move_base</exec_depend>
+  <exec_depend>global_planner</exec_depend>
+  <exec_depend>dwa_local_planner</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+
+  <export>
+    <!-- models/: the trailer stand-in and the tall maize variants -->
+    <gazebo_ros gazebo_model_path="${prefix}/models"/>
+  </export>
+</package>

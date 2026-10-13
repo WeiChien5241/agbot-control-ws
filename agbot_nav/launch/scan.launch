@@ -1,0 +1,13 @@
+<launch>
+  <!-- Horizontal Velodyne -> 2D /scan (config/scan.yaml). Shared by mapping,
+       localization and the move_base obstacle layer. -->
+  <arg name="cloud_topic" default="/ns1/velodyne_points"/>
+  <arg name="scan_topic"  default="/scan"/>
+
+  <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node"
+        name="velodyne_to_scan" output="screen">
+    <remap from="cloud_in" to="$(arg cloud_topic)"/>
+    <remap from="scan"     to="$(arg scan_topic)"/>
+    <rosparam file="$(find agbot_nav)/config/scan.yaml" command="load"/>
+  </node>
+</launch>

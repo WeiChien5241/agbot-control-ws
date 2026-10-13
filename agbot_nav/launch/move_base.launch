@@ -1,0 +1,19 @@
+<launch>
+  <!-- move_base with GlobalPlanner + DWA. Publishes /cmd_vel, which twist_mux
+       takes at autonomy priority, so it must not have a goal while vision nav
+       is enabled. move_base is silent without a goal (one zero on finish). -->
+  <!-- mapping:=true swaps the static-map global costmap for a rolling one
+       (config/global_costmap_mapping.yaml explains why). -->
+  <arg name="mapping" default="false"/>
+  <arg name="global_costmap" value="global_costmap_mapping" if="$(arg mapping)"/>
+  <arg name="global_costmap" value="global_costmap" unless="$(arg mapping)"/>
+
+  <node pkg="move_base" type="move_base" name="move_base" output="screen" respawn="false">
+    <rosparam file="$(find agbot_nav)/config/costmap_common.yaml" command="load" ns="global_costmap"/>
+    <rosparam file="$(find agbot_nav)/config/costmap_common.yaml" command="load" ns="local_costmap"/>
+    <rosparam file="$(find agbot_nav)/config/$(arg global_costmap).yaml" command="load"/>
+    <rosparam file="$(find agbot_nav)/config/local_costmap.yaml"  command="load"/>
+    <rosparam file="$(find agbot_nav)/config/move_base.yaml"      command="load"/>
+    <remap from="odom" to="/odometry/filtered"/>
+  </node>
+</launch>

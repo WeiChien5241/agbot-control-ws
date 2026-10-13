@@ -1,0 +1,17 @@
+<launch>
+  <!-- Spawn the trailer stand-in (models/agbot_trailer) into a running sim.
+       Pose is the trailer CENTRE; its long axis points along yaw (the
+       trailer's heading), so its rear is 2.0 m behind that.
+
+       Sim layout (LIDAR_notes.md): the real field rotated 90 deg so it fits
+       the gps maize world, whose rows run along +y. Trailer south of the
+       field heading WEST (real: west of the field heading north); the robot
+       starts at the ramp foot, behind the trailer, facing it. -->
+  <arg name="x"   default="6.5"/>
+  <arg name="y"   default="-16.0"/>
+  <arg name="yaw" default="3.14159"/>
+
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_trailer"
+        args="-sdf -file $(find agbot_nav)/models/agbot_trailer/model.sdf
+              -model agbot_trailer -x $(arg x) -y $(arg y) -z 0.2 -Y $(arg yaw)"/>
+</launch>

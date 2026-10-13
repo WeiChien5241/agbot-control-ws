@@ -1,0 +1,17 @@
+<launch>
+  <!-- Everything the LiDAR transit needs: scan + map + AMCL + move_base. -->
+  <arg name="map_file"    default="$(find agbot_nav)/maps/sim_gps_tall.yaml"/>
+  <arg name="cloud_topic" default="/ns1/velodyne_points"/>
+  <arg name="initial_x"   default="0.0"/>
+  <arg name="initial_y"   default="0.0"/>
+  <arg name="initial_yaw" default="0.0"/>
+
+  <include file="$(find agbot_nav)/launch/localization.launch">
+    <arg name="map_file"    value="$(arg map_file)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="initial_x"   value="$(arg initial_x)"/>
+    <arg name="initial_y"   value="$(arg initial_y)"/>
+    <arg name="initial_yaw" value="$(arg initial_yaw)"/>
+  </include>
+  <include file="$(find agbot_nav)/launch/move_base.launch"/>
+</launch>

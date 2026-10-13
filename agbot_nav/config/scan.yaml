@@ -1,0 +1,44 @@
+# pointcloud_to_laserscan: the horizontal Velodyne -> a 2D /scan for
+# slam_toolbox, AMCL and the move_base obstacle layer.
+#
+# Heights are in base_link, which sits ~0.14 m above flat ground on the Jackal.
+# The band is therefore ~0.25-1.35 m above ground:
+#   - min 0.10 keeps the ground and short weeds out. A weed that becomes a
+#     wall in the map is a wall for the planner too (GPS_research.md). Ground
+#     returns are also why the floor cannot go lower: the sim already shows
+#     the ground falling ~2 deg with range (LIDAR_notes.md), and a robot
+#     pitched nose-down sees the ground ahead RISE into a low band.
+#   - max 1.20 still catches the sim maize (~0.63 m tall) and the trailer; real
+#     corn is taller, which only adds returns.
+target_frame: base_link
+transform_tolerance: 0.05
+min_height: 0.10
+max_height: 1.20
+
+angle_min: -3.14159
+angle_max: 3.14159
+# ⚠ NOT 0.0035. pointcloud_to_laserscan sizes the scan with
+# ceil(span/inc) and slam_toolbox (Karto) expects round(span/inc); when they
+# differ Karto drops EVERY scan ("LaserRangeScan contains 1796 range
+# readings, expected 1795") and the map never builds. 6.28318/0.003491 =
+# 1799.8, so both give 1800. Keep the fractional part above .5 if you change
+# it.
+angle_increment: 0.003491   # ~0.2 deg, the VLP-16's own horizontal step
+scan_time: 0.1            # 10 Hz
+range_min: 0.45           # inside this is the robot and its own housing
+range_max: 40.0
+# A beam with no return is filled with range_max + inf_epsilon = 39 m: past
+# slam_toolbox's max_laser_range (30) and below the scan's range_max (40), so
+# slam_toolbox raytraces it as FREE out to 30 m. It skips inf beams and any
+# reading >= range_max (the default +1 = 41 m) entirely.
+# ⚠ This does NOT make the map bigger: Karto sizes the grid from the bounding
+# box of real returns only, so a map built in open ground covers little more
+# than the corn (~12 x 17 m from the trailer side, measured 2026-10-13). That
+# is fixed by padding the SAVED map (scripts/pad_map.py) and, while mapping,
+# by a rolling global costmap (global_costmap_mapping.yaml).
+# AMCL ignores beams at/over its laser_max_range (30); the costmap only marks
+# within obstacle_range and clears along the beam.
+use_inf: false
+inf_epsilon: -1.0
+
+concurrency_level: 1

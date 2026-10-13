@@ -1,0 +1,20 @@
+# Shared by the global and local costmap.
+# Jackal is 0.508 x 0.430 m over the wheels.
+footprint: [[-0.26, -0.22], [-0.26, 0.22], [0.26, 0.22], [0.26, -0.22]]
+footprint_padding: 0.03
+transform_tolerance: 0.5
+
+obstacles_layer:
+  observation_sources: scan
+  scan:
+    topic: /scan
+    data_type: LaserScan
+    sensor_frame: base_link
+    marking: true
+    clearing: true
+    obstacle_range: 4.0
+    raytrace_range: 6.0
+
+inflater_layer:
+  inflation_radius: 0.45
+  cost_scaling_factor: 6.0

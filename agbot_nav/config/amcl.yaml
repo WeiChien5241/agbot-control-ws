@@ -1,0 +1,48 @@
+# AMCL on the slice from scan.yaml. Started from jackal_navigation's
+# amcl.launch; lines with a comment differ.
+odom_model_type: diff-corrected   # "diff" has a known alpha bug; the
+                                  # corrected model needs its own alphas below
+odom_alpha1: 0.1    # rot noise from rot
+odom_alpha2: 0.1    # rot noise from trans
+odom_alpha3: 0.1    # trans noise from trans
+odom_alpha4: 0.1    # trans noise from rot
+odom_frame_id: odom
+base_frame_id: base_link
+global_frame_id: map
+tf_broadcast: true
+
+gui_publish_rate: 10.0
+laser_max_beams: 180       # of 1800; sub-sampled evenly
+laser_min_range: 0.45
+laser_max_range: 30.0      # matches slam_toolbox's max_laser_range
+# ⚠ BEAM, not likelihood_field (measured 2026-10-13, sim corridor entrance,
+# AMCL seeded at truth / +0.6 m along the row / +0.3 m across, 30 forced
+# updates): likelihood_field ended 0.34 / 0.81 / 0.40 m off, beam 0.08 / 0.13 /
+# 0.09 m. In a row crop the likelihood field ALIASES ALONG THE ROW: it scores
+# only where each beam ends, and a pose shifted down the row still puts most
+# endpoints on some plant of the same rows -- it converged confidently 1.4 m
+# inside the corridor. The beam model raycasts the map, so a beam that passes
+# where the map has a plant, or a no-return beam, counts against a pose.
+laser_model_type: beam
+laser_z_hit: 0.7
+laser_z_short: 0.1         # unmapped things in front: the trailer, people
+laser_z_max: 0.05          # no-return beams (filled at 39 m, see scan.yaml)
+laser_z_rand: 0.15
+laser_sigma_hit: 0.2
+laser_lambda_short: 0.1
+
+min_particles: 500
+max_particles: 3000
+kld_err: 0.05
+kld_z: 0.99
+update_min_d: 0.1
+update_min_a: 0.1          # 0.314: re-weigh during in-place turns too
+resample_interval: 1
+transform_tolerance: 0.5   # 1.0; this is the map->odom post-date
+recovery_alpha_slow: 0.0
+recovery_alpha_fast: 0.0   # 0.1 injected random particles; in a field of
+                           # repeating rows a random restart can lock onto
+                           # the wrong corridor, so it is off
+
+use_map_topic: true
+first_map_only: true

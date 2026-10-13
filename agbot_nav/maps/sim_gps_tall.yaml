@@ -1,0 +1,6 @@
+free_thresh: 0.196
+image: sim_gps_tall.pgm
+negate: 0
+occupied_thresh: 0.65
+origin: [-23.925, -23.925, 0.0]
+resolution: 0.05

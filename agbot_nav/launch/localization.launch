@@ -1,0 +1,32 @@
+<launch>
+  <!-- A saved map + AMCL. AMCL owns map->odom; the Jackal's own EKF keeps
+       odom->base_link and /odometry/filtered, which vision nav needs.
+       ⚠ Never run this alongside agbot_gps_nav's ekf_map or slam_toolbox:
+       both also publish map->odom.
+
+       Initial pose: pass initial_x/y/yaw (map frame), or set it in RViz with
+       "2D Pose Estimate" after the robot leaves the trailer. -->
+  <arg name="map_file"    default="$(find agbot_nav)/maps/sim_gps_tall.yaml"/>
+  <arg name="cloud_topic" default="/ns1/velodyne_points"/>
+  <arg name="initial_x"   default="0.0"/>
+  <arg name="initial_y"   default="0.0"/>
+  <arg name="initial_yaw" default="0.0"/>
+
+  <include file="$(find agbot_nav)/launch/scan.launch">
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+  </include>
+
+  <node pkg="map_server" type="map_server" name="map_server" args="$(arg map_file)"/>
+
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <rosparam file="$(find agbot_nav)/config/amcl.yaml" command="load"/>
+    <param name="initial_pose_x" value="$(arg initial_x)"/>
+    <param name="initial_pose_y" value="$(arg initial_y)"/>
+    <param name="initial_pose_a" value="$(arg initial_yaw)"/>
+    <!-- A start pose is a guess from where the trailer parked: spread the
+         particles over ~0.5 m and ~10 deg so AMCL can pull it in. -->
+    <param name="initial_cov_xx" value="0.25"/>
+    <param name="initial_cov_yy" value="0.25"/>
+    <param name="initial_cov_aa" value="0.03"/>
+  </node>
+</launch>

@@ -1,0 +1,29 @@
+<launch>
+  <!-- Build the 2D map: drive a lap of the trailer area and the headland
+       (joystick, or move_base:=true and send goals), then save it with
+         rosrun map_server map_saver -f $(rospack find agbot_nav)/maps/NAME
+         rosrun agbot_nav pad_map.py $(rospack find agbot_nav)/maps/NAME.yaml 30
+       ⚠ Pad it. slam_toolbox's map only spans the bounding box of real LiDAR
+       returns, so in open ground the trailer can sit outside it; AMCL and
+       move_base's global costmap then have no map where the robot starts.
+       Map the area WITHOUT the trailer: it parks somewhere different every
+       time, and a trailer baked into the map is a wall where there is none.
+
+       ⚠ slam_toolbox publishes map->odom. Nothing else may: not amcl, and not
+       agbot_gps_nav's ekf_map (start the sim with gps:=false). -->
+  <arg name="cloud_topic" default="/ns1/velodyne_points"/>
+  <arg name="move_base"   default="false"/>
+
+  <include file="$(find agbot_nav)/launch/scan.launch">
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+  </include>
+
+  <node pkg="slam_toolbox" type="async_slam_toolbox_node" name="slam_toolbox"
+        output="screen">
+    <rosparam file="$(find agbot_nav)/config/slam_toolbox_mapping.yaml" command="load"/>
+  </node>
+
+  <include if="$(arg move_base)" file="$(find agbot_nav)/launch/move_base.launch">
+    <arg name="mapping" value="true"/>
+  </include>
+</launch>
