@@ -20,6 +20,8 @@
   <exec_depend>global_planner</exec_depend>
   <exec_depend>dwa_local_planner</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>agbot_vision_nav</exec_depend>
 
   <export>
     <!-- models/: the trailer stand-in and the tall maize variants -->

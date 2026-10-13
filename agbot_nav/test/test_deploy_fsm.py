@@ -77,12 +77,20 @@ def test_localize_needs_a_held_confident_estimate():
     to_localize(f)
     assert f.update(6.0, estimate=AT_DROP).state == STATE_LOCALIZE
     # a wobble restarts the hold
-    loose = AT_DROP._replace(std_xy=0.5)
+    loose = AT_DROP._replace(std_xy=0.5)    # over even the localize limit
     assert f.update(7.0, estimate=loose).state == STATE_LOCALIZE
     assert f.update(8.0, estimate=AT_DROP).state == STATE_LOCALIZE
     assert f.update(9.5, estimate=AT_DROP).state == STATE_LOCALIZE
     tick = f.update(10.1, estimate=AT_DROP)
     assert tick.state == STATE_TRANSIT
+
+
+def test_localize_accepts_a_spread_the_arrival_would_refuse():
+    f = fsm(max_std_xy=0.15, localize_max_std_xy=0.30)
+    to_localize(f)
+    loose = AT_DROP._replace(std_xy=0.25)
+    f.update(6.0, estimate=loose)
+    assert f.update(8.5, estimate=loose).state == STATE_TRANSIT
 
 
 def test_wide_heading_spread_is_not_confident():
@@ -99,12 +107,29 @@ def test_localize_timeout_fails():
     assert f.update(40.0, estimate=None).failed
 
 
-def test_transit_goal_is_the_entrance_and_drop_off_is_recorded():
-    f = fsm()
+def test_transit_goal_stands_off_the_entrance_on_its_axis():
+    f = fsm(entrance_standoff=0.7)
     tick = to_transit(f)
     assert tick.state == STATE_TRANSIT
     assert tick.commander == COMMANDER_MOVE_BASE
-    assert tick.nav_goal == Pose2D(*ENTRANCE)
+    # row runs +y, so standing off moves the goal 0.7 m in -y, same x and yaw
+    assert tick.nav_goal.x == pytest.approx(ENTRANCE[0])
+    assert tick.nav_goal.y == pytest.approx(ENTRANCE[1] - 0.7)
+    assert tick.nav_goal.yaw == pytest.approx(ENTRANCE[2])
+
+
+def test_arrival_at_the_standoff_point_is_on_axis():
+    f = fsm(entrance_standoff=0.7)
+    to_transit(f)
+    tick = f.update(20.0, estimate=GOOD._replace(y=GOOD.y - 0.7),
+                    nav_state=NAV_SUCCEEDED)
+    assert tick.state == STATE_ROW_MISSION
+    assert f.arrival[0] == pytest.approx(0.0)
+
+
+def test_drop_off_is_recorded():
+    f = fsm()
+    to_transit(f)
     assert f.drop_off == Pose2D(AT_DROP.x, AT_DROP.y, AT_DROP.yaw)
 
 

@@ -14,14 +14,22 @@ REVERSE_OFF  The supervisor itself reverses the robot `reverse_distance` m
              trailer is right in front of the robot and no planner should be
              turning near it. Real layout: trailer heading north, robot backs
              off still facing north.
-LOCALIZE     Stopped. AMCL must hold its estimate below `max_std_xy` /
-             `max_std_yaw_deg` for `localize_hold_sec`. AMCL only updates on
-             motion, so each tick asks for a no-motion update. The pose it
-             settles on is RECORDED as the return point: the trailer parks
-             somewhere different every deployment, so the way home is
-             measured, never stored.
+LOCALIZE     Stopped. AMCL must hold its estimate below
+             `localize_max_std_xy` / `localize_max_std_yaw_deg` for
+             `localize_hold_sec`. AMCL only updates on motion, so each tick
+             asks for a no-motion update. The pose it settles on is RECORDED as
+             the return point: the trailer parks somewhere different every
+             deployment, so the way home is measured, never stored.
+             ⚠ These limits are LOOSER than the arrival ones on purpose. At
+             the drop-off the nearest mapped features can be 15 m away and
+             the trailer (unmapped by design -- it moves) fills the scan; the
+             sim measured AMCL at ~0.2 m / 4 deg there, and forcing no-motion
+             updates made it WORSE (33 deg), not better. The strict check is
+             at the row entrance, where the corn is close and the pose
+             matters.
 TRANSIT      move_base drives to the row entrance (a map-frame pose whose yaw
-             is the row bearing).
+             is the row bearing), or rather to a point `entrance_standoff` m
+             BEHIND it on the row axis -- see below.
 ROW_MISSION  Vision nav drives the rows; move_base has no goal.
 RETURN       Vision off, move_base drives back to the recorded drop-off pose.
              Driving back UP the ramp is out of scope until the trailer team
@@ -44,6 +52,16 @@ later is not. (Same lesson as handoff_fsm, 2026-09-07.)
 
 import collections
 import math
+
+# ⚠ WHY THE GOAL STANDS OFF THE ENTRANCE (measured 2026-10-13, sim): the
+# LiDAR marks corn LEAVES, not stalks, and a 1.3 m plant's leaves reach ~0.6 m
+# out of the row. With the robot's inscribed radius and inflation on top,
+# everything within ~0.9 m of the first stalks was lethal in move_base's
+# costmap -- including an entrance placed 0.5 m out, so GlobalPlanner refused
+# the goal ("Failed to get a plan") 3 m short of it. move_base therefore aims
+# `entrance_standoff` further back along the axis, and vision nav drives the
+# rest. The arrival check is unaffected: cross-track and heading are the same
+# anywhere on the axis.
 
 STATE_IDLE = "IDLE"
 STATE_REVERSE_OFF = "REVERSE_OFF"
@@ -92,9 +110,10 @@ def axis_errors(estimate, entrance):
 class DeployFSM(object):
     """Decides who drives, where to, and when the deployment has failed."""
 
-    def __init__(self, entrance,
+    def __init__(self, entrance, entrance_standoff=0.7,
                  reverse_distance=1.5, reverse_speed=0.15,
                  max_std_xy=0.15, max_std_yaw_deg=3.0,
+                 localize_max_std_xy=0.30, localize_max_std_yaw_deg=6.0,
                  localize_hold_sec=2.0,
                  max_arrival_cross_track=0.20,
                  max_arrival_heading_error_deg=12.0,
@@ -103,11 +122,19 @@ class DeployFSM(object):
                  transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
                  return_timeout_sec=300.0):
         self.entrance = Pose2D(*entrance)
+        self.entrance_standoff = float(entrance_standoff)
+        e = self.entrance
+        self.transit_goal = Pose2D(
+            e.x - self.entrance_standoff * math.cos(e.yaw),
+            e.y - self.entrance_standoff * math.sin(e.yaw),
+            e.yaw)
         self.reverse_distance = float(reverse_distance)
         # Stored positive; the tick reports it as a NEGATIVE linear.x.
         self.reverse_speed = abs(float(reverse_speed))
         self.max_std_xy = float(max_std_xy)
         self.max_std_yaw = math.radians(float(max_std_yaw_deg))
+        self.localize_max_std_xy = float(localize_max_std_xy)
+        self.localize_max_std_yaw = math.radians(float(localize_max_std_yaw_deg))
         self.localize_hold_sec = float(localize_hold_sec)
         # 0.20 m: the Jackal is ~0.43 m wide in a 0.75 m corridor, so ~0.16 m
         # of clearance a side; the same number agbot_gps_nav's mission launch
@@ -178,7 +205,8 @@ class DeployFSM(object):
             return self._tick()
 
         if self.state == STATE_LOCALIZE:
-            if self._confident(estimate):
+            if self._confident(estimate, self.localize_max_std_xy,
+                               self.localize_max_std_yaw):
                 if self._confident_since is None:
                     self._confident_since = now
                 if now - self._confident_since >= self.localize_hold_sec:
@@ -231,10 +259,15 @@ class DeployFSM(object):
 
     # ---- helpers ----------------------------------------------------------
 
-    def _confident(self, estimate):
+    def _confident(self, estimate, max_std_xy=None, max_std_yaw=None):
+        """AMCL's spread under the limits; the ARRIVAL limits by default."""
+        if max_std_xy is None:
+            max_std_xy = self.max_std_xy
+        if max_std_yaw is None:
+            max_std_yaw = self.max_std_yaw
         return (estimate is not None
-                and estimate.std_xy <= self.max_std_xy
-                and estimate.std_yaw <= self.max_std_yaw)
+                and estimate.std_xy <= max_std_xy
+                and estimate.std_yaw <= max_std_yaw)
 
     def _enter(self, state, now):
         self.state = state
@@ -242,7 +275,7 @@ class DeployFSM(object):
         self._confident_since = None
         goal = None
         if state == STATE_TRANSIT:
-            goal = self.entrance
+            goal = self.transit_goal
         elif state == STATE_RETURN:
             goal = self.drop_off
         return self._tick(nav_goal=goal)

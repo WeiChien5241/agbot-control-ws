@@ -12,7 +12,10 @@ global_frame_id: map
 tf_broadcast: true
 
 gui_publish_rate: 10.0
-laser_max_beams: 180       # of 1800; sub-sampled evenly
+laser_max_beams: 90        # of 1800, sub-sampled evenly. The beam model
+                           # raycasts every beam for every particle; at 180 x
+                           # 3000 on the laptop, map->odom lagged 1-3 s and
+                           # move_base logged transform timeouts
 laser_min_range: 0.45
 laser_max_range: 30.0      # matches slam_toolbox's max_laser_range
 # ⚠ BEAM, not likelihood_field (measured 2026-10-13, sim corridor entrance,
@@ -32,7 +35,7 @@ laser_sigma_hit: 0.2
 laser_lambda_short: 0.1
 
 min_particles: 500
-max_particles: 3000
+max_particles: 1500
 kld_err: 0.05
 kld_z: 0.99
 update_min_d: 0.1

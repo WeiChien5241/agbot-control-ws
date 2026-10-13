@@ -12,6 +12,8 @@ catkin_install_python(PROGRAMS
   scripts/pad_map.py
   scripts/gt_occupancy_map.py
   scripts/amcl_truth.py
+  scripts/deploy_supervisor.py
+  scripts/vision_standin.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

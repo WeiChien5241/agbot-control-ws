@@ -1,0 +1,81 @@
+<launch>
+  <!-- THE WHOLE DEPLOYMENT on the LiDAR stack:
+         reverse off the trailer -> AMCL localizes -> move_base to the row
+         entrance -> vision nav drives the rows -> move_base back to the
+         drop-off point.
+       Sequenced by deploy_supervisor.py (decisions in deploy_fsm.py).
+
+       Sim (gps_tall world; LIDAR_notes.md has the layout):
+         rosrun agbot_bringup switch_maize_world.sh gps_tall
+         roslaunch agbot_bringup agbot_gazebo.launch lidar:=true \
+           x:=9.0 y:=-16.0 z:=0.35 yaw:=3.14159
+         roslaunch agbot_nav sim_trailer.launch
+         roslaunch agbot_nav deploy_mission.launch vision_standin:=true
+
+       ⚠ Start with gps:=false on the sim. AMCL owns map->odom here, and
+       agbot_gps_nav's ekf_map would publish it too. -->
+
+  <arg name="map_file" default="$(find agbot_nav)/maps/sim_gps_tall.yaml"/>
+
+  <!-- Where the robot is when this starts: the ramp foot, facing the
+       trailer. Defaults are the sim's. On the robot this is the operator's
+       2D Pose Estimate (or, later, an RTK fix + the trailer's heading). -->
+  <arg name="initial_x"   default="9.0"/>
+  <arg name="initial_y"   default="-16.0"/>
+  <arg name="initial_yaw" default="3.14159"/>
+
+  <!-- Row entrance, MAP frame; yaw is the row bearing. Default: corridor_0 of
+       the gps worlds (agbot_gps_nav/config/waypoints_maize_gps.yaml). -->
+  <arg name="entrance_x"       default="-0.798"/>
+  <arg name="entrance_y"       default="-3.861"/>
+  <arg name="entrance_yaw_deg" default="90.0"/>
+  <!-- move_base stops this far BEFORE the entrance, on its axis; vision nav
+       drives the rest. Corn leaves reach ~0.6 m into the headland and the
+       costmap marks them (deploy_fsm.py has the measurement). -->
+  <arg name="entrance_standoff" default="0.7"/>
+
+  <arg name="reverse_distance" default="1.5"/>
+  <arg name="return_enabled"   default="true"/>
+
+  <!-- Row mission. vision_standin:=true replaces vision nav with a blind
+       straight-line stand-in (SIM ONLY: the laptop cannot run the model). -->
+  <arg name="vision_standin" default="false"/>
+  <arg name="sim"            default="false"/>
+  <arg name="num_rows"       default="3"/>
+  <arg name="first_turn_direction" default="right"/>
+  <arg name="rear_camera_enabled"  default="true"/>
+  <arg name="model_path"     default=""/>
+
+  <include file="$(find agbot_nav)/launch/transit.launch">
+    <arg name="map_file"    value="$(arg map_file)"/>
+    <arg name="initial_x"   value="$(arg initial_x)"/>
+    <arg name="initial_y"   value="$(arg initial_y)"/>
+    <arg name="initial_yaw" value="$(arg initial_yaw)"/>
+  </include>
+
+  <group if="$(arg vision_standin)">
+    <node name="vision_nav_node" pkg="agbot_nav" type="vision_standin.py" output="screen"/>
+  </group>
+  <group unless="$(arg vision_standin)">
+    <include file="$(find agbot_vision_nav)/launch/vision_nav.launch">
+      <arg name="sim"              value="$(arg sim)"/>
+      <arg name="start_enabled"    value="false"/>
+      <arg name="mission_enabled"  value="true"/>
+      <arg name="num_rows"         value="$(arg num_rows)"/>
+      <arg name="first_turn_direction" value="$(arg first_turn_direction)"/>
+      <arg name="rear_camera_enabled"  value="$(arg rear_camera_enabled)"/>
+      <arg name="model_path"       value="$(arg model_path)"
+           if="$(eval arg('model_path') != '')"/>
+    </include>
+  </group>
+
+  <node name="deploy_supervisor" pkg="agbot_nav" type="deploy_supervisor.py"
+        output="screen" required="true">
+    <param name="entrance_x"       value="$(arg entrance_x)"/>
+    <param name="entrance_y"       value="$(arg entrance_y)"/>
+    <param name="entrance_yaw_deg" value="$(arg entrance_yaw_deg)"/>
+    <param name="entrance_standoff" value="$(arg entrance_standoff)"/>
+    <param name="reverse_distance" value="$(arg reverse_distance)"/>
+    <param name="return_enabled"   value="$(arg return_enabled)"/>
+  </node>
+</launch>
