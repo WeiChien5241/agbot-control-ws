@@ -1,0 +1,269 @@
+"""Sequencing for a LiDAR-localized deployment: trailer -> row -> trailer.
+
+Pure python -- no rospy. `scripts/deploy_supervisor.py` is the ROS shell around
+this; every decision about who drives and every way the sequence can fail is
+here, where it can be tested without a simulator. Same shape as
+agbot_gps_nav's handoff_fsm, which it does not replace (the GPS stack is kept).
+
+    IDLE -start-> REVERSE_OFF -> LOCALIZE -> TRANSIT -> ROW_MISSION -> RETURN -> FINISHED
+                       |             |          |            |            |
+                       +-------------+--- timeout / nav failure / gate ---+--> FAILED
+
+REVERSE_OFF  The supervisor itself reverses the robot `reverse_distance` m
+             straight off the ramp on wheel odometry. Blind on purpose: the
+             trailer is right in front of the robot and no planner should be
+             turning near it. Real layout: trailer heading north, robot backs
+             off still facing north.
+LOCALIZE     Stopped. AMCL must hold its estimate below `max_std_xy` /
+             `max_std_yaw_deg` for `localize_hold_sec`. AMCL only updates on
+             motion, so each tick asks for a no-motion update. The pose it
+             settles on is RECORDED as the return point: the trailer parks
+             somewhere different every deployment, so the way home is
+             measured, never stored.
+TRANSIT      move_base drives to the row entrance (a map-frame pose whose yaw
+             is the row bearing).
+ROW_MISSION  Vision nav drives the rows; move_base has no goal.
+RETURN       Vision off, move_base drives back to the recorded drop-off pose.
+             Driving back UP the ramp is out of scope until the trailer team
+             says what the ramp is.
+
+⚠ EXACTLY ONE COMMANDER AT A TIME. The supervisor's reverse leg, move_base and
+vision nav all publish /cmd_vel, which twist_mux takes as ONE input -- it
+arbitrates by priority, not rate, so two publishers on it interleave. Every
+tick reports the FULL desired state (`commander`) rather than edge events, and
+a state that hands over always names the outgoing commander as switched off in
+the same tick, which the caller applies before anything is switched on.
+
+⚠ ARRIVING IS NOT THE SAME AS ARRIVING ON THE ROW AXIS. move_base's SUCCEEDED
+means "inside its goal tolerance", and its goal tolerance is not the handoff
+tolerance. The AMCL pose at arrival is checked against the corridor axis
+(cross-track and heading) AND AMCL must still be confident there; anything
+else refuses the handoff. Refusing at the entrance is cheap; one row spacing
+later is not. (Same lesson as handoff_fsm, 2026-09-07.)
+"""
+
+import collections
+import math
+
+STATE_IDLE = "IDLE"
+STATE_REVERSE_OFF = "REVERSE_OFF"
+STATE_LOCALIZE = "LOCALIZE"
+STATE_TRANSIT = "TRANSIT"
+STATE_ROW_MISSION = "ROW_MISSION"
+STATE_RETURN = "RETURN"
+STATE_FINISHED = "FINISHED"
+STATE_FAILED = "FAILED"
+
+NAV_ACTIVE = "ACTIVE"
+NAV_SUCCEEDED = "SUCCEEDED"
+NAV_FAILED = "FAILED"
+
+COMMANDER_SUPERVISOR = "supervisor"
+COMMANDER_MOVE_BASE = "move_base"
+COMMANDER_VISION = "vision"
+
+Pose2D = collections.namedtuple("Pose2D", "x y yaw")
+# AMCL's estimate: pose plus its 1-sigma spread (m, rad).
+Estimate = collections.namedtuple("Estimate", "x y yaw std_xy std_yaw")
+
+DeployTick = collections.namedtuple(
+    "DeployTick",
+    "state commander reverse_speed vision_enabled nav_goal cancel_nav "
+    "request_localize_update done failed reason",
+)
+
+
+def wrap(angle):
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def axis_errors(estimate, entrance):
+    """(cross_track m, heading_error rad) of `estimate` vs the corridor axis.
+
+    The axis passes through `entrance` along `entrance.yaw`. Cross-track is
+    positive to the LEFT of the axis (REP-103).
+    """
+    dx = estimate.x - entrance.x
+    dy = estimate.y - entrance.y
+    cross = -dx * math.sin(entrance.yaw) + dy * math.cos(entrance.yaw)
+    return cross, wrap(estimate.yaw - entrance.yaw)
+
+
+class DeployFSM(object):
+    """Decides who drives, where to, and when the deployment has failed."""
+
+    def __init__(self, entrance,
+                 reverse_distance=1.5, reverse_speed=0.15,
+                 max_std_xy=0.15, max_std_yaw_deg=3.0,
+                 localize_hold_sec=2.0,
+                 max_arrival_cross_track=0.20,
+                 max_arrival_heading_error_deg=12.0,
+                 return_enabled=True,
+                 reverse_timeout_sec=30.0, localize_timeout_sec=30.0,
+                 transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
+                 return_timeout_sec=300.0):
+        self.entrance = Pose2D(*entrance)
+        self.reverse_distance = float(reverse_distance)
+        # Stored positive; the tick reports it as a NEGATIVE linear.x.
+        self.reverse_speed = abs(float(reverse_speed))
+        self.max_std_xy = float(max_std_xy)
+        self.max_std_yaw = math.radians(float(max_std_yaw_deg))
+        self.localize_hold_sec = float(localize_hold_sec)
+        # 0.20 m: the Jackal is ~0.43 m wide in a 0.75 m corridor, so ~0.16 m
+        # of clearance a side; the same number agbot_gps_nav's mission launch
+        # uses for its arrival plane.
+        self.max_arrival_cross_track = float(max_arrival_cross_track)
+        self.max_arrival_heading_error = math.radians(
+            float(max_arrival_heading_error_deg))
+        self.return_enabled = bool(return_enabled)
+        self.timeouts = {
+            STATE_REVERSE_OFF: float(reverse_timeout_sec),
+            STATE_LOCALIZE: float(localize_timeout_sec),
+            STATE_TRANSIT: float(transit_timeout_sec),
+            STATE_ROW_MISSION: float(mission_timeout_sec),
+            STATE_RETURN: float(return_timeout_sec),
+        }
+
+        self.state = STATE_IDLE
+        self.reason = ""
+        self.drop_off = None          # Pose2D recorded at the end of LOCALIZE
+        self.arrival = None           # (cross_track, heading_error) at the row
+        self._entered_at = None
+        self._reverse_start = None    # odom (x, y) where the reverse began
+        self._confident_since = None
+
+    # ---- transitions ------------------------------------------------------
+
+    def start(self, now):
+        """Begin: the robot is at the ramp foot, facing the trailer."""
+        self.reason = ""
+        self.drop_off = None
+        self.arrival = None
+        self._reverse_start = None
+        return self._enter(STATE_REVERSE_OFF, now)
+
+    def abort(self, reason):
+        """Stop everything. Used for an operator stop or an external fault."""
+        self.state = STATE_FAILED
+        self.reason = reason
+        return self._tick(cancel_nav=True)
+
+    def update(self, now, odom_xy=None, estimate=None, nav_state=None,
+               vision_done=False):
+        """Advance one tick and return the full desired state.
+
+        odom_xy     (x, y) of /odometry/filtered -- the reverse leg's distance.
+        estimate    Estimate from AMCL, or None before its first pose.
+        nav_state   NAV_ACTIVE / NAV_SUCCEEDED / NAV_FAILED for the goal sent
+                    in THIS state, or None before one is known.
+        vision_done the row mission's /vision_nav_node/mission_done.
+        """
+        now = float(now)
+        if self.state in (STATE_IDLE, STATE_FINISHED, STATE_FAILED):
+            return self._tick()
+
+        elapsed = now - self._entered_at
+        if elapsed > self.timeouts[self.state]:
+            return self.abort("%s timed out after %.0f s" % (self.state, elapsed))
+
+        if self.state == STATE_REVERSE_OFF:
+            if odom_xy is None:
+                return self._tick()
+            if self._reverse_start is None:
+                self._reverse_start = tuple(odom_xy)
+            driven = math.hypot(odom_xy[0] - self._reverse_start[0],
+                                odom_xy[1] - self._reverse_start[1])
+            if driven >= self.reverse_distance:
+                return self._enter(STATE_LOCALIZE, now)
+            return self._tick()
+
+        if self.state == STATE_LOCALIZE:
+            if self._confident(estimate):
+                if self._confident_since is None:
+                    self._confident_since = now
+                if now - self._confident_since >= self.localize_hold_sec:
+                    self.drop_off = Pose2D(estimate.x, estimate.y, estimate.yaw)
+                    return self._enter(STATE_TRANSIT, now)
+            else:
+                self._confident_since = None
+            return self._tick()
+
+        if self.state == STATE_TRANSIT:
+            if nav_state == NAV_FAILED:
+                return self.abort("move_base gave up on the way to the row")
+            if nav_state != NAV_SUCCEEDED:
+                return self._tick()
+            if estimate is None or not self._confident(estimate):
+                return self.abort(
+                    "arrived at the row entrance with AMCL NOT confident "
+                    "(std %s) -- the pose the arrival check would use cannot "
+                    "be trusted. NOT handing over to vision nav."
+                    % ("unknown" if estimate is None else
+                       "%.2f m / %.1f deg" % (estimate.std_xy,
+                                              math.degrees(estimate.std_yaw))))
+            cross, heading = axis_errors(estimate, self.entrance)
+            self.arrival = (cross, heading)
+            if (abs(cross) > self.max_arrival_cross_track
+                    or abs(heading) > self.max_arrival_heading_error):
+                return self.abort(
+                    "arrived %.2f m off the corridor axis, %+.1f deg off its "
+                    "bearing (limits %.2f m / %.0f deg). NOT handing over."
+                    % (cross, math.degrees(heading),
+                       self.max_arrival_cross_track,
+                       math.degrees(self.max_arrival_heading_error)))
+            return self._enter(STATE_ROW_MISSION, now)
+
+        if self.state == STATE_ROW_MISSION:
+            if vision_done:
+                if self.return_enabled:
+                    return self._enter(STATE_RETURN, now)
+                return self._enter(STATE_FINISHED, now)
+            return self._tick()
+
+        if self.state == STATE_RETURN:
+            if nav_state == NAV_FAILED:
+                return self.abort("move_base gave up on the way back to the trailer")
+            if nav_state == NAV_SUCCEEDED:
+                return self._enter(STATE_FINISHED, now)
+            return self._tick()
+
+        return self._tick()
+
+    # ---- helpers ----------------------------------------------------------
+
+    def _confident(self, estimate):
+        return (estimate is not None
+                and estimate.std_xy <= self.max_std_xy
+                and estimate.std_yaw <= self.max_std_yaw)
+
+    def _enter(self, state, now):
+        self.state = state
+        self._entered_at = float(now)
+        self._confident_since = None
+        goal = None
+        if state == STATE_TRANSIT:
+            goal = self.entrance
+        elif state == STATE_RETURN:
+            goal = self.drop_off
+        return self._tick(nav_goal=goal)
+
+    def _tick(self, nav_goal=None, cancel_nav=False):
+        commander = {
+            STATE_REVERSE_OFF: COMMANDER_SUPERVISOR,
+            STATE_TRANSIT: COMMANDER_MOVE_BASE,
+            STATE_ROW_MISSION: COMMANDER_VISION,
+            STATE_RETURN: COMMANDER_MOVE_BASE,
+        }.get(self.state)
+        return DeployTick(
+            state=self.state,
+            commander=commander,
+            reverse_speed=(-self.reverse_speed
+                           if self.state == STATE_REVERSE_OFF else 0.0),
+            vision_enabled=self.state == STATE_ROW_MISSION,
+            nav_goal=nav_goal,
+            cancel_nav=cancel_nav,
+            request_localize_update=self.state == STATE_LOCALIZE,
+            done=self.state == STATE_FINISHED,
+            failed=self.state == STATE_FAILED,
+            reason=self.reason,
+        )
