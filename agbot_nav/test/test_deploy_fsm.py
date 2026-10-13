@@ -96,7 +96,7 @@ def test_localize_accepts_a_spread_the_arrival_would_refuse():
 def test_wide_heading_spread_is_not_confident():
     f = fsm()
     to_localize(f)
-    wide = AT_DROP._replace(std_yaw=math.radians(10.0))
+    wide = AT_DROP._replace(std_yaw=math.radians(15.0))   # over the 10 deg limit
     f.update(6.0, estimate=wide)
     assert f.update(20.0, estimate=wide).state == STATE_LOCALIZE
 

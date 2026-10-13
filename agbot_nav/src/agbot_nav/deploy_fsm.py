@@ -112,8 +112,8 @@ class DeployFSM(object):
 
     def __init__(self, entrance, entrance_standoff=0.7,
                  reverse_distance=1.5, reverse_speed=0.15,
-                 max_std_xy=0.15, max_std_yaw_deg=3.0,
-                 localize_max_std_xy=0.30, localize_max_std_yaw_deg=6.0,
+                 max_std_xy=0.15, max_std_yaw_deg=8.0,
+                 localize_max_std_xy=0.30, localize_max_std_yaw_deg=10.0,
                  localize_hold_sec=2.0,
                  max_arrival_cross_track=0.20,
                  max_arrival_heading_error_deg=12.0,
@@ -131,6 +131,11 @@ class DeployFSM(object):
         self.reverse_distance = float(reverse_distance)
         # Stored positive; the tick reports it as a NEGATIVE linear.x.
         self.reverse_speed = abs(float(reverse_speed))
+        # Arrival confidence. 8 deg, not tighter: AMCL's heading SPREAD in the
+        # sim sat at 6.0 deg at a corridor mouth the robot had really reached
+        # 0.03 m / -1.4 deg off-axis (2026-10-13) -- a 3 deg limit refused a
+        # perfect handoff. The 12 deg arrival heading limit is the budget;
+        # this keeps most of it for honest uncertainty.
         self.max_std_xy = float(max_std_xy)
         self.max_std_yaw = math.radians(float(max_std_yaw_deg))
         self.localize_max_std_xy = float(localize_max_std_xy)

@@ -80,11 +80,16 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
    (trailer → row entrance), where vision nav then takes over. Blank-world sim:
    `roslaunch agbot_bringup agbot_gps_sim.launch` + `roslaunch agbot_gps_nav
    gps_nav.launch sim:=true`.
-4. **LiDAR transit (in progress, 2026-10-13)** — trailer → row → back with a
-   2D map + AMCL + `move_base` on the robot's 3D Velodyne (`/ns1/*`); GPS
-   stack kept. Plan, robot checklist and status: `LIDAR_notes.md`. URDF:
-   `agbot_bringup/urdf/agbot_lidar.urdf.xacro` (opt-in `lidar:=true`; the
-   default URDF is unchanged).
+4. **`agbot_nav/`** — LiDAR transit (2026-10-13): trailer → row → trailer
+   with a 2D map + AMCL + `move_base` on the robot's 3D Velodyne (`/ns1/*`),
+   vision nav in the rows. GPS stack kept, untouched. One launch:
+   `deploy_mission.launch`; decisions in the rospy-free `deploy_fsm.py`.
+   **Sim-validated end to end, never run on the robot.** Status, sim results,
+   what the sim cannot test, and the robot checklist: `LIDAR_notes.md`.
+   ⚠ AMCL owns `map → odom` — never run it with `agbot_gps_nav`'s `ekf_map`
+   or slam_toolbox. ⚠ AMCL must stay on the BEAM model (the likelihood
+   field aliases along corn rows). URDF: `agbot_bringup/urdf/agbot_lidar.urdf.xacro`
+   (opt-in `lidar:=true`; must be the GPU ray sensor).
 5. **`DINOv3-Segmentation-Training/`** *(if present)* — model training pipeline (trains on annotated rosbag footage, produces `exported_best.pt`).
 6. **`Papers/`** — lab papers (P-AgBot, P-AgSLAM, P-AgNav) and related external papers (Agronav, ROW-SLAM, CropFollow). Read before designing navigation/control logic.
 
@@ -229,7 +234,12 @@ cd agbot_vision_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 264 passed
 cd ../agbot_gps_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 193 passed
+cd ../agbot_nav
+PYTHONPATH=src:$PYTHONPATH python3 -m pytest test/ -v   # expected: 27 passed
 ```
+(`agbot_nav`'s TF test runs xacro, so keep ROS's `PYTHONPATH` — sourced
+`devel/setup.bash` — or it skips.) The vision-nav launch tests now count 77,
+up from 74, because they parse `agbot_nav`'s launch files too.
 `agbot_vision_nav/test/test_launch_files.py` walks the WHOLE workspace, so it
 covers `agbot_gps_nav`'s and `agbot_bringup`'s launch files too — which is why
 its count rose from 214 to 243 as the GPS package grew.
