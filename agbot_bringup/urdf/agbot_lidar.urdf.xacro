@@ -86,11 +86,20 @@
   </joint>
 
   <!-- ─── VLP-16 on the housing top ────────────────────────────── -->
-  <!-- samples 440 (not the real 1875) keeps the laptop sim's RTF usable;
-       10 Hz matches the real sensor. -->
+  <!-- 1875 samples x 16 rings at 10 Hz = the real VLP-16 (0.19 deg).
+       Full resolution is needed, not cosmetic: at 440 samples (0.82 deg) the
+       rays are 0.21 m apart at 15 m and only 13 points landed on the whole
+       corn block from the trailer; 1875 gave 57. On the GPU sensor it costs
+       nothing measurable (RTF 1.0 either way, gps world, 2026-10-13).
+       ⚠ gpu="true" is REQUIRED, not an optimisation (measured 2026-10-13):
+       the CPU ray sensor casts every ray against the ODE heightmap and the
+       plant collision meshes, and in the gps maize world it froze sim time
+       at 0.11 s with gzserver pegged. The GPU sensor renders depth through
+       OGRE like the cameras already do, so its cost does not depend on the
+       collision geometry. -->
   <xacro:VLP-16 parent="lidar_housing_link" name="${lidar_frame}"
-                topic="${lidar_topic}" hz="10" samples="440"
-                min_range="0.4" gpu="false">
+                topic="${lidar_topic}" hz="10" samples="1875"
+                min_range="0.4" gpu="true">
     <origin xyz="0 0 ${lidar_housing_size/2}" rpy="0 0 0"/>
   </xacro:VLP-16>
 

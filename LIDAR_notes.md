@@ -41,13 +41,22 @@ then returns to the point where it left the trailer.
 
 - Everything is centred on `mid_mount`. These are rough hand measurements;
   re-measure them and edit the xacro properties.
-- The sim LiDAR publishes `/ns1/velodyne_points` in frame `velodyne`, at 10 Hz
-  with 440 samples (not 1875, to protect the laptop's RTF).
-- The Gazebo plugin needs `sudo apt install ros-noetic-velodyne-gazebo-plugins`.
-  It is not installed on the laptop yet, so the plugin has not been spawned in
-  Gazebo.
-- The URDF itself has been checked: `velodyne` is 0.2577 m above `mid_mount`,
-  and the URDF is unchanged when `lidar:=false`.
+- The sim LiDAR publishes `/ns1/velodyne_points` in frame `velodyne`, at
+  10.0 Hz sim time with full VLP-16 resolution (1875 × 16). The URDF is
+  unchanged when `lidar:=false`.
+- **Measured in the `gps` world (2026-10-13):**
+  - `base_link → velodyne` z = 0.442.
+  - RTF 1.0, against 1.2 without the LiDAR.
+  - ⚠ **It must be the GPU sensor (`gpu="true"`).** The CPU ray sensor froze
+    sim time at 0.11 s, with gzserver pegged on the heightmap and plant
+    meshes.
+  - From the trailer pose (14.5 m from the nearest plant), 57 points land on
+    the corn, all from the two rings just below horizontal.
+  - ⚠ **The sim corn is a pessimistic stand-in.** The maize models are about
+    0.63 m tall, while real corn is 1–2.5 m. Expect far more returns in the
+    field.
+  - The ground falls away by about 2° with range, so the slice band has to
+    tolerate it.
 
 ## Phase 0: check on the robot (needed before any SLAM config)
 
