@@ -129,6 +129,8 @@ going silent.
   leftover drivers. ⚠ **Answered 10/6:** no LiDAR is mounted (only the cameras
   and the Reach). The robot used to carry two Velodynes, and their drivers
   still start at boot and advertise the topics with nothing behind them.
+  ⚠ **Superseded 2026-10-13:** a 3D Velodyne is now mounted and publishes on
+  `/ns1/*`; see `LIDAR_notes.md`.
 
 ## 6. Outdoor test
 

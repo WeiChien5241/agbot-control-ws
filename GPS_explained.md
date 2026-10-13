@@ -231,7 +231,8 @@ driver:
 - ❌ No RTK: a damaged antenna cable, and no NTRIP credentials on either unit.
 - Found: `/navsat/*` is the Jackal's built-in consumer GPS chip (never had a
   fix). The `/ns1`, `/ns2` Velodyne topics are leftover drivers; no LiDAR is
-  mounted.
+  mounted. ⚠ Superseded 2026-10-13: a 3D Velodyne is now mounted
+  (`LIDAR_notes.md`).
 
 ### 10/6: NTRIP RTK, localization, first self-driven leg
 A third Reach (`Reach:46:A2`) had an NTRIP profile. Corrections come over the
@@ -336,7 +337,9 @@ iPhone hotspot, so **one Reach and one antenna give RTK, with no base station**.
   `gtsam_test`, `gps`, `autonomous_navigation` (P-AgNav), `octomap_server`, and
   a RealSense T265.
 - It doesn't fit us because:
-  - the Velodynes are no longer on the robot, so there is no data to feed it;
+  - the Velodynes are no longer on the robot, so there is no data to feed it
+    (⚠ no longer true as of 2026-10-13; one is back, see `LIDAR_notes.md`,
+    but we use a general map + AMCL stack rather than this one);
   - it needs a manual mapping run before navigating;
   - its heading "solution" is pointing the robot east with an iPhone compass
     before boot;

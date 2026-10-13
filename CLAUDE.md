@@ -54,6 +54,10 @@ sudo apt-get install -y \
   python3-shapely python3-packaging \
   ros-noetic-sick-tim ros-noetic-lms1xx ros-noetic-pointgrey-camera-description \
   ros-noetic-flir-camera-description ros-noetic-interactive-marker-twist-server
+# 3D LiDAR + map/AMCL transit (LIDAR_notes.md)
+sudo apt-get install -y ros-noetic-velodyne-gazebo-plugins ros-noetic-amcl \
+  ros-noetic-map-server ros-noetic-slam-toolbox ros-noetic-pointcloud-to-laserscan \
+  ros-noetic-dwa-local-planner ros-noetic-global-planner
 ```
 The last five are `jackal_description`'s unconditional `xacro:include`s (accessory URDFs it always parses regardless of `JACKAL_LASER`/etc.) plus the RViz twist-drive marker `agbot_gazebo.launch` starts — none show up in `rosdep`'s own failure list because they're an artifact of running `catkin build` / `roslaunch` and only surface once you actually try it, not from `rosdep install --from-paths src` alone.
 
@@ -76,8 +80,13 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
    (trailer → row entrance), where vision nav then takes over. Blank-world sim:
    `roslaunch agbot_bringup agbot_gps_sim.launch` + `roslaunch agbot_gps_nav
    gps_nav.launch sim:=true`.
-4. **`DINOv3-Segmentation-Training/`** *(if present)* — model training pipeline (trains on annotated rosbag footage, produces `exported_best.pt`).
-5. **`Papers/`** — lab papers (P-AgBot, P-AgSLAM, P-AgNav) and related external papers (Agronav, ROW-SLAM, CropFollow). Read before designing navigation/control logic.
+4. **LiDAR transit (in progress, 2026-10-13)** — trailer → row → back with a
+   2D map + AMCL + `move_base` on the robot's 3D Velodyne (`/ns1/*`); GPS
+   stack kept. Plan, robot checklist and status: `LIDAR_notes.md`. URDF:
+   `agbot_bringup/urdf/agbot_lidar.urdf.xacro` (opt-in `lidar:=true`; the
+   default URDF is unchanged).
+5. **`DINOv3-Segmentation-Training/`** *(if present)* — model training pipeline (trains on annotated rosbag footage, produces `exported_best.pt`).
+6. **`Papers/`** — lab papers (P-AgBot, P-AgSLAM, P-AgNav) and related external papers (Agronav, ROW-SLAM, CropFollow). Read before designing navigation/control logic.
 
 **Third-party packages in this workspace** (not tracked in this repo):
 - `jackal/` — Clearpath Jackal ROS1 driver (noetic-devel branch)
@@ -109,6 +118,7 @@ roslaunch agbot_bringup agbot_gazebo.launch
 # Optional overrides:
 # x:=-2.0 y:=0.0        — robot spawn position (default: 2 m before row start)
 # gui:=false             — headless Gazebo
+# lidar:=true            — add the 3D Velodyne (/ns1/velodyne_points); costs RTF
 # joystick:=false        — disable teleop (autonomous-only run)
 ```
 
