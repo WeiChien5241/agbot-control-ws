@@ -9,6 +9,10 @@
 #            When given, its `datum:` latitude and longitude are exported as
 #            GAZEBO_WORLD_LAT / GAZEBO_WORLD_LON, which jackal.gazebo:32-33
 #            reads to place the simulated GPS receiver on Earth.
+#            Pass the literal "none" to skip it while still giving $4...
+#       $4... = OPTIONAL xacro args forwarded verbatim (e.g. lidar:=true).
+#            xacro args are global, so the extras file declared via
+#            JACKAL_URDF_EXTRAS sees them too.
 #
 # WHY THE ENV VARS ARE SET HERE and not with a roslaunch <env> tag: a <env> tag
 # applies to NODES, but the URDF is built by a <param name="robot_description"
@@ -19,12 +23,13 @@ set -euo pipefail
 extras="$1"
 jackal_urdf="$2"
 datum_yaml="${3:-}"
+shift $(( $# < 3 ? $# : 3 ))
 
 if [ "$extras" != "none" ]; then
     export JACKAL_URDF_EXTRAS="$extras"
 fi
 
-if [ -n "$datum_yaml" ]; then
+if [ -n "$datum_yaml" ] && [ "$datum_yaml" != "none" ]; then
     # Parse the two numbers out of the yaml. Kept here rather than duplicated
     # into a launch arg so gps_datum.yaml stays the single definition.
     read -r lat lon < <(python3 -c '
@@ -36,4 +41,4 @@ print(d[0], d[1])
     export GAZEBO_WORLD_LON="$lon"
 fi
 
-exec xacro "$jackal_urdf" --inorder
+exec xacro "$jackal_urdf" --inorder "$@"

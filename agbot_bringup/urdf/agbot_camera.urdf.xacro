@@ -2,8 +2,10 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    AgBot cameras with physical mount stand.
+    AgBot cameras with physical mount stand, plus the optional 3D LiDAR.
     Included via JACKAL_URDF_EXTRAS into jackal.urdf.xacro.
+    xacro arg lidar:=true (default false) also includes
+    agbot_lidar.urdf.xacro, the horizontal Velodyne on its housing.
     Parent link: mid_mount (top-centre of Jackal chassis).
 
     Layout (all offsets relative to mid_mount):
@@ -184,5 +186,13 @@
        break that assumption and mistune the reverse leg.
        Publishes /camera_rear/image_raw, frame camera_rear_optical_frame. -->
   <xacro:agbot_cam name="camera_rear" xyz="-0.19 0 0.025" rpy="0 0 3.14159265"/>
+
+  <!-- ─── 3D LiDAR (opt-in) ────────────────────────────────────── -->
+  <!-- Off by default: a simulated Velodyne costs RTF the vision-nav runs
+       cannot spare. load_robot_description.sh forwards lidar:=true. -->
+  <xacro:arg name="lidar" default="false"/>
+  <xacro:if value="$(arg lidar)">
+    <xacro:include filename="$(find agbot_bringup)/urdf/agbot_lidar.urdf.xacro"/>
+  </xacro:if>
 
 </robot>

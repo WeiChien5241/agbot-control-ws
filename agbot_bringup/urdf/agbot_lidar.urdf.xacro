@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    Horizontal 3D Velodyne (the SLAM/AMCL LiDAR) on its housing.
+    Included by agbot_camera.urdf.xacro only when the xacro arg lidar:=true,
+    so the default URDF (and the laptop sim's RTF) is unchanged.
+
+    Layout (all offsets relative to mid_mount, the deck top centre):
+
+      lidar_standoff_link — 7 cm standoff on the deck
+      lidar_housing_link  — 15 cm cube on the standoff, deck +0.07 to +0.22 m
+      velodyne_base_link  — VLP-16 base on the cube top (z = 0.22)
+      velodyne            — optical centre, 0.0377 m above its base
+                            (≈ 0.258 m above mid_mount)
+
+    Measured roughly by hand (2026-10-13) — re-measure and edit the properties
+    below. ⚠ The real robot does not use this file; agbot_nav's lidar_tf.launch
+    carries the same base_link -> velodyne numbers, and a pytest keeps them
+    equal.
+
+    Clearance: the lowest VLP-16 beam (-15 deg) from 0.258 m reaches deck
+    height (0) about 0.96 m out, so it clears the front camera (x=0.19,
+    z<=0.05) and the deck edge.
+
+    The vertical LiDAR (/ns2) is not modelled — it is not used for SLAM.
+
+    ⚠ The Gazebo plugin needs ros-noetic-velodyne-gazebo-plugins.
+  -->
+
+  <xacro:include filename="$(find velodyne_description)/urdf/VLP-16.urdf.xacro"/>
+
+  <!-- Mount dimensions (m) -->
+  <xacro:property name="lidar_standoff_height" value="0.07"/>
+  <xacro:property name="lidar_standoff_width"  value="0.10"/>
+  <xacro:property name="lidar_housing_size"    value="0.15"/>
+  <xacro:property name="lidar_mount_x"         value="0.0"/>
+
+  <!-- Must match the frame_id the robot's driver stamps on
+       /ns1/velodyne_points (LIDAR_notes.md). -->
+  <xacro:property name="lidar_frame" value="velodyne"/>
+  <xacro:property name="lidar_topic" value="/ns1/velodyne_points"/>
+
+  <xacro:macro name="agbot_box_link" params="name x y z mass">
+    <link name="${name}">
+      <visual>
+        <geometry><box size="${x} ${y} ${z}"/></geometry>
+        <material name="dark_grey"/>
+      </visual>
+      <collision>
+        <geometry><box size="${x} ${y} ${z}"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="${mass}"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <inertia ixx="${mass*(y*y + z*z)/12}" ixy="0" ixz="0"
+                 iyy="${mass*(x*x + z*z)/12}" iyz="0"
+                 izz="${mass*(x*x + y*y)/12}"/>
+      </inertial>
+    </link>
+    <gazebo reference="${name}">
+      <material>Gazebo/DarkGrey</material>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- ─── Standoff ─────────────────────────────────────────────── -->
+  <xacro:agbot_box_link name="lidar_standoff_link"
+      x="${lidar_standoff_width}" y="${lidar_standoff_width}"
+      z="${lidar_standoff_height}" mass="0.2"/>
+
+  <joint name="lidar_standoff_joint" type="fixed">
+    <parent link="mid_mount"/>
+    <child  link="lidar_standoff_link"/>
+    <origin xyz="${lidar_mount_x} 0 ${lidar_standoff_height/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ─── Housing ──────────────────────────────────────────────── -->
+  <xacro:agbot_box_link name="lidar_housing_link"
+      x="${lidar_housing_size}" y="${lidar_housing_size}"
+      z="${lidar_housing_size}" mass="0.5"/>
+
+  <joint name="lidar_housing_joint" type="fixed">
+    <parent link="lidar_standoff_link"/>
+    <child  link="lidar_housing_link"/>
+    <origin xyz="0 0 ${lidar_standoff_height/2 + lidar_housing_size/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ─── VLP-16 on the housing top ────────────────────────────── -->
+  <!-- samples 440 (not the real 1875) keeps the laptop sim's RTF usable;
+       10 Hz matches the real sensor. -->
+  <xacro:VLP-16 parent="lidar_housing_link" name="${lidar_frame}"
+                topic="${lidar_topic}" hz="10" samples="440"
+                min_range="0.4" gpu="false">
+    <origin xyz="0 0 ${lidar_housing_size/2}" rpy="0 0 0"/>
+  </xacro:VLP-16>
+
+</robot>
