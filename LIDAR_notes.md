@@ -138,6 +138,48 @@ The sim layout is the real field rotated 90°. The rows run north (+y). The
 trailer sits south of the field heading west, and the robot starts at the
 ramp foot facing it.
 
+## Try it yourself (sim, the `field` world) — 2026-10-14
+
+**Every nav launch now defaults to the `field` world**: its map, its start
+pose and its entrance. There is no trailer leg (`reverse_distance` defaults
+to 0).
+
+**A. Build your own map**
+
+```bash
+rosrun agbot_bringup switch_maize_world.sh field
+roslaunch agbot_bringup agbot_gazebo.launch lidar:=true rviz:=false x:=-7.92 y:=-1.30 z:=0.35 yaw:=1.5917
+roslaunch agbot_nav mapping.launch rviz:=true          # or slam:=gmapping (sudo apt install ros-noetic-gmapping)
+```
+
+- Drive a slow lap with RViz's **drive handle** (drag the arrows around the
+  robot). To click goals instead, add `move_base:=true` and use "2D Nav Goal".
+- Then save it: `rosrun agbot_nav save_map.sh my_map`. This saves AND pads
+  the map.
+- The map's (0, 0) is where the robot was when mapping started, facing the way
+  it faced.
+
+**B. Navigate on it**
+
+```bash
+roslaunch agbot_nav transit.launch rviz:=true map_file:=$(rospack find agbot_nav)/maps/my_map.yaml \
+  initial_x:=0 initial_y:=0 initial_yaw:=0
+```
+
+- Use "2D Nav Goal" to drive.
+- Use "Publish Point" (then `rostopic echo /clicked_point`) to read the map
+  coordinates of the row entrance for C.
+
+**C. The full sequence**
+
+```bash
+roslaunch agbot_nav deploy_mission.launch vision_standin:=true rviz:=true \
+  map_file:=... initial_x:=0 initial_y:=0 initial_yaw:=0 \
+  entrance_x:=... entrance_y:=... entrance_yaw_deg:=...
+```
+
+Without those arguments it uses the ground-truth `field` map.
+
 ## Your own field: `field` world (2026-10-14)
 
 Describe the field as BLOCKS OF ROWS in

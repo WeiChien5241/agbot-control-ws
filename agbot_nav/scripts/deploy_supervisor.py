@@ -53,7 +53,7 @@ class DeploySupervisor(object):
         self._fsm = DeployFSM(
             entrance,
             entrance_standoff=p("~entrance_standoff", 0.7),
-            reverse_distance=p("~reverse_distance", 1.5),
+            reverse_distance=p("~reverse_distance", 0.0),
             reverse_speed=p("~reverse_speed", 0.15),
             max_std_xy=p("~max_std_xy", 0.15),
             max_std_yaw_deg=p("~max_std_yaw_deg", 8.0),
@@ -99,8 +99,11 @@ class DeploySupervisor(object):
                       "move_base stops %.2f m short of it on the axis",
                       f.entrance.x, f.entrance.y, math.degrees(f.entrance.yaw),
                       f.entrance_standoff)
-        rospy.loginfo("reverse off the trailer: %.2f m at %.2f m/s",
-                      f.reverse_distance, f.reverse_speed)
+        if f.reverse_distance > 0.0:
+            rospy.loginfo("reverse off the trailer: %.2f m at %.2f m/s",
+                          f.reverse_distance, f.reverse_speed)
+        else:
+            rospy.loginfo("no trailer leg: starting at LOCALIZE")
         rospy.loginfo("localized when AMCL std <= %.2f m / %.1f deg for %.1f s",
                       f.localize_max_std_xy, math.degrees(f.localize_max_std_yaw),
                       f.localize_hold_sec)

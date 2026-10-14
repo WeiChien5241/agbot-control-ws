@@ -4,13 +4,16 @@
        ⚠ Never run this alongside agbot_gps_nav's ekf_map or slam_toolbox:
        both also publish map->odom.
 
-       Initial pose: pass initial_x/y/yaw (map frame), or set it in RViz with
-       "2D Pose Estimate" after the robot leaves the trailer. -->
-  <arg name="map_file"    default="$(find agbot_nav)/maps/sim_gps_tall.yaml"/>
+       Defaults: the `field` world (agbot_bringup/config/agbot_field_layout.yaml),
+       its ground-truth map and its start pose. With YOUR OWN map
+       (mapping.launch + save_map.sh) pass map_file:=... and initial 0 0 0 if
+       the robot starts where mapping started. Or set the pose in RViz with
+       "2D Pose Estimate". -->
+  <arg name="map_file"    default="$(find agbot_nav)/maps/field.yaml"/>
   <arg name="cloud_topic" default="/ns1/velodyne_points"/>
-  <arg name="initial_x"   default="0.0"/>
-  <arg name="initial_y"   default="0.0"/>
-  <arg name="initial_yaw" default="0.0"/>
+  <arg name="initial_x"   default="-7.92"/>
+  <arg name="initial_y"   default="-1.30"/>
+  <arg name="initial_yaw" default="1.5917"/>
 
   <include file="$(find agbot_nav)/launch/scan.launch">
     <arg name="cloud_topic" value="$(arg cloud_topic)"/>

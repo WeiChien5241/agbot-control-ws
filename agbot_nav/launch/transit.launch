@@ -1,10 +1,10 @@
 <launch>
   <!-- Everything the LiDAR transit needs: scan + map + AMCL + move_base. -->
-  <arg name="map_file"    default="$(find agbot_nav)/maps/sim_gps_tall.yaml"/>
+  <arg name="map_file"    default="$(find agbot_nav)/maps/field.yaml"/>
   <arg name="cloud_topic" default="/ns1/velodyne_points"/>
-  <arg name="initial_x"   default="0.0"/>
-  <arg name="initial_y"   default="0.0"/>
-  <arg name="initial_yaw" default="0.0"/>
+  <arg name="initial_x"   default="-7.92"/>
+  <arg name="initial_y"   default="-1.30"/>
+  <arg name="initial_yaw" default="1.5917"/>
   <!-- RViz with the nav view: map, scan, AMCL particles, costmaps, plans,
        and the "2D Pose Estimate" / "2D Nav Goal" tools. -->
   <arg name="rviz" default="false"/>

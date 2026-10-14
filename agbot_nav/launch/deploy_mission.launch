@@ -5,38 +5,41 @@
          drop-off point.
        Sequenced by deploy_supervisor.py (decisions in deploy_fsm.py).
 
-       Sim (gps_tall world; LIDAR_notes.md has the layout):
-         rosrun agbot_bringup switch_maize_world.sh gps_tall
-         roslaunch agbot_bringup agbot_gazebo.launch lidar:=true \
-           x:=9.0 y:=-16.0 z:=0.35 yaw:=3.14159
-         roslaunch agbot_nav sim_trailer.launch
-         roslaunch agbot_nav deploy_mission.launch vision_standin:=true
+       Sim (the `field` world, agbot_bringup/config/agbot_field_layout.yaml):
+         rosrun agbot_bringup switch_maize_world.sh field
+         roslaunch agbot_bringup agbot_gazebo.launch lidar:=true rviz:=false \
+           x:=-7.92 y:=-1.30 z:=0.35 yaw:=1.5917
+         roslaunch agbot_nav deploy_mission.launch vision_standin:=true rviz:=true
+       Every default below is that world's. With your own SLAM map, pass
+       map_file, initial_* (0 0 0 if you start where mapping started) and the
+       entrance in THAT map's frame (read it off RViz with "Publish Point").
 
        ⚠ Start with gps:=false on the sim. AMCL owns map->odom here, and
        agbot_gps_nav's ekf_map would publish it too. -->
 
-  <arg name="map_file" default="$(find agbot_nav)/maps/sim_gps_tall.yaml"/>
+  <arg name="map_file" default="$(find agbot_nav)/maps/field.yaml"/>
 
-  <!-- Where the robot is when this starts: the ramp foot, facing the
-       trailer. Defaults are the sim's. On the robot this is the operator's
-       2D Pose Estimate (or, later, an RTK fix + the trailer's heading). -->
-  <arg name="initial_x"   default="9.0"/>
-  <arg name="initial_y"   default="-16.0"/>
-  <arg name="initial_yaw" default="3.14159"/>
+  <!-- Where the robot is when this starts (map frame). Defaults: the field
+       world's start, facing north with the corn on its right. On the robot
+       this is the operator's 2D Pose Estimate (or, later, an RTK fix). -->
+  <arg name="initial_x"   default="-7.92"/>
+  <arg name="initial_y"   default="-1.30"/>
+  <arg name="initial_yaw" default="1.5917"/>
 
-  <!-- Row entrance, MAP frame; yaw is the row bearing. Default: corridor_0 of
-       the gps worlds (agbot_gps_nav/config/waypoints_maize_gps.yaml). -->
-  <arg name="entrance_x"       default="-0.798"/>
-  <arg name="entrance_y"       default="-3.861"/>
-  <arg name="entrance_yaw_deg" default="90.0"/>
+  <!-- Row entrance, MAP frame; yaw is the row bearing. Default: the field
+       world's entrance, the north block's 3rd/4th-row corridor, facing east. -->
+  <arg name="entrance_x"       default="-0.5"/>
+  <arg name="entrance_y"       default="0.0"/>
+  <arg name="entrance_yaw_deg" default="0.0"/>
   <!-- move_base stops this far BEFORE the entrance, on its axis; vision nav
        drives the rest. Corn leaves reach ~0.6 m into the headland and the
        costmap marks them (deploy_fsm.py has the measurement). -->
   <arg name="entrance_standoff" default="0.7"/>
 
-  <!-- 0 skips the reverse leg: the robot is driven off the trailer by hand
-       and the sequence starts at LOCALIZE. -->
-  <arg name="reverse_distance" default="1.5"/>
+  <!-- Trailer leg, OFF (0) by default: the robot is set down by hand and
+       the sequence starts at LOCALIZE. A positive value reverses that many
+       metres blind before localizing (off a ramp). -->
+  <arg name="reverse_distance" default="0.0"/>
   <arg name="rviz"             default="false"/>
   <arg name="return_enabled"   default="true"/>
 
@@ -47,7 +50,7 @@
        and how far to drive — through the row AND out into the far
        headland, where a real row mission ends. -->
   <arg name="standin_oracle"       default="true"/>
-  <arg name="standin_row_distance" default="9.0"/>
+  <arg name="standin_row_distance" default="10.7"/>  <!-- field world: 8 m row + standoff + 1.5 m out -->
   <arg name="sim"            default="false"/>
   <arg name="num_rows"       default="3"/>
   <arg name="first_turn_direction" default="right"/>
