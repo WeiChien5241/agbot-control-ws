@@ -17,6 +17,15 @@
   <arg name="cloud_topic" default="/ns1/velodyne_points"/>
   <arg name="move_base"   default="false"/>
   <arg name="rviz"        default="false"/>
+  <!-- slam_toolbox loop closure. OFF by default in this field: rows (and a
+       rectangular fence) look alike, so a loop closure can snap the robot to
+       the wrong row and warp the whole map. Drift over one ~20 m lap is small.
+       Turn it on for a big site where drift is the bigger risk. -->
+  <arg name="loop_closing" default="false"/>
+  <!-- record:=true bags the raw inputs to ~/bags/mapping_<time>.bag, so a map
+       ruined late in a lap can be rebuilt by replaying the bag (other
+       settings, other SLAM) instead of driving the lap again. -->
+  <arg name="record"      default="false"/>
 
   <include file="$(find agbot_nav)/launch/scan.launch">
     <arg name="cloud_topic" value="$(arg cloud_topic)"/>
@@ -25,6 +34,7 @@
   <node if="$(eval slam == 'slam_toolbox')" pkg="slam_toolbox"
         type="async_slam_toolbox_node" name="slam_toolbox" output="screen">
     <rosparam file="$(find agbot_nav)/config/slam_toolbox_mapping.yaml" command="load"/>
+    <param name="do_loop_closing" value="$(arg loop_closing)"/>
   </node>
 
   <node if="$(eval slam == 'gmapping')" pkg="gmapping" type="slam_gmapping"
@@ -32,6 +42,9 @@
     <rosparam file="$(find agbot_nav)/config/gmapping.yaml" command="load"/>
     <remap from="scan" to="/scan"/>
   </node>
+
+  <node if="$(arg record)" pkg="rosbag" type="record" name="mapping_bag"
+        args="-o $(env HOME)/bags/mapping /ns1/velodyne_points /scan /tf /tf_static /odometry/filtered /clock"/>
 
   <node if="$(arg rviz)" name="nav_rviz" pkg="rviz" type="rviz"
         args="-d $(find agbot_nav)/rviz/nav.rviz"/>
