@@ -39,8 +39,12 @@ then returns to the point where it left the trailer.
 | housing | 15 cm cube | 0.22 m |
 | VLP-16 | optical centre 3.77 cm above its base | **0.258 m** |
 
-- Everything is centred on `mid_mount`. These are rough hand measurements;
-  re-measure them and edit the xacro properties.
+- The stack sits on the centreline, **0.10 m forward of `mid_mount`**: the
+  housing's front face is 1 cm behind the front camera body (moved forward
+  2026-10-14; it was centred). These are rough hand measurements; re-measure
+  them and edit the xacro properties (`lidar_mount_x` and the sizes), then
+  `lidar_tf.launch` to match — its test fails until you do.
+- The old 20 cm camera stand (`camera_mount_link`) is gone from the URDF.
 - The sim LiDAR publishes `/ns1/velodyne_points` in frame `velodyne`, at
   10.0 Hz sim time with full VLP-16 resolution (1875 × 16). The URDF is
   unchanged when `lidar:=false`.

@@ -32,12 +32,17 @@ def _launch_offset():
 def _xacro_offset():
     if shutil.which("xacro") is None or not os.path.exists(JACKAL):
         pytest.skip("xacro or jackal_description not available")
-    try:
-        urdf = subprocess.run(
-            ["bash", LOADER, EXTRAS, JACKAL, "none", "lidar:=true"],
-            check=True, capture_output=True, text=True, timeout=60).stdout
-    except subprocess.CalledProcessError as exc:
-        pytest.skip("xacro failed here (ROS env not sourced?): %s" % exc.stderr[-300:])
+    result = subprocess.run(
+        ["bash", LOADER, EXTRAS, JACKAL, "none", "lidar:=true"],
+        capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        # Skip ONLY when ROS's xacro is not importable; anything else is a
+        # broken URDF and must fail. (A '--' inside an XML comment in the
+        # lidar xacro was once reported here as a quiet skip.)
+        if "No module named 'xacro'" in result.stderr:
+            pytest.skip("ROS python path not sourced (no xacro module)")
+        pytest.fail("xacro failed on our URDF:\n" + result.stderr[-1500:])
+    urdf = result.stdout
     joints = {}
     for joint in ET.fromstring(urdf).findall("joint"):
         origin = joint.find("origin")

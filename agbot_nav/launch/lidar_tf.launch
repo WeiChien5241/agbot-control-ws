@@ -6,10 +6,11 @@
        first (LIDAR_notes.md, Phase 0) and only start this if it is missing.
 
        ⚠ These numbers duplicate agbot_bringup/urdf/agbot_lidar.urdf.xacro
-       (mid_mount is 0.184 m above base_link, the scan centre 0.2577 m above
-       mid_mount). test/test_lidar_tf.py fails if the two disagree; change
-       both together. -->
+       (mid_mount is 0.184 m above base_link; the scan centre is 0.10 m
+       forward of it, just behind the front camera, and 0.2577 m above it).
+       test/test_lidar_tf.py fails if the two disagree; change both
+       together. -->
   <arg name="lidar_frame" default="velodyne"/>
   <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf"
-        args="0.0 0.0 0.4417 0 0 0 base_link $(arg lidar_frame)"/>
+        args="0.10 0.0 0.4417 0 0 0 base_link $(arg lidar_frame)"/>
 </launch>

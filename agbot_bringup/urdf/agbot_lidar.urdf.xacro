@@ -6,7 +6,8 @@
     Included by agbot_camera.urdf.xacro only when the xacro arg lidar:=true,
     so the default URDF (and the laptop sim's RTF) is unchanged.
 
-    Layout (all offsets relative to mid_mount, the deck top centre):
+    Layout (all offsets relative to mid_mount, the deck top centre). The
+    stack sits at x = lidar_mount_x (0.10), just BEHIND the front camera:
 
       lidar_standoff_link — 7 cm standoff on the deck
       lidar_housing_link  — 15 cm cube on the standoff, deck +0.07 to +0.22 m
@@ -19,9 +20,12 @@
     carries the same base_link -> velodyne numbers, and a pytest keeps them
     equal.
 
-    Clearance: the lowest VLP-16 beam (-15 deg) from 0.258 m reaches deck
-    height (0) about 0.96 m out, so it clears the front camera (x=0.19,
-    z<=0.05) and the deck edge.
+    Clearance: the camera is 0.09 m in front of the scan centre, where the
+    lowest VLP-16 beam (-15 deg, from 0.258 m) is still 0.23 m up — far
+    above the 0.05 m camera body; that beam reaches deck height only ~0.96 m
+    out, past the deck edge. The housing is behind the camera, so it is not
+    in the camera's view, and well forward of the rear camera (x=-0.19,
+    facing backwards).
 
     The vertical LiDAR (/ns2) is not modelled — it is not used for SLAM.
 
@@ -34,7 +38,10 @@
   <xacro:property name="lidar_standoff_height" value="0.07"/>
   <xacro:property name="lidar_standoff_width"  value="0.10"/>
   <xacro:property name="lidar_housing_size"    value="0.15"/>
-  <xacro:property name="lidar_mount_x"         value="0.0"/>
+  <!-- Housing centre, forward of mid_mount. 0.10 puts the housing's front
+       face (0.10 + 0.075 = 0.175) 1 cm behind the front camera body, which
+       spans x = 0.185-0.195. Moved forward from 0.0 on 2026-10-14. -->
+  <xacro:property name="lidar_mount_x"         value="0.10"/>
 
   <!-- Must match the frame_id the robot's driver stamps on
        /ns1/velodyne_points (LIDAR_notes.md). -->

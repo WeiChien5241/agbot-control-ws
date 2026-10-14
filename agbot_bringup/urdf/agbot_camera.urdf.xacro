@@ -2,16 +2,13 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    AgBot cameras with physical mount stand, plus the optional 3D LiDAR.
+    AgBot cameras, plus the optional 3D LiDAR.
     Included via JACKAL_URDF_EXTRAS into jackal.urdf.xacro.
     xacro arg lidar:=true (default false) also includes
     agbot_lidar.urdf.xacro, the horizontal Velodyne on its housing.
     Parent link: mid_mount (top-centre of Jackal chassis).
 
     Layout (all offsets relative to mid_mount):
-
-      camera_mount_link  — 20×5×20 cm stand, kept for the TALL mount option
-                           (currently unused; both cameras are deck-mounted)
 
       camera_link        — forward sensor on the front deck at
                            xyz="0.19  0  0.025"
@@ -25,56 +22,10 @@
                            used as the image header frame_id
   -->
 
-  <!-- Mount stand dimensions (m) -->
-  <xacro:property name="mount_length" value="0.05"/>
-  <xacro:property name="mount_width"  value="0.20"/>
-  <xacro:property name="mount_height" value="0.20"/>
-
   <!-- Camera sensor body dimensions (m) -->
   <xacro:property name="cam_length" value="0.01"/>
   <xacro:property name="cam_width"  value="0.10"/>
   <xacro:property name="cam_height" value="0.05"/>
-
-  <!-- half-height shortcuts -->
-  <xacro:property name="cam_z" value="0.225"/>  <!-- 0.20 + cam_height/2 -->
-
-  <!-- ─── Mount stand ─────────────────────────────────────────── -->
-  <link name="camera_mount_link">
-    <visual>
-      <geometry>
-        <box size="${mount_length} ${mount_width} ${mount_height}"/>
-      </geometry>
-      <material name="dark_grey"/>
-    </visual>
-    <collision>
-      <geometry>
-        <box size="${mount_length} ${mount_width} ${mount_height}"/>
-      </geometry>
-    </collision>
-    <inertial>
-      <mass value="0.3"/>
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-      <inertia
-        ixx="${0.3*(mount_width*mount_width   + mount_height*mount_height)/12}"
-        ixy="0" ixz="0"
-        iyy="${0.3*(mount_length*mount_length + mount_height*mount_height)/12}"
-        iyz="0"
-        izz="${0.3*(mount_length*mount_length + mount_width*mount_width)/12}"/>
-    </inertial>
-  </link>
-
-  <!-- centre of box: x=-0.10 m (front face at x=0, extends behind),
-                      y= 0.00 m (centred),
-                      z= 0.10 m (half of 0.20 m height, rests on platform) -->
-  <joint name="camera_mount_joint" type="fixed">
-    <parent link="mid_mount"/>
-    <child  link="camera_mount_link"/>
-    <origin xyz="-0.025 0 0.10" rpy="0 0 0"/>
-  </joint>
-
-  <gazebo reference="camera_mount_link">
-    <material>Gazebo/DarkGrey</material>
-  </gazebo>
 
   <!-- ─── Camera macro: body + optical frame + Gazebo sensor ──── -->
   <!-- name=camera keeps all historical names/topics of the forward
@@ -167,15 +118,11 @@
   <!-- ─── Forward camera (LOW deck mount — the standard now) ──── -->
   <!-- On the front deck, lens just inside the +0.210 m front edge of the
        chassis (parent stays mid_mount). z=0.025 puts the 0.05 m-tall camera
-       body's bottom on the deck plane. The low mount is preferred over the
-       tall stand: it sees the row boundaries closer in and matches the
-       physical GPU robot. -->
+       body's bottom on the deck plane. The low mount sees the row
+       boundaries closer in and matches the physical GPU robot. (The old
+       20 cm camera stand, camera_mount_link, was removed 2026-10-14; it is
+       in git history.) -->
   <xacro:agbot_cam name="camera" xyz="0.19 0 0.025" rpy="0 0 0"/>
-
-  <!-- Tall stand mount, kept as a record of the original geometry. If it is
-       ever re-enabled, move the rear camera back to the stand as well
-       (xyz="-0.05 0 ${cam_z}") so the two stay mirrored. -->
-  <!-- <xacro:agbot_cam name="camera" xyz="0 0 ${cam_z}" rpy="0 0 0"/> -->
 
   <!-- ─── Rear camera (blocked-row back-out) ──────────────────── -->
   <!-- MIRROR of the forward camera about the robot centre: same z, same
