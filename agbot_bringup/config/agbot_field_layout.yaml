@@ -88,6 +88,28 @@ entrance: [-0.5, 0.0, 0]     # x, y, yaw_deg
 # state, 2026-10-14 (yaw 1.5917 rad).
 spawn: [-7.92, -1.30, 91.2]  # x, y, yaw_deg
 
+# Walls: static grey boxes the LiDAR sees cleanly (a SLAM map of corn alone
+# is noisy, and open ground past the last plant maps as nothing at all, which
+# move_base plans across as drivable unknown). Each segment runs `from` -> `to`
+# in metres; the builder also writes them into the ground-truth map. Delete
+# the block to get the corn-only field back. (Added 2026-10-14.)
+#   fence:  closes the whole field, ~1.1 m north of the north block, 1.2 m
+#           south of the south blocks, 2 m east of the row ends.
+#   pen:    the fence's west side plus two stubs that continue the start
+#           corridor's two inner rows west to the fence, so from the spawn
+#           the ONLY way out is RIGHT (east) through the corridor. The stubs
+#           stop 0.1 m short of the first plant so they don't shove it.
+walls:
+  height: 1.5                # m; the scan slice is 0.10-1.20 m above base_link
+  thickness: 0.10
+  segments:
+    - {name: fence_west,  from: [-8.8, -5.0], to: [-8.8,  3.0]}
+    - {name: fence_north, from: [-8.8,  3.0], to: [10.0,  3.0]}
+    - {name: fence_east,  from: [10.0,  3.0], to: [10.0, -5.0]}
+    - {name: fence_south, from: [10.0, -5.0], to: [-8.8, -5.0]}
+    - {name: pen_north,   from: [-8.8, -0.38], to: [-7.1, -0.38]}
+    - {name: pen_south,   from: [-8.8, -2.28], to: [-7.1, -2.28]}
+
 # Optional: a box standing in for the trailer, drawn in the preview and
 # spawned by agbot_nav's sim_trailer.launch if you pass its pose.
 trailer: null                # e.g. [-6.0, -6.5, 90]  (centre x, y, heading)

@@ -14,7 +14,7 @@ work unchanged:
     ~/.ros/virtual_maize_field_snapshots/<snapshot>/
         generated.world                    the world
         virtual_maize_field_heightmap.png  the ground: flat, `ground.size` m
-        gt_map.csv                         plant positions -> AMCL map
+        gt_map.csv                         plant + wall positions -> AMCL map
         robot_spawner.launch               spawn pose, which switch prints
         field_preview.png                  top-down picture of the layout
 
@@ -23,6 +23,10 @@ The sky, light and ground TEXTURES are copied from an existing snapshot
 validated on. The ground itself is a new flat heightmap, a square of
 `ground.size` m centred on `ground.center` (Gazebo heightmaps must be
 square); the builder refuses plants or a spawn within 1 m of its edge.
+
+Optional `walls:` are static boxes (a fence, a pen around the start) that
+the LiDAR sees cleanly. They are written to gt_map.csv as `wall` points every
+WALL_STEP m, so the ground-truth map carries them too.
 
 Also writes agbot_nav/maps/<snapshot>.{pgm,yaml} via gt_occupancy_map.py
 unless --no-map.
@@ -46,6 +50,7 @@ GROUND_Z = 0.30        # ground height under the plants (m)
 HEIGHT_RANGE = 0.305   # the template heightmap's z range (m)
 GROUND_PIXEL = 250     # flat ground: 250/255 * 0.305 = 0.299 m, the template's
 HEIGHTMAP_PX = 129     # Gazebo wants 2^n + 1 pixels a side
+WALL_STEP = 0.05      # m between `wall` points in gt_map.csv
 MODELS = {"tall": "agbot_maize_tall_0%d", "stock": "maize_0%d"}
 
 
@@ -65,6 +70,47 @@ def place_block(block, defaults, rng):
         for k in range(n_plants):
             p = base + k * step * along + rng.normal(0.0, jitter, 2)
             yield float(p[0]), float(p[1])
+
+
+def wall_specs(spec):
+    """[(name, (x1, y1), (x2, y2), height, thickness)] from `walls:`."""
+    cfg = spec.get("walls") or {}
+    height = float(cfg.get("height", 1.5))
+    thickness = float(cfg.get("thickness", 0.10))
+    out = []
+    for i, wall in enumerate(cfg.get("segments", [])):
+        out.append((wall.get("name", "wall_%02d" % i),
+                    tuple(float(v) for v in wall["from"]),
+                    tuple(float(v) for v in wall["to"]), height, thickness))
+    return out
+
+
+def wall_sdf(name, a, b, height, thickness):
+    """A static grey box from a to b standing on the ground."""
+    length = math.hypot(b[0] - a[0], b[1] - a[1]) + thickness   # close the corners
+    yaw = math.atan2(b[1] - a[1], b[0] - a[0])
+    box = "<box><size>%.3f %.3f %.3f</size></box>" % (length, thickness, height)
+    return (
+        "    <model name=\"%s\">\n"
+        "      <static>true</static>\n"
+        "      <pose>%.4f %.4f %.3f 0 0 %.4f</pose>\n"
+        "      <link name=\"link\">\n"
+        "        <collision name=\"collision\"><geometry>%s</geometry></collision>\n"
+        "        <visual name=\"visual\"><geometry>%s</geometry>\n"
+        "          <material><script><uri>file://media/materials/scripts/gazebo.material</uri>"
+        "<name>Gazebo/Grey</name></script></material>\n"
+        "        </visual>\n"
+        "      </link>\n"
+        "    </model>\n"
+        % (name, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, GROUND_Z + height / 2, yaw,
+           box, box))
+
+
+def wall_points(a, b):
+    """Points every WALL_STEP m along a wall, both ends included."""
+    n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / WALL_STEP)))
+    return [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n)
+            for k in range(n + 1)]
 
 
 def split_template(world_text):
@@ -110,6 +156,9 @@ def write_preview(path, plants, spec):
         t = matplotlib.transforms.Affine2D().rotate_deg(th).translate(tx, ty)
         rect.set_transform(t + ax.transData)
         ax.add_patch(rect)
+    for i, (_, a, b, _, _) in enumerate(wall_specs(spec)):
+        ax.plot([a[0], b[0]], [a[1], b[1]], "-", color="dimgrey", lw=3,
+                label="wall" if i == 0 else None)
     for block in spec["blocks"]:
         x0, y0 = block["start"]
         ax.text(x0, y0 + 0.3, block.get("name", ""), fontsize=8)
@@ -153,6 +202,13 @@ def main():
                      "(%.0f m square centred on (%.2f, %.2f)); enlarge or move "
                      "`ground`" % (label, x, y, size, cx, cy))
 
+    walls = wall_specs(spec)
+    half = size / 2.0
+    for name_w, a, b, _, _ in walls:
+        for x, y in (a, b):
+            if abs(x - cx) > half or abs(y - cy) > half:
+                sys.exit("wall %s end (%.2f, %.2f) is off the ground" % (name_w, x, y))
+
     template_dir = os.path.join(SNAPSHOTS, args.template)
     with open(os.path.join(template_dir, "generated.world")) as handle:
         head, tail = split_template(handle.read())
@@ -178,6 +234,7 @@ def main():
             "    </include>\n"
             % (model % rng.integers(1, 3), x, y, GROUND_Z,
                rng.uniform(0, 2 * math.pi), i))
+    body.extend(wall_sdf(*w) for w in walls)
     sx, sy, syaw = spec["spawn"]
     tail = tail.replace(
         tail[tail.index("<pose"):tail.index("</pose>") + len("</pose>")],
@@ -195,6 +252,8 @@ def main():
     with open(os.path.join(out, "gt_map.csv"), "w") as handle:
         handle.write("X,Y,kind\n")
         handle.writelines("%.6f,%.6f,crop\n" % p for p in plants)
+        for _, a, b, _, _ in walls:
+            handle.writelines("%.6f,%.6f,wall\n" % p for p in wall_points(a, b))
     with open(os.path.join(out, "robot_spawner.launch"), "w") as handle:
         handle.write(
             "<launch>\n  <!-- Spawn pose from %s; switch_maize_world.sh prints it. -->\n"
@@ -204,7 +263,8 @@ def main():
             % (os.path.basename(args.layout), sx, sy, math.radians(syaw)))
     write_preview(os.path.join(out, "field_preview.png"), plants, spec)
 
-    print("%s: %d plants in %d blocks -> %s" % (name, len(plants), len(spec["blocks"]), out))
+    print("%s: %d plants in %d blocks, %d walls -> %s"
+          % (name, len(plants), len(spec["blocks"]), len(walls), out))
     ex, ey, eyaw = spec["entrance"]
     print("spawn:    x:=%.3f y:=%.3f z:=0.35 yaw:=%.4f" % (sx, sy, math.radians(syaw)))
     print("entrance: entrance_x:=%.3f entrance_y:=%.3f entrance_yaw_deg:=%.1f "

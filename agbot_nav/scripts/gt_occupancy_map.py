@@ -17,8 +17,10 @@ from the question so the sim can test what it CAN test -- AMCL + move_base +
 the deployment sequence on a correct map. Mapping is validated on the robot.
 
 Plants become occupied disks of --plant-radius (default 0.15 m: the stalk plus
-the leaves the 0.25-1.35 m scan slice actually hits). Everything else is
-FREE: the ground truth is complete, unlike a LiDAR map.
+the leaves the 0.25-1.35 m scan slice actually hits). Rows of kind `wall`
+(points every few cm along a build_field_world.py wall) become disks of
+--wall-radius. Everything else is FREE: the ground truth is complete, unlike
+a LiDAR map.
 
 ⚠ No wall at the world edge by default (--border 0). AMCL's beam model
 raycasts the map, and a wall the LiDAR can never see -- 7 m from the trailer
@@ -45,13 +47,16 @@ def main():
                     help="ground centre x y in m (build_field_world.py worlds)")
     ap.add_argument("--resolution", type=float, default=0.05)
     ap.add_argument("--plant-radius", type=float, default=0.15)
+    ap.add_argument("--wall-radius", type=float, default=0.08,
+                    help="half-thickness drawn for `wall` points, m")
     ap.add_argument("--border", type=float, default=0.0,
                     help="lethal band inside the world edge, m (0 = none)")
     args = ap.parse_args()
 
     with open(args.gt_csv) as handle:
-        plants = [(float(r["X"]), float(r["Y"])) for r in csv.DictReader(handle)
-                  if r["kind"] == "crop"]
+        records = list(csv.DictReader(handle))
+    plants = [(float(r["X"]), float(r["Y"])) for r in records if r["kind"] == "crop"]
+    walls = [(float(r["X"]), float(r["Y"])) for r in records if r["kind"] == "wall"]
 
     res = args.resolution
     half = args.world_size / 2.0
@@ -67,8 +72,8 @@ def main():
         grid[:border, :] = grid[-border:, :] = OCCUPIED
         grid[:, :border] = grid[:, -border:] = OCCUPIED
 
-    r = args.plant_radius
-    for px, py in plants:
+    for (px, py), r in ([(p, args.plant_radius) for p in plants]
+                        + [(p, args.wall_radius) for p in walls]):
         cols = np.nonzero(np.abs(xs - px) <= r)[0]
         rows = np.nonzero(np.abs(ys - py) <= r)[0]
         for row in rows:
@@ -88,8 +93,8 @@ def main():
     }
     with open(base + ".yaml", "w") as handle:
         yaml.safe_dump(spec, handle, default_flow_style=None)
-    print("%d plants -> %s.{pgm,yaml}: %dx%d cells at %.2f m, origin (%.2f, %.2f)"
-          % (len(plants), base, n, n, res, cx - half, cy - half))
+    print("%d plants, %d wall points -> %s.{pgm,yaml}: %dx%d cells at %.2f m, "
+          "origin (%.2f, %.2f)" % (len(plants), len(walls), base, n, n, res, cx - half, cy - half))
 
 
 if __name__ == "__main__":
