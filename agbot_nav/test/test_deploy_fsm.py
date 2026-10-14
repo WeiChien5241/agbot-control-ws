@@ -57,6 +57,12 @@ def test_reverse_ends_on_odometry_distance_not_time():
     assert tick.reverse_speed == 0.0 and tick.commander is None
 
 
+def test_zero_reverse_distance_skips_the_reverse_leg():
+    tick = fsm(reverse_distance=0.0).start(0.0)
+    assert tick.state == STATE_LOCALIZE
+    assert tick.reverse_speed == 0.0 and tick.commander is None
+
+
 def test_reverse_without_odometry_times_out():
     f = fsm(reverse_timeout_sec=30.0)
     f.start(0.0)

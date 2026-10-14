@@ -13,6 +13,7 @@
        agbot_gps_nav's ekf_map (start the sim with gps:=false). -->
   <arg name="cloud_topic" default="/ns1/velodyne_points"/>
   <arg name="move_base"   default="false"/>
+  <arg name="rviz"        default="false"/>
 
   <include file="$(find agbot_nav)/launch/scan.launch">
     <arg name="cloud_topic" value="$(arg cloud_topic)"/>
@@ -22,6 +23,9 @@
         output="screen">
     <rosparam file="$(find agbot_nav)/config/slam_toolbox_mapping.yaml" command="load"/>
   </node>
+
+  <node if="$(arg rviz)" name="nav_rviz" pkg="rviz" type="rviz"
+        args="-d $(find agbot_nav)/rviz/nav.rviz"/>
 
   <include if="$(arg move_base)" file="$(find agbot_nav)/launch/move_base.launch">
     <arg name="mapping" value="true"/>

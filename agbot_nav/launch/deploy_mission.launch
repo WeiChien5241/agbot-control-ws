@@ -34,7 +34,10 @@
        costmap marks them (deploy_fsm.py has the measurement). -->
   <arg name="entrance_standoff" default="0.7"/>
 
+  <!-- 0 skips the reverse leg: the robot is driven off the trailer by hand
+       and the sequence starts at LOCALIZE. -->
   <arg name="reverse_distance" default="1.5"/>
+  <arg name="rviz"             default="false"/>
   <arg name="return_enabled"   default="true"/>
 
   <!-- Row mission. vision_standin:=true replaces vision nav with a blind
@@ -51,6 +54,7 @@
     <arg name="initial_x"   value="$(arg initial_x)"/>
     <arg name="initial_y"   value="$(arg initial_y)"/>
     <arg name="initial_yaw" value="$(arg initial_yaw)"/>
+    <arg name="rviz"        value="$(arg rviz)"/>
   </include>
 
   <group if="$(arg vision_standin)">

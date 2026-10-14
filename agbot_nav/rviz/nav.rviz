@@ -1,0 +1,213 @@
+Panels:
+  - Class: rviz/Displays
+    Help Height: 70
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+      Splitter Ratio: 0.5
+    Tree Height: 420
+  - Class: rviz/Tool Properties
+    Expanded: ~
+    Name: Tool Properties
+    Splitter Ratio: 0.5
+  - Class: rviz/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Preferences:
+  PromptSaveOnExit: false
+Toolbars:
+  toolButtonStyle: 2
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.3
+      Cell Size: 1
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Name: Grid (1 m)
+      Plane: XY
+      Plane Cell Count: 60
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Alpha: 0.8
+      Class: rviz/Map
+      Color Scheme: map
+      Draw Behind: true
+      Enabled: true
+      Name: Map (saved / SLAM)
+      Topic: /map
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
+    - Alpha: 0.5
+      Class: rviz/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Global costmap
+      Topic: /move_base/global_costmap/costmap
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
+    - Alpha: 0.6
+      Class: rviz/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Local costmap
+      Topic: /move_base/local_costmap/costmap
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
+    - Alpha: 1
+      Class: rviz/RobotModel
+      Collision Enabled: false
+      Enabled: true
+      Name: Robot
+      Robot Description: robot_description
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Alpha: 0.6
+      Autocompute Intensity Bounds: true
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: AxisColor
+      Axis: Z
+      Enabled: false
+      Name: Velodyne 3D cloud
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 2
+      Size (m): 0.03
+      Style: Points
+      Topic: /ns1/velodyne_points
+      Unreliable: true
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz/LaserScan
+      Color: 255; 0; 0
+      Color Transformer: FlatColor
+      Enabled: true
+      Name: 2D scan (slice of the cloud)
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.06
+      Style: Flat Squares
+      Topic: /scan
+      Unreliable: true
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Arrow Length: 0.3
+      Axes Length: 0.3
+      Axes Radius: 0.01
+      Class: rviz/PoseArray
+      Color: 0; 170; 255
+      Enabled: true
+      Head Length: 0.07
+      Head Radius: 0.03
+      Name: AMCL particles
+      Queue Size: 10
+      Shaft Length: 0.23
+      Shaft Radius: 0.01
+      Shape: Arrow (Flat)
+      Topic: /particlecloud
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 0; 255; 0
+      Enabled: true
+      Line Style: Billboards
+      Line Width: 0.05
+      Name: Global plan
+      Topic: /move_base/GlobalPlanner/plan
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 255; 170; 0
+      Enabled: true
+      Line Style: Billboards
+      Line Width: 0.04
+      Name: Local plan (DWA)
+      Topic: /move_base/DWAPlannerROS/local_plan
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.1
+      Class: rviz/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Head Length: 0.3
+      Head Radius: 0.1
+      Name: Current goal
+      Shaft Length: 0.6
+      Shaft Radius: 0.05
+      Shape: Arrow
+      Topic: /move_base/current_goal
+      Unreliable: false
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Default Light: true
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+      Hide Inactive Objects: true
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/SetInitialPose
+      Theta std deviation: 0.2617993950843811
+      Topic: /initialpose
+      X std deviation: 0.5
+      Y std deviation: 0.5
+    - Class: rviz/SetGoal
+      Topic: /move_base_simple/goal
+    - Class: rviz/Measure
+  Value: true
+  Views:
+    Current:
+      Angle: 0
+      Class: rviz/TopDownOrtho
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Scale: 25
+      Target Frame: <Fixed Frame>
+      X: 4
+      Y: -8
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Width: 1400
+  X: 60
+  Y: 60

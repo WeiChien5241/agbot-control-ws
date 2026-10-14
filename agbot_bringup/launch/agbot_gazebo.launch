@@ -48,6 +48,16 @@
        LiDAR costs RTF that vision-nav runs on the laptop cannot spare.
        Needs ros-noetic-velodyne-gazebo-plugins. -->
   <arg name="lidar" default="false"/>
+
+  <!-- false skips this launch's own RViz (the URDF/camera view), e.g. when
+       agbot_nav's nav view is opened instead.
+       ⚠ That RViz's camera display was also the camera's only steady
+       subscriber. Gazebo's camera plugin stops rendering once nothing
+       subscribes and, headless, did not restart: a later one-off grab got a
+       frame 30+ s stale (measured 2026-10-13, with and without the LiDAR).
+       Vision nav subscribes continuously and is unaffected; a script that
+       samples /camera/image_raw now and then must keep its own subscriber. -->
+  <arg name="rviz" default="true"/>
   <arg name="datum_file" default="$(find agbot_gps_nav)/config/gps_datum.yaml"/>
 
   <!-- Ensure Gazebo can resolve model://maize_01, model://maize_02 (from
@@ -109,7 +119,7 @@
   </include>
 
   <!-- 4. RViz: RobotModel + TF + live camera feed from /camera/image_raw -->
-  <node name="rviz" pkg="rviz" type="rviz" output="screen"
+  <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" output="screen"
         args="-d $(find agbot_bringup)/rviz/urdf_config.rviz"/>
 
 </launch>

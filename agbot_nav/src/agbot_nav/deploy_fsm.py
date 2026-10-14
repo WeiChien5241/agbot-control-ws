@@ -172,6 +172,9 @@ class DeployFSM(object):
         self.drop_off = None
         self.arrival = None
         self._reverse_start = None
+        if self.reverse_distance <= 0.0:
+            # Driven off the trailer by hand: nothing to reverse.
+            return self._enter(STATE_LOCALIZE, now)
         return self._enter(STATE_REVERSE_OFF, now)
 
     def abort(self, reason):
