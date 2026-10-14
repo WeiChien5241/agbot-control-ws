@@ -84,8 +84,9 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
    with a 2D map + AMCL + `move_base` on the robot's 3D Velodyne (`/ns1/*`),
    vision nav in the rows. GPS stack kept, untouched. One launch:
    `deploy_mission.launch`; decisions in the rospy-free `deploy_fsm.py`.
-   **Sim-validated end to end, never run on the robot.** Status, sim results,
-   what the sim cannot test, and the robot checklist: `LIDAR_notes.md`.
+   **Sim-validated end to end, never run on the robot.** START A SESSION
+   with `HANDOFF_LIDAR.md` (where things stand, how to run, next steps);
+   full record and robot checklist: `LIDAR_notes.md`.
    ⚠ AMCL owns `map → odom` — never run it with `agbot_gps_nav`'s `ekf_map`
    or slam_toolbox. ⚠ AMCL must stay on the BEAM model (the likelihood
    field aliases along corn rows). URDF: `agbot_bringup/urdf/agbot_lidar.urdf.xacro`
