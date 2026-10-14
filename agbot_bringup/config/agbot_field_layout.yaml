@@ -11,9 +11,10 @@
 # Coordinates: metres, Gazebo world frame. +x = EAST, +y = NORTH, yaw in
 # degrees counter-clockwise from east (0 = east, 90 = north).
 #
-# Layout (2026-10-14, from the Gazebo screenshot): the robot starts at the
-# west mouth of a short corridor between two single rows, drives EAST through
-# it with corn on both sides, turns LEFT (north) across the 3 m gap, drives
+# Layout (2026-10-14, from the Gazebo screenshots): the robot starts just west
+# of a short corridor between two 3-row blocks, FACING NORTH with the corn on
+# its right; it turns RIGHT (east), drives through the corridor with corn on
+# both sides, turns LEFT (north) across the 3 m gap, drives
 # ~1.3 m, turns RIGHT to face the main rows and enters the corridor at the
 # entrance. Main rows: two east-west blocks with a cross alley between them.
 # Edit freely and rebuild.
@@ -58,21 +59,22 @@ blocks:
     rows: 3
     side: right
 
-  # The two single rows the robot starts between: a 1.9 m wide corridor
-  # (centre line y = -1.33), ending 3 m west of the main rows -- room for the
-  # left turn, the short leg north and the right turn onto the entrance.
+  # The two short 3-row blocks the robot starts beside: the corridor between
+  # their inner rows is 1.9 m wide (centre line y = -1.33) and ends 3 m west
+  # of the main rows -- room for the left turn, the short leg north and the
+  # right turn onto the entrance. Each block grows AWAY from that corridor.
   - name: west_arm_north
-    start: [-7.0, -0.38]
+    start: [-7.0, -0.38]     # inner (southern) row; more rows to the north
     heading: 0
     length: 4.0
-    rows: 1
-    side: right
+    rows: 3
+    side: left
 
   - name: west_arm_south
-    start: [-7.0, -2.28]
+    start: [-7.0, -2.28]     # inner (northern) row; more rows to the south
     heading: 0
     length: 4.0
-    rows: 1
+    rows: 3
     side: right
 
 # The row entrance (the yellow cell): a point on the corridor's centre line,
@@ -80,9 +82,11 @@ blocks:
 # north block's 3rd and 4th rows (y = 0.38 and -0.38).
 entrance: [-0.5, 0.0, 0]     # x, y, yaw_deg
 
-# Where the robot starts (set down off the trailer by hand): the west mouth
-# of the short corridor, on its centre line, facing east.
-spawn: [-7.6, -1.33, 0]      # x, y, yaw_deg
+# Where the robot starts (set down off the trailer by hand): just west of the
+# short corridor, FACING NORTH with the corn to its right. Its first move is a
+# right turn into the corridor. Pose read from the user's Gazebo model
+# state, 2026-10-14 (yaw 1.5917 rad).
+spawn: [-7.92, -1.30, 91.2]  # x, y, yaw_deg
 
 # Optional: a box standing in for the trailer, drawn in the preview and
 # spawned by agbot_nav's sim_trailer.launch if you pass its pose.
