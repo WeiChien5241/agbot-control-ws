@@ -1,0 +1,85 @@
+# A hand-described field for Gazebo, built by scripts/build_field_world.py.
+#
+#   rosrun agbot_bringup build_field_world.py $(rospack find agbot_bringup)/config/agbot_field_layout.yaml
+#   rosrun agbot_bringup switch_maize_world.sh field
+#
+# Instead of placing plants one by one, describe BLOCKS OF ROWS; the script
+# places every plant, writes the world snapshot, the ground truth
+# (gt_map.csv, which agbot_nav turns into the AMCL map) and a top-down
+# preview PNG (field_preview.png) to check the layout without Gazebo.
+#
+# Coordinates: metres, Gazebo world frame. +x = EAST, +y = NORTH, yaw in
+# degrees counter-clockwise from east (0 = east, 90 = north).
+#
+# This first version is a reading of the sketch of 2026-10-13: east-west rows
+# to the east in two blocks with a cross alley between them, a headland
+# column, a north-south strip of corn west of the headland, two short rows
+# west of the strip. Edit freely and rebuild.
+
+snapshot: field              # name for switch_maize_world.sh
+
+# Plant model: "tall" (~1.26 m, what the LiDAR can see) or "stock" (~0.63 m,
+# what vision nav was validated on).
+plant_model: tall
+
+# Applies to every block unless the block overrides it.
+defaults:
+  row_spacing: 0.76          # m between neighbouring rows (30 in)
+  plant_spacing: 0.25        # m between plants along a row. Real corn is
+                             # ~0.15-0.20; 0.25 keeps the plant count, and so
+                             # the laptop's real-time factor, manageable
+  jitter: 0.02               # m of random placement noise per plant
+
+blocks:
+  # Each block: rows start at `start` and run `length` m along `heading`;
+  # further rows are added `row_spacing` apart to the LEFT (`side: left`) or
+  # RIGHT (`side: right`) of the heading.
+
+  - name: north_block        # 4 east-west rows, the robot enters these
+    start: [0.0, 1.90]       # west end of the northernmost row
+    heading: 0               # rows run east
+    length: 8.0
+    rows: 4
+    side: right              # 2nd..4th rows to the south
+
+  - name: south_block        # 3 east-west rows past the cross alley
+    start: [0.0, -2.28]
+    heading: 0
+    length: 8.0
+    rows: 3
+    side: right
+
+  - name: west_strip         # the north-south strip west of the headland
+    start: [-3.38, 2.40]
+    heading: -90             # rows run south
+    length: 6.6
+    rows: 2
+    side: left               # 2nd row to the east (left of a south heading)
+
+  - name: west_arm_north     # short east-west rows west of the strip
+    start: [-8.0, -0.38]
+    heading: 0
+    length: 4.0
+    rows: 1
+    side: right
+
+  - name: west_arm_south
+    start: [-8.0, -2.28]
+    heading: 0
+    length: 4.0
+    rows: 1
+    side: right
+
+# The row entrance (the yellow cell): a point on the corridor's centre line,
+# just west of the first plants, facing along the rows. Corridor between the
+# north block's 3rd and 4th rows (y = 0.38 and -0.38).
+entrance: [-0.5, 0.0, 0]     # x, y, yaw_deg
+
+# Where the robot starts (left on the ground off the trailer, by hand).
+# ⚠ PLACEHOLDER -- the sketch does not settle where the trailer parks. It is
+# here so the transit is the ~5 m the trailer is supposed to leave.
+spawn: [-1.2, -4.6, 90]      # x, y, yaw_deg
+
+# Optional: a box standing in for the trailer, drawn in the preview and
+# spawned by agbot_nav's sim_trailer.launch if you pass its pose.
+trailer: null                # e.g. [-6.0, -6.5, 90]  (centre x, y, heading)

@@ -138,6 +138,53 @@ The sim layout is the real field rotated 90°. The rows run north (+y). The
 trailer sits south of the field heading west, and the robot starts at the
 ramp foot facing it.
 
+## Your own field: `field` world (2026-10-14)
+
+Describe the field as BLOCKS OF ROWS in
+`agbot_bringup/config/agbot_field_layout.yaml`: where each block starts,
+which way it runs, how many rows, the spacing and the length. Then:
+
+```bash
+rosrun agbot_bringup build_field_world.py $(rospack find agbot_bringup)/config/agbot_field_layout.yaml
+# -> ~/.ros/virtual_maize_field_snapshots/field/field_preview.png (top-down check)
+rosrun agbot_bringup switch_maize_world.sh field
+roslaunch agbot_bringup agbot_gazebo.launch lidar:=true x:=-1.2 y:=-4.6 z:=0.35 yaw:=1.5708
+roslaunch agbot_nav deploy_mission.launch vision_standin:=true standin_row_distance:=10.7 \
+  reverse_distance:=0 map_file:=$(rospack find agbot_nav)/maps/field.yaml \
+  initial_x:=-1.2 initial_y:=-4.6 initial_yaw:=1.5708 \
+  entrance_x:=-0.5 entrance_y:=0.0 entrance_yaw_deg:=0 rviz:=true
+```
+
+The builder writes the AMCL map (`agbot_nav/maps/<snapshot>.yaml`) and
+prints the spawn and entrance arguments.
+
+First version, read from the 2026-10-13 sketch:
+- 4 + 3 east-west rows, 8 m long, with a cross alley between the two blocks;
+- a 2.6 m headland;
+- a 2-row north-south strip west of the headland;
+- two short arms west of the strip;
+- 319 plants, which run at about real time.
+
+The robot start is a **placeholder** ~5 m from the entrance; the sketch does
+not settle where the trailer parks.
+
+**Full run:**
+
+| | result |
+|---|---|
+| transit (4.7 m) | 16 s |
+| true handoff | 0.03 m off the corridor axis, +4.5° |
+| row (perfect-vision stand-in) | within 0.03 m of the centre line, 0 plants knocked over |
+| return | 0.22 m / 8° from the start pose |
+| AMCL, worst over the run | 0.41 m |
+
+The stand-in now steers from Gazebo ground truth (`standin_oracle`, on by
+default). Run blind instead (`standin_oracle:=false`), a 5.6° handoff put it
+0.8 m into the corn over 8 m and stopped it inside the row. AMCL then lost the
+robot in the flattened plants, and the return failed. Neither happens with a
+row mission that keeps the robot centred and exits into the headland, which
+is what real vision nav does.
+
 ## Sim results (2026-10-13, `gps_tall` world)
 
 **Run 3 completed end to end** (REVERSE_OFF → … → FINISHED), in 3 min of sim

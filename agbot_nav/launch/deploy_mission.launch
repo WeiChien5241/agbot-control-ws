@@ -43,6 +43,11 @@
   <!-- Row mission. vision_standin:=true replaces vision nav with a blind
        straight-line stand-in (SIM ONLY: the laptop cannot run the model). -->
   <arg name="vision_standin" default="false"/>
+  <!-- Stand-in only: steer from Gazebo ground truth (a perfect vision nav),
+       and how far to drive — through the row AND out into the far
+       headland, where a real row mission ends. -->
+  <arg name="standin_oracle"       default="true"/>
+  <arg name="standin_row_distance" default="9.0"/>
   <arg name="sim"            default="false"/>
   <arg name="num_rows"       default="3"/>
   <arg name="first_turn_direction" default="right"/>
@@ -58,7 +63,13 @@
   </include>
 
   <group if="$(arg vision_standin)">
-    <node name="vision_nav_node" pkg="agbot_nav" type="vision_standin.py" output="screen"/>
+    <node name="vision_nav_node" pkg="agbot_nav" type="vision_standin.py" output="screen">
+      <param name="oracle"       value="$(arg standin_oracle)"/>
+      <param name="row_distance" value="$(arg standin_row_distance)"/>
+      <param name="axis_x"       value="$(arg entrance_x)"/>
+      <param name="axis_y"       value="$(arg entrance_y)"/>
+      <param name="axis_yaw_deg" value="$(arg entrance_yaw_deg)"/>
+    </node>
   </group>
   <group unless="$(arg vision_standin)">
     <include file="$(find agbot_vision_nav)/launch/vision_nav.launch">
