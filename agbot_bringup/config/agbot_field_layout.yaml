@@ -11,12 +11,21 @@
 # Coordinates: metres, Gazebo world frame. +x = EAST, +y = NORTH, yaw in
 # degrees counter-clockwise from east (0 = east, 90 = north).
 #
-# This first version is a reading of the sketch of 2026-10-13: east-west rows
-# to the east in two blocks with a cross alley between them, a headland
-# column, a north-south strip of corn west of the headland, two short rows
-# west of the strip. Edit freely and rebuild.
+# Layout (2026-10-14, from the Gazebo screenshot): the robot starts at the
+# west mouth of a short corridor between two single rows, drives EAST through
+# it with corn on both sides, turns LEFT (north) across the 3 m gap, drives
+# ~1.3 m, turns RIGHT to face the main rows and enters the corridor at the
+# entrance. Main rows: two east-west blocks with a cross alley between them.
+# Edit freely and rebuild.
 
 snapshot: field              # name for switch_maize_world.sh
+
+# The ground: a flat square of `size` m centred on `center`. Keep a couple of
+# metres around the plants and the robot; the builder refuses a layout that
+# leaves the ground. (It was a 48 m square, mostly empty, until 2026-10-14.)
+ground:
+  size: 20.0
+  center: [0.5, -0.5]
 
 # Plant model: "tall" (~1.26 m, what the LiDAR can see) or "stock" (~0.63 m,
 # what vision nav was validated on).
@@ -49,22 +58,18 @@ blocks:
     rows: 3
     side: right
 
-  - name: west_strip         # the north-south strip west of the headland
-    start: [-3.38, 2.40]
-    heading: -90             # rows run south
-    length: 6.6
-    rows: 2
-    side: left               # 2nd row to the east (left of a south heading)
-
-  - name: west_arm_north     # short east-west rows west of the strip
-    start: [-8.0, -0.38]
+  # The two single rows the robot starts between: a 1.9 m wide corridor
+  # (centre line y = -1.33), ending 3 m west of the main rows -- room for the
+  # left turn, the short leg north and the right turn onto the entrance.
+  - name: west_arm_north
+    start: [-7.0, -0.38]
     heading: 0
     length: 4.0
     rows: 1
     side: right
 
   - name: west_arm_south
-    start: [-8.0, -2.28]
+    start: [-7.0, -2.28]
     heading: 0
     length: 4.0
     rows: 1
@@ -75,10 +80,9 @@ blocks:
 # north block's 3rd and 4th rows (y = 0.38 and -0.38).
 entrance: [-0.5, 0.0, 0]     # x, y, yaw_deg
 
-# Where the robot starts (left on the ground off the trailer, by hand).
-# ⚠ PLACEHOLDER -- the sketch does not settle where the trailer parks. It is
-# here so the transit is the ~5 m the trailer is supposed to leave.
-spawn: [-1.2, -4.6, 90]      # x, y, yaw_deg
+# Where the robot starts (set down off the trailer by hand): the west mouth
+# of the short corridor, on its centre line, facing east.
+spawn: [-7.6, -1.33, 0]      # x, y, yaw_deg
 
 # Optional: a box standing in for the trailer, drawn in the preview and
 # spawned by agbot_nav's sim_trailer.launch if you pass its pose.

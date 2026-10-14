@@ -13,15 +13,16 @@ work unchanged:
 
     ~/.ros/virtual_maize_field_snapshots/<snapshot>/
         generated.world                    the world
-        virtual_maize_field_heightmap.png  the ground (copied)
+        virtual_maize_field_heightmap.png  the ground: flat, `ground.size` m
         gt_map.csv                         plant positions -> AMCL map
         robot_spawner.launch               spawn pose, which switch prints
         field_preview.png                  top-down picture of the layout
 
-The ground, sky and light are copied from an existing snapshot (--template,
-default `gps`) so the camera sees the visuals vision nav was validated on.
-The template's ground is a ~48 m square centred on the origin; keep the
-field well inside +/-22 m.
+The sky, light and ground TEXTURES are copied from an existing snapshot
+(--template, default `gps`) so the camera sees the visuals vision nav was
+validated on. The ground itself is a new flat heightmap, a square of
+`ground.size` m centred on `ground.center` (Gazebo heightmaps must be
+square); the builder refuses plants or a spawn within 1 m of its edge.
 
 Also writes agbot_nav/maps/<snapshot>.{pgm,yaml} via gt_occupancy_map.py
 unless --no-map.
@@ -29,6 +30,7 @@ unless --no-map.
 import argparse
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -40,7 +42,10 @@ SNAPSHOTS = os.path.join(os.environ.get("ROS_HOME", os.path.expanduser("~/.ros")
                          "virtual_maize_field_snapshots")
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.abspath(os.path.join(HERE, "..", ".."))
-GROUND_Z = 0.30        # template ground height under the plants (m)
+GROUND_Z = 0.30        # ground height under the plants (m)
+HEIGHT_RANGE = 0.305   # the template heightmap's z range (m)
+GROUND_PIXEL = 250     # flat ground: 250/255 * 0.305 = 0.299 m, the template's
+HEIGHTMAP_PX = 129     # Gazebo wants 2^n + 1 pixels a side
 MODELS = {"tall": "agbot_maize_tall_0%d", "stock": "maize_0%d"}
 
 
@@ -77,6 +82,10 @@ def write_preview(path, plants, spec):
 
     xs, ys = zip(*plants)
     fig, ax = plt.subplots(figsize=(9, 9))
+    size = float(spec["ground"]["size"])
+    cx, cy = (float(v) for v in spec["ground"]["center"])
+    ax.add_patch(Rectangle((cx - size / 2, cy - size / 2), size, size, fill=False,
+                           ec="saddlebrown", lw=2, ls="--", label="ground edge"))
     ax.scatter(xs, ys, s=6, c="green", label="corn (%d plants)" % len(plants))
 
     def arrow(pose, colour, label):
@@ -135,14 +144,27 @@ def main():
     plants = []
     for block in spec["blocks"]:
         plants.extend(place_block(block, defaults, rng))
-    worst = max(max(abs(x), abs(y)) for x, y in plants + [tuple(spec["spawn"][:2])])
-    if worst > 22.0:
-        sys.exit("layout reaches %.1f m from the origin; the template ground "
-                 "ends at ~23.9 m" % worst)
+    size = float(spec["ground"]["size"])
+    cx, cy = (float(v) for v in spec["ground"]["center"])
+    inside = size / 2.0 - 1.0
+    for label, (x, y) in [("plant", p) for p in plants] + [("spawn", tuple(spec["spawn"][:2]))]:
+        if abs(x - cx) > inside or abs(y - cy) > inside:
+            sys.exit("%s at (%.2f, %.2f) is within 1 m of the ground edge "
+                     "(%.0f m square centred on (%.2f, %.2f)); enlarge or move "
+                     "`ground`" % (label, x, y, size, cx, cy))
 
     template_dir = os.path.join(SNAPSHOTS, args.template)
     with open(os.path.join(template_dir, "generated.world")) as handle:
         head, tail = split_template(handle.read())
+    # The template's heightmap appears twice (visual + collision): resize and
+    # re-centre both.
+    # ⚠ Only the THREE-number <size>: the texture blocks inside the same
+    # <heightmap> have one-number <size> tags of their own.
+    head, n = re.subn(r"<size>\s*[0-9.]+\s+[0-9.]+\s+[0-9.]+\s*</size>",
+                      "<size>%.3f %.3f %.3f</size>" % (size, size, HEIGHT_RANGE), head)
+    if n != 2:
+        sys.exit("expected 2 heightmap <size> tags in the template, found %d" % n)
+    head = head.replace("<pos>0 0 0</pos>", "<pos>%.3f %.3f 0</pos>" % (cx, cy))
 
     model = MODELS[spec.get("plant_model", "tall")]
     body = []
@@ -159,13 +181,15 @@ def main():
     sx, sy, syaw = spec["spawn"]
     tail = tail.replace(
         tail[tail.index("<pose"):tail.index("</pose>") + len("</pose>")],
-        "<pose frame=''>%.2f %.2f 12 0 1.2 1.5708</pose>" % (sx, sy - 6.0), 1)
+        "<pose frame=''>%.2f %.2f 14 0 1.1 1.5708</pose>" % (cx, cy - 7.0), 1)
 
     out = os.path.join(SNAPSHOTS, name)
     if os.path.isdir(out):
         shutil.rmtree(out)
     os.makedirs(out)
-    shutil.copy(os.path.join(template_dir, "virtual_maize_field_heightmap.png"), out)
+    from PIL import Image
+    Image.fromarray(np.full((HEIGHTMAP_PX, HEIGHTMAP_PX), GROUND_PIXEL, dtype=np.uint8)
+                    ).save(os.path.join(out, "virtual_maize_field_heightmap.png"))
     with open(os.path.join(out, "generated.world"), "w") as handle:
         handle.write(head + "\n".join(body) + "\n    " + tail)
     with open(os.path.join(out, "gt_map.csv"), "w") as handle:
@@ -190,7 +214,9 @@ def main():
         map_base = os.path.join(SRC, "agbot_nav", "maps", name)
         subprocess.run([sys.executable, os.path.join(SRC, "agbot_nav", "scripts",
                                                      "gt_occupancy_map.py"),
-                        os.path.join(out, "gt_map.csv"), map_base], check=True)
+                        os.path.join(out, "gt_map.csv"), map_base,
+                        "--world-size", str(size), "--center", str(cx), str(cy)],
+                       check=True)
 
 
 if __name__ == "__main__":

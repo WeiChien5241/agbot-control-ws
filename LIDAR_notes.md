@@ -148,7 +148,7 @@ which way it runs, how many rows, the spacing and the length. Then:
 rosrun agbot_bringup build_field_world.py $(rospack find agbot_bringup)/config/agbot_field_layout.yaml
 # -> ~/.ros/virtual_maize_field_snapshots/field/field_preview.png (top-down check)
 rosrun agbot_bringup switch_maize_world.sh field
-roslaunch agbot_bringup agbot_gazebo.launch lidar:=true x:=-1.2 y:=-4.6 z:=0.35 yaw:=1.5708
+roslaunch agbot_bringup agbot_gazebo.launch lidar:=true x:=-7.6 y:=-1.33 z:=0.35 yaw:=0.0
 roslaunch agbot_nav deploy_mission.launch vision_standin:=true standin_row_distance:=10.7 \
   reverse_distance:=0 map_file:=$(rospack find agbot_nav)/maps/field.yaml \
   initial_x:=-1.2 initial_y:=-4.6 initial_yaw:=1.5708 \
@@ -158,15 +158,19 @@ roslaunch agbot_nav deploy_mission.launch vision_standin:=true standin_row_dista
 The builder writes the AMCL map (`agbot_nav/maps/<snapshot>.yaml`) and
 prints the spawn and entrance arguments.
 
-First version, read from the 2026-10-13 sketch:
-- 4 + 3 east-west rows, 8 m long, with a cross alley between the two blocks;
-- a 2.6 m headland;
-- a 2-row north-south strip west of the headland;
-- two short arms west of the strip;
-- 319 plants, which run at about real time.
+Current layout (2026-10-14, from the user's Gazebo screenshot):
+- The robot starts at the west mouth of a 1.9 m corridor between two short
+  single rows, and drives east through it.
+- It turns left (north) across a 3 m gap, drives ~1.3 m, then turns right
+  into the north block's 3rd/4th-row corridor.
+- The north block has 4 east-west rows and the south block 3, 8 m long, with
+  a cross alley between them.
+- 265 plants, on a flat 20 m square of ground. It was a 48 m square before;
+  the ground is now its own heightmap, sized by `ground:` in the layout.
 
-The robot start is a **placeholder** ~5 m from the entrance; the sketch does
-not settle where the trailer parks.
+The run below is from the FIRST version: a N-S strip west of the headland,
+start 4.7 m south of the entrance, 48 m ground. The current layout has not
+been driven yet.
 
 **Full run:**
 

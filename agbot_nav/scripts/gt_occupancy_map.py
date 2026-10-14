@@ -41,6 +41,8 @@ def main():
     ap.add_argument("out_base", help="output path without extension")
     ap.add_argument("--world-size", type=float, default=47.85,
                     help="heightmap side length in m (generated.world <size>)")
+    ap.add_argument("--center", type=float, nargs=2, default=[0.0, 0.0],
+                    help="ground centre x y in m (build_field_world.py worlds)")
     ap.add_argument("--resolution", type=float, default=0.05)
     ap.add_argument("--plant-radius", type=float, default=0.15)
     ap.add_argument("--border", type=float, default=0.0,
@@ -57,8 +59,9 @@ def main():
     grid = np.full((n, n), FREE, dtype=np.uint8)   # row 0 = TOP = +y edge
 
     # cell centres in world coordinates
-    xs = -half + (np.arange(n) + 0.5) * res
-    ys = half - (np.arange(n) + 0.5) * res
+    cx, cy = args.center
+    xs = cx - half + (np.arange(n) + 0.5) * res
+    ys = cy + half - (np.arange(n) + 0.5) * res
     border = int(round(args.border / res))
     if border > 0:
         grid[:border, :] = grid[-border:, :] = OCCUPIED
@@ -78,7 +81,7 @@ def main():
     spec = {
         "image": os.path.basename(base) + ".pgm",
         "resolution": res,
-        "origin": [-half, -half, 0.0],
+        "origin": [cx - half, cy - half, 0.0],
         "negate": 0,
         "occupied_thresh": 0.65,
         "free_thresh": 0.196,
@@ -86,7 +89,7 @@ def main():
     with open(base + ".yaml", "w") as handle:
         yaml.safe_dump(spec, handle, default_flow_style=None)
     print("%d plants -> %s.{pgm,yaml}: %dx%d cells at %.2f m, origin (%.2f, %.2f)"
-          % (len(plants), base, n, n, res, -half, -half))
+          % (len(plants), base, n, n, res, cx - half, cy - half))
 
 
 if __name__ == "__main__":
