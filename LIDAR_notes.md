@@ -90,7 +90,11 @@ rostopic list | grep gx5                             # /gx5/ekf/* = onboard filt
 | frame_id | `velodyne1` |
 | model | VLP-16 (user, 2026-10-16) |
 | existing base_link → lidar TF | **yes**, published by the robot: `[-0.125, 0, 0.402]`, yaw **180°** (xacro guess was `[0.10, 0, 0.4417]`, yaw 0) |
-| GX5 model / orientation populated | populated (non-zero quaternion); `/gx5/ekf/status` exists; model TBD |
+| GX5 model / orientation populated | **3DM-GX5-AHRS** (6253-4220, fw 1.1.76): no GNSS (`gnss_state: Unsupported`), magnetometer present; orientation populated, filter "Solution Valid". A hand rotation read -65.6° → +15.0° yaw (80.6°); whether yaw is magnetometer-aided is unchecked |
+| second LiDAR | `/ns2/velodyne_points`, frame `velodyne2`, VERTICAL: `[-0.236, 0, 0.292]`, RPY `[-90°, 0, 90°]` |
+| robot env | `JACKAL_URDF_EXTRAS=~/catkin_ws/src/pur61_jackal/pur61_jackal_description/urdf/jackal_description.urdf.xacro`; GX5 at `-0.155 -0.07 0.09` from `base_link` |
+| nav packages on robot | **none installed** (no slam_toolbox, amcl, map_server, move_base, dwa, global_planner, pointcloud_to_laserscan) |
+| 180° yaw check | inconclusive: `/ns1/scan` probes read 0°, 0°, −173°, −173°, 9°, 8°, and which reading was taken with the person in front of the robot was not recorded |
 
 ## What exists (2026-10-13): package `agbot_nav`
 
