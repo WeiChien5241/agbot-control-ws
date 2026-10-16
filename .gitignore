@@ -43,3 +43,6 @@ __pycache__/
 
 # Derived: regenerate with `zip -j AIAgNav_Overleaf.zip AIAgNav_Overleaf.tex`
 AIAgNav_Overleaf.zip
+
+# Old lab rosbags copied in for inspection (multi-GB)
+old_bags/
