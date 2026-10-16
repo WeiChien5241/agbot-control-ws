@@ -90,12 +90,12 @@ rostopic list | grep gx5                             # /gx5/ekf/* = onboard filt
 | frame_id | `velodyne1` |
 | model | VLP-16 (user, 2026-10-16) |
 | existing base_link → lidar TF | **yes**, published by the robot: `[-0.125, 0, 0.402]`, yaw **180°** (xacro guess was `[0.10, 0, 0.4417]`, yaw 0) |
-| GX5 model / orientation populated | **3DM-GX5-AHRS** (6253-4220, fw 1.1.76): no GNSS (`gnss_state: Unsupported`), magnetometer present; orientation populated, filter "Solution Valid". A hand rotation read -65.6° → +15.0° yaw (80.6°); `filter_heading_source: 1` (magnetometer on the GX5 line, likely) with `filter_enable_magnetometer_aiding: false`; whether yaw is a true compass heading is unverified (north test pending) |
+| GX5 model / orientation populated | **3DM-GX5-AHRS** (6253-4220, fw 1.1.76): no GNSS (`gnss_state: Unsupported`), magnetometer present; orientation populated, filter "Solution Valid". A hand rotation read -65.6° → +15.0° yaw (80.6°); `filter_heading_source: 1` (magnetometer on the GX5 line, likely) with `filter_enable_magnetometer_aiding: false`; **NOT a usable compass** (north test 2026-10-16, robot pointed N/E/S/W by phone compass read 218.0/18.7/57.7/39.9° yaw, ENU expects 90/0/−90/180): keep fusing yaw RATE only |
 | second LiDAR | `/ns2/velodyne_points`, frame `velodyne2`, VERTICAL: `[-0.236, 0, 0.292]`, RPY `[-90°, 0, 90°]` |
 | robot env | `JACKAL_URDF_EXTRAS=~/catkin_ws/src/pur61_jackal/pur61_jackal_description/urdf/jackal_description.urdf.xacro`; GX5 at `-0.155 -0.07 0.09` from `base_link` |
 | nav packages on robot | **none installed** (no slam_toolbox, amcl, map_server, move_base, dwa, global_planner, pointcloud_to_laserscan) |
 | 180° yaw check | **confirmed** (2026-10-16): person in front of the robot → −178°, behind → +2° in `velodyne1`, so the sensor faces backwards and the factory yaw 180° is right |
-| TF history | the 2024-06-10 bags have `base_link→velodyne1` = `[-0.14, 0, 0.55]` yaw 180°; today it is `[-0.125, 0, 0.402]`, so it was re-measured after the mount changed. Today's z puts the scan centre 0.218 m above the deck (`mid_mount` is 0.184 above `base_link`) |
+| TF history | the 2024-06-10 bags have `base_link→velodyne1` = `[-0.14, 0, 0.55]` yaw 180°; today it is `[-0.125, 0, 0.402]`, so it was re-measured after the mount changed. Today's z puts the scan centre 0.218 m above the deck (`mid_mount` is 0.184 above `base_link`). User 2026-10-16: x = −0.125 is right, but the LiDAR actually sits a bit HIGHER than 0.402 — exact z to come from the housing CAD |
 
 ## What exists (2026-10-13): package `agbot_nav`
 
