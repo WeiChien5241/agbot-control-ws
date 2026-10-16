@@ -86,11 +86,11 @@ rostopic list | grep gx5                             # /gx5/ekf/* = onboard filt
 
 | item | answer |
 |---|---|
-| topic | |
-| frame_id | |
-| model | |
-| existing base_link → lidar TF | |
-| GX5 model / orientation populated | |
+| topic | `/ns1/velodyne_points` at 9.9 Hz (also `/ns1/scan`; a second unit on `/ns2/*`) |
+| frame_id | `velodyne1` |
+| model | VLP-16 (user, 2026-10-16) |
+| existing base_link → lidar TF | **yes**, published by the robot: `[-0.125, 0, 0.402]`, yaw **180°** (xacro guess was `[0.10, 0, 0.4417]`, yaw 0) |
+| GX5 model / orientation populated | populated (non-zero quaternion); `/gx5/ekf/status` exists; model TBD |
 
 ## What exists (2026-10-13): package `agbot_nav`
 
