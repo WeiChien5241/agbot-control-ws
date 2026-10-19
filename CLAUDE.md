@@ -53,7 +53,8 @@ sudo apt-get install -y \
   ros-noetic-hector-gazebo-plugins ros-noetic-robot-localization ros-noetic-nmea-msgs \
   python3-shapely python3-packaging \
   ros-noetic-sick-tim ros-noetic-lms1xx ros-noetic-pointgrey-camera-description \
-  ros-noetic-flir-camera-description ros-noetic-interactive-marker-twist-server
+  ros-noetic-flir-camera-description ros-noetic-interactive-marker-twist-server \
+  ros-noetic-joy ros-noetic-teleop-twist-joy   # sim joystick teleop (else joystick:=false)
 # 3D LiDAR + map/AMCL transit (LIDAR_notes.md)
 sudo apt-get install -y ros-noetic-velodyne-gazebo-plugins ros-noetic-amcl \
   ros-noetic-map-server ros-noetic-slam-toolbox ros-noetic-pointcloud-to-laserscan \

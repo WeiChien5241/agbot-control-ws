@@ -89,6 +89,35 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
   off-axis. The corridor leaves ~0.16 m a side, so this is the weak spot.
 - **AMCL** is 0.05–0.15 m at the corn and up to ~0.95 m in open ground.
 
+## 2026-10-19: move_base fixed in sim (costmap saw leaves as walls)
+
+- **Localization was fine.** `amcl_truth.py` over a 12 m user drive on the
+  ground-truth map: AMCL within 0.22 m / 5.9° of truth throughout.
+- **The planner was the problem.** The costmap read the same 0.10–1.20 m
+  band as AMCL, so every hanging leaf was lethal. Measured canopy (tall sim
+  maize): up to ~0.55 m above ground only stalks return (within 0.1 m of
+  each); above that the leaves reach 0.3–0.55 m into the gap.
+- **Fix** (`eef899f`): the costmaps read `/scan_obstacles` (max 0.40 m in
+  `base_link`, `obstacle_max_height` arg on `scan.launch`). AMCL and SLAM
+  keep the full `/scan`. Inflation 0.45/6.0 → 0.35/8.0.
+- **A/B, spawn → entrance staging point (-1.2, 0), same sim:**
+
+  | | old | new |
+  |---|---|---|
+  | time | 43 s | 23 s |
+  | global plans | 158 | 23 |
+  | path | stalls at start and mid-corridor, weaves 0.5 m | smooth, 7.4 m for 6.8 m straight |
+  | closest stalk | 0.49 m | 0.53 m |
+
+  The return leg on the new config succeeded too (25 s, 0.07 m from start).
+- ⚠ **Real corn has leaves lower down.** Re-check `obstacle_max_height` on
+  the robot before trusting it.
+- ⚠ A map YOU build with SLAM still holds the leaves in its static layer (it
+  is built from `/scan`). The ground-truth map does not. If planning on your
+  own map is still tight, that is the next thing to change.
+- **Creep measured again:** the robot moved ~55 mm in about a minute,
+  standing still after a teleport.
+
 ## Hard-won lessons (each is commented where it lives)
 
 - **AMCL must use the BEAM model.** The likelihood field aliases along corn
