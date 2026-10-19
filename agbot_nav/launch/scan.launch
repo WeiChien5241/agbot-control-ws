@@ -1,13 +1,34 @@
 <launch>
-  <!-- Horizontal Velodyne -> 2D /scan (config/scan.yaml). Shared by mapping,
-       localization and the move_base obstacle layer. -->
+  <!-- Horizontal Velodyne -> two 2D scans (config/scan.yaml):
+       /scan            the full 0.10-1.20 m band, for slam_toolbox and AMCL,
+                        which want every return they can match against.
+       /scan_obstacles  a low band, for the move_base obstacle layer only.
+       ⚠ Measured 2026-10-19 (sim field world, tall maize): up to ~0.55 m
+       above the ground the only returns are stalks, within 0.1 m of each
+       one; above that the leaves reach 0.3-0.55 m into the gap. On the full
+       band every hanging leaf was lethal, so the planner found no path at
+       first and then zig-zagged through open headland. The robot can push
+       through a leaf; it cannot push through a stalk.
+       ⚠ Real corn has leaves lower down: re-check obstacle_max_height on the
+       robot. -->
   <arg name="cloud_topic" default="/ns1/velodyne_points"/>
   <arg name="scan_topic"  default="/scan"/>
+  <!-- base_link heights; base_link is ~0.14 m above flat ground, so 0.40 is
+       ~0.54 m above it -->
+  <arg name="obstacle_max_height" default="0.40"/>
 
   <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node"
         name="velodyne_to_scan" output="screen">
     <remap from="cloud_in" to="$(arg cloud_topic)"/>
     <remap from="scan"     to="$(arg scan_topic)"/>
     <rosparam file="$(find agbot_nav)/config/scan.yaml" command="load"/>
+  </node>
+
+  <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node"
+        name="velodyne_to_obstacle_scan" output="screen">
+    <remap from="cloud_in" to="$(arg cloud_topic)"/>
+    <remap from="scan"     to="/scan_obstacles"/>
+    <rosparam file="$(find agbot_nav)/config/scan.yaml" command="load"/>
+    <param name="max_height" value="$(arg obstacle_max_height)"/>
   </node>
 </launch>

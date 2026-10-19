@@ -7,7 +7,7 @@ transform_tolerance: 0.5
 obstacles_layer:
   observation_sources: scan
   scan:
-    topic: /scan
+    topic: /scan_obstacles   # stalks only, not leaves: see scan.launch
     data_type: LaserScan
     sensor_frame: base_link
     marking: true
@@ -15,6 +15,9 @@ obstacles_layer:
     obstacle_range: 4.0
     raytrace_range: 6.0
 
+# Inscribed radius is 0.25 (footprint + padding). 0.45 / 6.0 still charged
+# 76 of 252 at 0.45 m from a stalk, which in the 1.9 m start corridor left
+# almost no cheap ground once the leaves were marked too (2026-10-19).
 inflater_layer:
-  inflation_radius: 0.45
-  cost_scaling_factor: 6.0
+  inflation_radius: 0.35
+  cost_scaling_factor: 8.0
