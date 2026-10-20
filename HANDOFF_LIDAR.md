@@ -118,6 +118,28 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
 - **Creep measured again:** the robot moved ~55 mm in about a minute,
   standing still after a teleport.
 
+## Replaying a robot bag into SLAM (no robot needed)
+
+Verified 2026-10-19 on `old_bags/2024-07-01-15-29-38.bag` (real corn, 6.5 m
+drive): slam_toolbox drew both crop rows of the corridor. The bag's TF is
+`odom -> base_link -> velodyne1` with no `map`, so it feeds SLAM as-is, and
+it carries its own (2024) LiDAR TF.
+
+```bash
+roscore                                   # terminal 1
+rosparam set /use_sim_time true           # terminal 2, BEFORE any node starts
+roslaunch agbot_nav mapping.launch rviz:=true
+rosbag play --clock old_bags/2024-07-01-15-29-38.bag \
+  --topics /ns1/velodyne_points /tf /tf_static /odometry/filtered   # terminal 3
+rosrun agbot_nav save_map.sh bag2024      # when playback ends
+```
+
+- Play only those topics. The bag also has the robot's own `/ns1/scan`;
+  ours is `/scan`, so they don't collide, but nothing needs the extra load.
+- Add `-r 0.5` to play slower if the laptop falls behind.
+- The same works for `mapping.launch record:=true` bags from our own laps, and
+  for `localization.launch` (AMCL on a saved map) instead of mapping.
+
 ## Hard-won lessons (each is commented where it lives)
 
 - **AMCL must use the BEAM model.** The likelihood field aliases along corn
