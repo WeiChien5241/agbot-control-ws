@@ -21,6 +21,10 @@ fi
 OUT="$(rospack find agbot_nav)/maps/$NAME"
 rosrun map_server map_saver -f "$OUT"
 rosrun agbot_nav pad_map.py "$OUT.yaml" "$PAD"
+# map_saver writes the image as an ABSOLUTE path, so a map copied off the
+# robot (/home/administrator/...) would not open on the laptop. map_server
+# resolves a relative path against the yaml's own folder.
+sed -i "s|^image: .*|image: $NAME.pgm|" "$OUT.yaml"
 echo "Saved $OUT.yaml -- use it with:"
 echo "  roslaunch agbot_nav transit.launch rviz:=true map_file:=$OUT.yaml initial_x:=0 initial_y:=0 initial_yaw:=0"
 echo "  (initial pose 0 0 0 = where the robot was when mapping started)"

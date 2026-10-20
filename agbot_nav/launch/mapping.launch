@@ -43,8 +43,11 @@
     <remap from="scan" to="/scan"/>
   </node>
 
-  <node if="$(arg record)" pkg="rosbag" type="record" name="mapping_bag"
-        args="-o $(env HOME)/bags/mapping /ns1/velodyne_points /scan /tf /tf_static /odometry/filtered /clock"/>
+  <!-- The IMUs and raw wheel odometry are in the bag so the local EKF can be
+       re-tuned offline (GX5 yaw rate) without driving the lap again. -->
+  <node if="$(arg record)" pkg="agbot_nav" type="record_mapping_bag.sh" name="mapping_bag"
+        args="/ns1/velodyne_points /scan /tf /tf_static /odometry/filtered /clock
+              /jackal_velocity_controller/odom /imu/data /gx5/imu/data"/>
 
   <node if="$(arg rviz)" name="nav_rviz" pkg="rviz" type="rviz"
         args="-d $(find agbot_nav)/rviz/nav.rviz"/>

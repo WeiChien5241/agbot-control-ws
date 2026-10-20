@@ -18,7 +18,7 @@ catkin_install_python(PROGRAMS
 )
 
 # Shell scripts: NOT catkin_install_python, which wraps them in a python relay.
-install(PROGRAMS scripts/save_map.sh DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(PROGRAMS scripts/save_map.sh scripts/record_mapping_bag.sh DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 install(DIRECTORY launch/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
 install(DIRECTORY config/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
