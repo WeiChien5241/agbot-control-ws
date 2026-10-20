@@ -118,6 +118,21 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
 - **Creep measured again:** the robot moved ~55 mm in about a minute,
   standing still after a teleport.
 
+## 2026-10-20: first indoor lab run on the robot
+
+- Nav packages were already installed; code went over by bundle (`3a71b32`).
+- LiDAR 9.9 Hz; `base_link -> velodyne1` = (-0.125, 0, 0.402), yaw 180°.
+- Mapped the lab twice with fake corn (`lab`, `lab_new`; bag
+  `mapping_2026-10-20-13-49-31.bag`, 139 s, on the laptop in `~/bags`).
+- AMCL on `lab_new`: tracked smoothly, no jumps, spread ~5–8 cm.
+- ⚠ **The map's (0, 0) is where odom started (robot BOOT), not where
+  mapping started.** The taped start spot is (0.245, -2.623, 16.5°) in
+  `lab_new`, read from the bag; "initial 0 0 0" put AMCL 2.6 m / 70° off.
+  Fixed: `record_start_pose.py` (in mapping.launch) logs it and
+  `save_map.sh` prints the right `initial_*` args.
+- ⚠ `~/bags` did not exist, so the first lap was not recorded. Fixed:
+  `record_mapping_bag.sh` creates it.
+
 ## Replaying a robot bag into SLAM (no robot needed)
 
 Verified 2026-10-19 on `old_bags/2024-07-01-15-29-38.bag` (real corn, 6.5 m

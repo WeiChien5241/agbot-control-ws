@@ -14,6 +14,7 @@ catkin_install_python(PROGRAMS
   scripts/amcl_truth.py
   scripts/deploy_supervisor.py
   scripts/vision_standin.py
+  scripts/record_start_pose.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

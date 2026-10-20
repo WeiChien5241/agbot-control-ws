@@ -25,6 +25,15 @@ rosrun agbot_nav pad_map.py "$OUT.yaml" "$PAD"
 # robot (/home/administrator/...) would not open on the laptop. map_server
 # resolves a relative path against the yaml's own folder.
 sed -i "s|^image: .*|image: $NAME.pgm|" "$OUT.yaml"
-echo "Saved $OUT.yaml -- use it with:"
-echo "  roslaunch agbot_nav transit.launch rviz:=true map_file:=$OUT.yaml initial_x:=0 initial_y:=0 initial_yaw:=0"
-echo "  (initial pose 0 0 0 = where the robot was when mapping started)"
+# The map's (0, 0) is where odom started (robot boot), not where mapping
+# started; record_start_pose.py (mapping.launch) logged the start spot.
+START="$HOME/.ros/agbot_mapping_start_pose"
+if [ -f "$START" ]; then
+    cp "$START" "$OUT.start_pose"
+    read -r SX SY SYAW < "$START"
+else
+    SX=0; SY=0; SYAW=0
+    echo "WARNING: no recorded start pose ($START); 0 0 0 is only right if odom started at the start spot"
+fi
+echo "Saved $OUT.yaml -- start the robot on the SAME spot it started mapping from, then:"
+echo "  roslaunch agbot_nav transit.launch rviz:=true map_file:=$OUT.yaml initial_x:=$SX initial_y:=$SY initial_yaw:=$SYAW"

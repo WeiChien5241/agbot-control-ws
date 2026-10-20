@@ -7,9 +7,10 @@
        slam:=slam_toolbox (default) or slam:=gmapping: two different SLAM
        algorithms, same /scan in and /map out; try both.
 
-       The map's frame is wherever the robot was when mapping STARTED: (0, 0)
-       is that spot and x points the way it faced. Remember that pose: it is
-       the initial pose to give AMCL when you start there again.
+       ⚠ The map's (0, 0) is NOT where mapping started: the map frame starts
+       on top of odom, which starts where the robot BOOTED. record_start_pose
+       logs the start spot's pose in the map, and save_map.sh prints it as the
+       transit.launch initial pose. (In the sim the two coincide.)
 
        ⚠ The SLAM node publishes map->odom. Nothing else may: not amcl, and
        not agbot_gps_nav's ekf_map (start the sim with gps:=false). -->
@@ -26,6 +27,8 @@
        ruined late in a lap can be rebuilt by replaying the bag (other
        settings, other SLAM) instead of driving the lap again. -->
   <arg name="record"      default="false"/>
+
+  <node pkg="agbot_nav" type="record_start_pose.py" name="record_start_pose" output="screen"/>
 
   <include file="$(find agbot_nav)/launch/scan.launch">
     <arg name="cloud_topic" value="$(arg cloud_topic)"/>
