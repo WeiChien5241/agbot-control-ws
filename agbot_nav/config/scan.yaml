@@ -1,8 +1,10 @@
 # pointcloud_to_laserscan: the horizontal Velodyne -> a 2D /scan for
 # slam_toolbox, AMCL and the move_base obstacle layer.
 #
-# Heights are in base_link, which sits ~0.14 m above flat ground on the Jackal.
-# The band is therefore ~0.25-1.35 m above ground:
+# Heights are in base_link, which sits 0.065 m above flat ground on the Jackal
+# (wheel radius 0.098 - wheel offset 0.0345; jackal.urdf.xacro). The band is
+# therefore ~0.165-1.265 m above ground. (Comments before 2026-10-20 said
+# 0.14 m, from a mis-read sim measurement.)
 #   - min 0.10 keeps the ground and short weeds out. A weed that becomes a
 #     wall in the map is a wall for the planner too (GPS_research.md). Ground
 #     returns are also why the floor cannot go lower: the sim already shows

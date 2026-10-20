@@ -13,8 +13,8 @@
        robot. -->
   <arg name="cloud_topic" default="/ns1/velodyne_points"/>
   <arg name="scan_topic"  default="/scan"/>
-  <!-- base_link heights; base_link is ~0.14 m above flat ground, so 0.40 is
-       ~0.54 m above it -->
+  <!-- base_link heights; base_link is 0.065 m above flat ground, so 0.40 is
+       ~0.47 m above it -->
   <arg name="obstacle_max_height" default="0.40"/>
 
   <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node"

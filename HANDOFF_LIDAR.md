@@ -133,9 +133,9 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
 - With the right initial pose (0.245, -2.623, 0.288): AMCL matched the walls,
   move_base reached goals at 0.3 m/s and re-planned around a person.
 - ⚠ **Low obstacles are invisible:** the fake corn's ~10 cm wooden bases were
-  clipped by the wheels. Both scans start at 0.10 m in `base_link` (~0.24 m
-  above the floor), and the lowest VLP-16 beam (-15° from ~0.54 m up) meets
-  the floor ~2 m out, so a 10 cm board leaves the view inside ~1.6 m. Not a
+  clipped by the wheels. Both scans start at 0.10 m in `base_link` (0.165 m
+  above the floor), and the lowest VLP-16 beam (-15° from 0.49 m up) meets
+  the floor 1.8 m out, so a 10 cm board leaves the view inside ~1.5 m. Not a
   field issue (stalks are tall). For lab rows: map with a lower band so the
   bases land in the static map; do not lower the live obstacle band.
 - ⚠ `~/bags` did not exist, so the first lap was not recorded. Fixed:
