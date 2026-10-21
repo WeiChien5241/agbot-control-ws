@@ -209,6 +209,19 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
   needs a run), or treat it as a detector problem (late-season real corn
   is also an under-canopy view).
 
+## 2026-10-21: full sequence with the REAL vision nav -- verified
+
+Field world, CPU vision node, goal (-0.5, 0, 0) by 2D Nav Goal, num_rows 2:
+TRANSIT → handoff -0.10 m / +7.6° (AMCL) → ROW_MISSION → vision
+`Mission DONE: rows_driven=2` → RETURN → back at (-7.81, -1.53) by Gazebo
+truth, 0.26 m / 5.7° from the start → WAIT_GOAL for the next goal.
+
+⚠ **Decision (user, 2026-10-21): in-row misbehaviour that shows up only in
+sim is NOT tuned for.** Vision nav is field-proven; the sim's false exits,
+headland drift and back-outs (HANDOFF3.md, last section; this file, the
+tall-maize note) are recorded, not fixed. What sim must prove is the
+transit: start → row entrance → (rows) → back to the start.
+
 ## Replaying a robot bag into SLAM (no robot needed)
 
 Verified 2026-10-19 on `old_bags/2024-07-01-15-29-38.bag` (real corn, 6.5 m
