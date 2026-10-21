@@ -114,11 +114,19 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
   changed) and cost a session's worth of "the user must run this" hedging.
   The **robot** is still a separate machine reached by git bundle (HANDOFF3 §0b).
 - `agbot_control_ws` is used as a catkin workspace root; `src/` holds the packages directly. Build from the workspace root, not from inside `src/`.
-- ⚠ **This laptop (2026-09-22) has no `scipy`, `torch`, `lightly_train` or
-  model weights**, so vision nav cannot run here and most of the
-  `agbot_vision_nav` suite fails to collect (`test_launch_files.py` /
-  `test_launch_args.py` still run). `pytest` came from `apt install
-  python3-pytest` — there is no pip on the system Python.
+- ⚠ **This laptop (2026-09-22) has `~/agbot_venv` since 2026-10-21** (no
+  sudo was needed): `python3 -m venv --without-pip --system-site-packages`,
+  pip bootstrapped from the system pip, then torch 2.4.1+**cpu** /
+  torchvision 0.19.1, lightly-train 0.17.0, scipy 1.10.1, `jinja2>=3.1`
+  (Ubuntu's jinja2 2.10 breaks on the new markupsafe), and pip's
+  opencv-python-headless UNINSTALLED (DEPLOYMENT.md §3). `catkin config
+  --cmake-args -DPYTHON_EXECUTABLE=$HOME/agbot_venv/bin/python3` is set, so
+  node shebangs use it. ⚠ CPU only: the RTX 5070 (Blackwell, sm_120) needs
+  torch >= 2.7, which needs Python >= 3.9; 2.4.1 is the last for 3.8.
+  Full vision-nav suite: `PYTHONPATH=src ~/agbot_venv/bin/python3 -m pytest
+  test/` → 316 passed. ⚠ Still NO model weights on this laptop (not on the
+  connected Google Drive either): copy `exported_best.pt` into
+  `agbot_vision_nav/config/`.
 - The segmentation model (`lightly_train` + `torch`) has so far only been trained/run on **Google Colab** — never on the ROS1 Noetic box. ROS1 Noetic on Ubuntu 20.04 ships system Python 3.8; whether `lightly_train`'s dependencies even install there is unconfirmed.
 
 ## agbot_bringup — simulation launch package
