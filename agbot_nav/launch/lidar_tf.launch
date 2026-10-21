@@ -1,16 +1,14 @@
 <launch>
-  <!-- REAL ROBOT ONLY: base_link -> the horizontal Velodyne's frame.
-       The robot's own robot_description does not contain our housing, and
-       Clearpath's old two-Velodyne setup may still publish a stale transform
-       for the old mount. Check with `rosrun tf tf_echo base_link <frame>`
-       first (LIDAR_notes.md, Phase 0) and only start this if it is missing.
+  <!-- base_link -> the horizontal Velodyne's frame, for a robot that does NOT
+       publish it. ⚠ cpr-j100-0864 DOES (factory TF, -0.125 0 0.402 yaw 180,
+       checked 2026-10-16): do not start this there, two publishers of one
+       transform fight. Check with `rosrun tf tf_echo base_link velodyne1`.
 
        ⚠ These numbers duplicate agbot_bringup/urdf/agbot_lidar.urdf.xacro
-       (mid_mount is 0.184 m above base_link; the scan centre is 0.10 m
-       forward of it, just behind the front camera, and 0.2577 m above it).
-       test/test_lidar_tf.py fails if the two disagree; change both
-       together. -->
-  <arg name="lidar_frame" default="velodyne"/>
+       (the real mount: 0.125 m behind base_link, 0.425 m above it by tape,
+       facing backwards). test/test_lidar_tf.py fails if the two disagree;
+       change both together. Args: x y z yaw pitch roll parent child. -->
+  <arg name="lidar_frame" default="velodyne1"/>
   <node pkg="tf2_ros" type="static_transform_publisher" name="lidar_tf"
-        args="0.10 0.0 0.4417 0 0 0 base_link $(arg lidar_frame)"/>
+        args="-0.125 0.0 0.4251 3.14159265 0 0 base_link $(arg lidar_frame)"/>
 </launch>

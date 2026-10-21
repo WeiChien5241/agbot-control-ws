@@ -2,50 +2,54 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!--
-    Horizontal 3D Velodyne (the SLAM/AMCL LiDAR) on its housing.
-    Included by agbot_camera.urdf.xacro only when the xacro arg lidar:=true,
-    so the default URDF (and the laptop sim's RTF) is unchanged.
+    Horizontal 3D Velodyne (the SLAM/AMCL LiDAR) on its holder, matching the
+    REAL robot (cpr-j100-0864) since 2026-10-20. Included by
+    agbot_camera.urdf.xacro only when the xacro arg lidar:=true, so the
+    default URDF (and the laptop sim's RTF) is unchanged.
 
-    Layout (all offsets relative to mid_mount, the deck top centre). The
-    stack sits at x = lidar_mount_x (0.10), just BEHIND the front camera:
+    Where the numbers come from:
+      - x = -0.125 from base_link and yaw 180 deg (the unit faces BACKWARDS):
+        the robot's factory base_link -> velodyne1 TF, yaw checked by hand
+        (LIDAR_notes.md, Phase 0).
+      - optical centre 0.425 above base_link = 0.49 m above the floor, taped
+        2026-10-20 (base_link is 0.065 m up). The factory TF says 0.402.
+      - the holder from agbot_bringup/model/*.stp: plate + O50 mm pillar +
+        shelf, top 0.1484 m above the plate's underside; a O113.5 x 23 mm
+        cup on the shelf; the VLP-16 stands on the cup floor 5 mm up, and its
+        optical centre is 0.0377 m above its base: 0.1911 m in all.
+      - 0.425 - 0.184 (mid_mount) - 0.1911 = 0.05 m of spacer between the
+        deck and the holder, not in the CAD.
 
-      lidar_standoff_link — 7 cm standoff on the deck
-      lidar_housing_link  — 15 cm cube on the standoff, deck +0.07 to +0.22 m
-      velodyne_base_link  — VLP-16 base on the cube top (z = 0.22)
-      velodyne            — optical centre, 0.0377 m above its base
-                            (≈ 0.258 m above mid_mount)
+      lidar_spacer_link  0.05 m block on the deck
+      lidar_pillar_link  plate + pillar + shelf, 0.1484 m
+      lidar_cup_link     the cup; VLP-16 base at its floor (+0.005)
+      velodyne1          optical centre
 
-    Measured roughly by hand (2026-10-13) — re-measure and edit the properties
-    below. ⚠ The real robot does not use this file; agbot_nav's lidar_tf.launch
-    carries the same base_link -> velodyne numbers, and a pytest keeps them
-    equal.
+    ⚠ The real robot does not use this file: it publishes base_link ->
+    velodyne1 itself. agbot_nav's lidar_tf.launch carries the same numbers
+    for a robot that lacks it, and test_lidar_tf.py keeps the two equal.
 
-    Clearance: the camera is 0.09 m in front of the scan centre, where the
-    lowest VLP-16 beam (-15 deg, from 0.258 m) is still 0.23 m up — far
-    above the 0.05 m camera body; that beam reaches deck height only ~0.96 m
-    out, past the deck edge. The housing is behind the camera, so it is not
-    in the camera's view, and well forward of the rear camera (x=-0.19,
-    facing backwards).
+    Clearance: the rear camera (mid_mount x -0.19, z 0.025, facing back) is
+    behind the spacer (x -0.175 .. -0.075) and below everything wider.
 
-    The vertical LiDAR (/ns2) is not modelled — it is not used for SLAM.
+    The vertical LiDAR (/ns2) is not modelled: it is not used for SLAM.
 
     ⚠ The Gazebo plugin needs ros-noetic-velodyne-gazebo-plugins.
   -->
 
   <xacro:include filename="$(find velodyne_description)/urdf/VLP-16.urdf.xacro"/>
 
-  <!-- Mount dimensions (m) -->
-  <xacro:property name="lidar_standoff_height" value="0.07"/>
-  <xacro:property name="lidar_standoff_width"  value="0.10"/>
-  <xacro:property name="lidar_housing_size"    value="0.15"/>
-  <!-- Housing centre, forward of mid_mount. 0.10 puts the housing's front
-       face (0.10 + 0.075 = 0.175) 1 cm behind the front camera body, which
-       spans x = 0.185-0.195. Moved forward from 0.0 on 2026-10-14. -->
-  <xacro:property name="lidar_mount_x"         value="0.10"/>
+  <!-- base_link -> optical centre, x. mid_mount sits straight above
+       base_link, so the same x applies from mid_mount. -->
+  <xacro:property name="lidar_mount_x"   value="-0.125"/>
+  <xacro:property name="lidar_spacer_h"  value="0.05"/>
+  <xacro:property name="lidar_pillar_h"  value="0.1484"/>
+  <xacro:property name="lidar_cup_h"     value="0.023"/>
+  <xacro:property name="lidar_cup_floor" value="0.005"/>
 
   <!-- Must match the frame_id the robot's driver stamps on
        /ns1/velodyne_points (LIDAR_notes.md). -->
-  <xacro:property name="lidar_frame" value="velodyne"/>
+  <xacro:property name="lidar_frame" value="velodyne1"/>
   <xacro:property name="lidar_topic" value="/ns1/velodyne_points"/>
 
   <xacro:macro name="agbot_box_link" params="name x y z mass">
@@ -70,26 +74,44 @@
     </gazebo>
   </xacro:macro>
 
-  <!-- ─── Standoff ─────────────────────────────────────────────── -->
-  <xacro:agbot_box_link name="lidar_standoff_link"
-      x="${lidar_standoff_width}" y="${lidar_standoff_width}"
-      z="${lidar_standoff_height}" mass="0.2"/>
-
-  <joint name="lidar_standoff_joint" type="fixed">
+  <!-- ─── Spacer, pillar, cup ─────────────────────────────────── -->
+  <xacro:agbot_box_link name="lidar_spacer_link" x="0.10" y="0.10"
+      z="${lidar_spacer_h}" mass="0.2"/>
+  <joint name="lidar_spacer_joint" type="fixed">
     <parent link="mid_mount"/>
-    <child  link="lidar_standoff_link"/>
-    <origin xyz="${lidar_mount_x} 0 ${lidar_standoff_height/2}" rpy="0 0 0"/>
+    <child  link="lidar_spacer_link"/>
+    <origin xyz="${lidar_mount_x} 0 ${lidar_spacer_h/2}" rpy="0 0 0"/>
   </joint>
 
-  <!-- ─── Housing ──────────────────────────────────────────────── -->
-  <xacro:agbot_box_link name="lidar_housing_link"
-      x="${lidar_housing_size}" y="${lidar_housing_size}"
-      z="${lidar_housing_size}" mass="0.5"/>
+  <xacro:agbot_box_link name="lidar_pillar_link" x="0.05" y="0.05"
+      z="${lidar_pillar_h}" mass="0.4"/>
+  <joint name="lidar_pillar_joint" type="fixed">
+    <parent link="lidar_spacer_link"/>
+    <child  link="lidar_pillar_link"/>
+    <origin xyz="0 0 ${lidar_spacer_h/2 + lidar_pillar_h/2}" rpy="0 0 0"/>
+  </joint>
 
-  <joint name="lidar_housing_joint" type="fixed">
-    <parent link="lidar_standoff_link"/>
-    <child  link="lidar_housing_link"/>
-    <origin xyz="0 0 ${lidar_standoff_height/2 + lidar_housing_size/2}" rpy="0 0 0"/>
+  <link name="lidar_cup_link">
+    <visual>
+      <geometry><cylinder radius="0.05675" length="${lidar_cup_h}"/></geometry>
+      <material name="dark_grey"/>
+    </visual>
+    <collision>
+      <geometry><cylinder radius="0.05675" length="${lidar_cup_h}"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.1"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4"/>
+    </inertial>
+  </link>
+  <gazebo reference="lidar_cup_link">
+    <material>Gazebo/DarkGrey</material>
+  </gazebo>
+  <joint name="lidar_cup_joint" type="fixed">
+    <parent link="lidar_pillar_link"/>
+    <child  link="lidar_cup_link"/>
+    <origin xyz="0 0 ${lidar_pillar_h/2 + lidar_cup_h/2}" rpy="0 0 0"/>
   </joint>
 
   <!-- ─── VLP-16 on the housing top ────────────────────────────── -->
@@ -104,10 +126,12 @@
        at 0.11 s with gzserver pegged. The GPU sensor renders depth through
        OGRE like the cameras already do, so its cost does not depend on the
        collision geometry. -->
-  <xacro:VLP-16 parent="lidar_housing_link" name="${lidar_frame}"
+  <!-- yaw pi: the real unit faces backwards. Only a yaw sits on this
+       chain, and every offset after it is pure z (test_lidar_tf.py). -->
+  <xacro:VLP-16 parent="lidar_cup_link" name="${lidar_frame}"
                 topic="${lidar_topic}" hz="10" samples="1875"
                 min_range="0.4" gpu="true">
-    <origin xyz="0 0 ${lidar_housing_size/2}" rpy="0 0 0"/>
+    <origin xyz="0 0 ${-lidar_cup_h/2 + lidar_cup_floor}" rpy="0 0 ${pi}"/>
   </xacro:VLP-16>
 
 </robot>

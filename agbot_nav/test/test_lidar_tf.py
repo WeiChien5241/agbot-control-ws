@@ -5,6 +5,7 @@ base_link -- because the real robot does not load our xacro. This builds the
 URDF exactly as agbot_gazebo.launch does (lidar:=true) and compares.
 Skipped where xacro / the Jackal description are not available.
 """
+import math
 import os
 import re
 import shutil
@@ -25,8 +26,8 @@ def _launch_offset():
     root = ET.parse(TF_LAUNCH).getroot()
     node = root.find("node[@name='lidar_tf']")
     args = node.get("args").split()
-    xyz, rpy, parent = args[0:3], args[3:6], args[6]
-    return [float(v) for v in xyz], [float(v) for v in rpy], parent
+    xyz, ypr, parent = args[0:3], args[3:6], args[6]
+    return [float(v) for v in xyz], [float(v) for v in ypr], parent
 
 
 def _xacro_offset():
@@ -51,24 +52,32 @@ def _xacro_offset():
         rpy = [float(v) for v in (origin.get("rpy", "0 0 0") if origin is not None
                                   else "0 0 0").split()]
         joints[joint.find("child").get("link")] = (joint.find("parent").get("link"), xyz, rpy)
-    link, total = "velodyne", [0.0, 0.0, 0.0]
+    # Compose from base_link down. Only yaw is allowed on this chain (the
+    # unit faces backwards); roll/pitch would need full 3D composition.
+    chain, link = [], "velodyne1"
     while link != "base_link":
         parent, xyz, rpy = joints[link]
-        # every joint on this chain is translation-only; if that changes the
-        # sum below is no longer the transform and this test must compose
-        assert all(abs(a) < 1e-9 for a in rpy), "rotation on the lidar chain at %s" % link
-        total = [t + v for t, v in zip(total, xyz)]
+        assert abs(rpy[0]) < 1e-9 and abs(rpy[1]) < 1e-9, "roll/pitch on the lidar chain at %s" % link
+        chain.append((xyz, rpy[2]))
         link = parent
-    return total
+    x = y = z = yaw = 0.0
+    for (dx, dy, dz), dyaw in reversed(chain):
+        x += dx * math.cos(yaw) - dy * math.sin(yaw)
+        y += dx * math.sin(yaw) + dy * math.cos(yaw)
+        z += dz
+        yaw += dyaw
+    return [x, y, z], math.atan2(math.sin(yaw), math.cos(yaw))
 
 
 def test_static_tf_matches_the_urdf():
-    launch_xyz, launch_rpy, parent = _launch_offset()
+    launch_xyz, launch_ypr, parent = _launch_offset()
     assert parent == "base_link"
-    assert launch_rpy == [0.0, 0.0, 0.0]
-    urdf_xyz = _xacro_offset()
+    assert launch_ypr[1:] == [0.0, 0.0]          # static_transform_publisher: yaw pitch roll
+    urdf_xyz, urdf_yaw = _xacro_offset()
     for got, want in zip(launch_xyz, urdf_xyz):
         assert got == pytest.approx(want, abs=1e-3), (launch_xyz, urdf_xyz)
+    d = launch_ypr[0] - urdf_yaw
+    assert math.atan2(math.sin(d), math.cos(d)) == pytest.approx(0.0, abs=1e-3)
 
 
 def test_launch_args_are_numbers_then_frames():
