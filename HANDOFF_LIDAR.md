@@ -64,17 +64,16 @@ roslaunch agbot_nav transit.launch rviz:=true map_file:=$(rospack find agbot_nav
 
 # C. full sequence: then RViz "2D Nav Goal" at a row mouth, arrow DOWN the row.
 #    It drives there, does num_rows rows, comes back, waits for the next goal.
-roslaunch agbot_nav deploy_mission.launch vision_standin:=true rviz:=true num_rows:=2
+roslaunch agbot_nav deploy_mission.launch sim:=true rviz:=true num_rows:=2
 #    or the operator panel, section 5 (rows + speeds from section 2):
 rosrun agbot_vision_nav operator_panel.py
 #    scripted (fixed goal, ends after the way home):
 #    ... entrance_x:=-0.5 entrance_y:=0.0 entrance_yaw_deg:=0
 ```
 
-⚠ `vision_standin` is NOT vision nav: no camera, no MPC, no
-`/vision_nav_node/debug/image`. It steers on Gazebo truth along the CLICKED
-axis, so a sloppy arrow drives it into the corn. The real node needs torch,
-lightly_train and the weights, none of which are on this laptop.
+⚠ The vision stand-in (`vision_standin.py`) was REMOVED 2026-10-21: rows are
+driven by the real vision nav only. This laptop runs it on CPU from
+`~/agbot_venv` (CLAUDE.md); the weights go in `agbot_vision_nav/config/`.
 
 End a sim session with `rosrun agbot_bringup sim_teardown.sh`.
 
@@ -188,6 +187,27 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
 - ⚠ The field world's default corridor is the north block's SOUTHERNMOST,
   so `first_turn_direction` defaults to `left` now (right led into the
   cross alley).
+
+## 2026-10-21 (later): first REAL vision nav runs in the field world
+
+- User run (`~/agbot_logs/vision_nav_20261021_183802.csv`): the 2D Nav
+  Goal arrow was 12° off the rows; the gate checks against the arrow, so
+  it passed, and the robot entered ~20° across the corn. Odometry: 0.6 m
+  of left drift over 6.7 m, about onto the next plant row, then EXIT_CLEAR
+  ~2.7 m before the real row end. Fix: `row_bearing_deg` (default 0 = field
+  world): a click within `max_bearing_snap_deg` (30) is snapped onto the
+  rows, a worse one is refused.
+- Same click replayed after the fix: snapped to 0°, robot held y within
+  ±0.06 m of the corridor centre, and the mission STILL ended at x=4.75 of
+  an 8 m row. ⚠ **The tall maize defeats the exit detector.** The camera
+  sits under the canopy and sees bare ground between thin stalks across
+  the whole bottom of the image (frame + mask checked: scan row 0.92 is
+  traversable edge to edge), which is the open-field signature. Vision nav
+  was only validated on the stock-height plants (small/long worlds).
+  Open decision for the user: stock plants in the field world (the LiDAR
+  now sits 0.49 m up, below their 0.63 m tops; whether AMCL still holds
+  needs a run), or treat it as a detector problem (late-season real corn
+  is also an under-canopy view).
 
 ## Replaying a robot bag into SLAM (no robot needed)
 
