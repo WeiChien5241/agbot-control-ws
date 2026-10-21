@@ -2374,3 +2374,33 @@ PYTHONPATH=src python3 scripts/benchmark_inference.py \
 cd ~/agbot_control_ws/src/agbot_vision_nav
 PYTHONPATH=src python3 -m pytest test/ -v     # expected: 106 passed
 ```
+
+---
+
+## 2026-10-21: first vision-nav sim runs on the 2026-09-22 laptop (CPU venv)
+
+Vision-nav code and params.yaml are UNCHANGED since 2026-09-15; this laptop
+had simply never run the node before. Small world, 3 rows, 0.15 m/s,
+inference ~300 ms on CPU. Positions below are Gazebo ground truth
+(odometry reconstructions were misleading -- check truth first).
+
+1. **False mid-row exit, southbound only.** Row 2 exited 3.1 m into a
+   6.7 m row while truly centred (x within 0.05 m of the corridor line).
+   The bottom scan row (0.92) runs UNDER the leaves and reads traversable
+   edge to edge (frame + mask checked; segmentation itself is good).
+   Fraction of FOLLOW_ROW frames with open_rows >= 1: northbound 9-11%,
+   southbound 27-41%. With exit_leak_ratio 0.5 the open meter grows
+   whenever that fraction exceeds ~1/3, so it eventually fires.
+   Candidate fix, ONE sim run so far: `exit_scan_row_fractions:=[0.65,
+   0.78] exit_scan_row_weights:=[0.4, 0.6]` (steering keeps all three
+   rows). Rows 1 and 2 then exited at the true row ends (y 3.32 / -3.26 vs
+   last plants 3.33 / -3.42). NOT written to params.yaml: the field robot
+   shares it, and CLAUDE.md's "ANY row, never specific far rows" lesson
+   came from the field. Needs more sim runs, then a field check.
+2. **Headland lands the robot off the next corridor.** EXIT_CLEAR left
+   rows at 11-15 deg off the row axis; the rear-steered leg commanded
+   angular_z = 0 throughout (rear corridor not bounded), so the robot
+   drifted 0.3-0.4 m sideways over the leg, and the fixed 0.6 m traverse
+   then put it 0.2-0.55 m off the next corridor's centre. In the
+   candidate-fix run that started row 3 beside a plant row: BACKOUT, then
+   the robot ended off the field at (-3.15, 5.0).
