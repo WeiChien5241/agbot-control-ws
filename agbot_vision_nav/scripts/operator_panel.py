@@ -18,6 +18,13 @@ block is the part worth reading. roslaunch's own output still goes to the
 terminal this was started from -- that is where the startup config block and
 the detector lines appear.
 
+Section 5 starts the LiDAR DEPLOYMENT (agbot_nav deploy_mission.launch):
+AMCL + move_base to a row entrance you click in RViz (2D Nav Goal, arrow down
+the row), then the rows with section 2's num_rows and speeds, then back to
+where it started -- and it waits for the next click. Gazebo (lidar:=true) or
+the robot's own bringup must already be running. It and section 2's Start
+mission are mutually exclusive: both start a vision_nav_node.
+
 Section 4 drives the GPS transit's ROUTE (gps_nav_node): click points in
 mapviz -- they queue, nothing moves -- then Go. Undo/Clear edit the queue;
 Save/Load use the route-file field (blank = gps_nav_node's ~route_file).
@@ -56,7 +63,11 @@ import rospy
 from std_msgs.msg import String
 from std_srvs.srv import SetBool, Trigger
 
-from agbot_vision_nav.launch_args import cameras_launch_args, mission_launch_args
+from agbot_vision_nav.launch_args import (
+    cameras_launch_args,
+    deploy_launch_args,
+    mission_launch_args,
+)
 
 from python_qt_binding.QtCore import Qt, QTimer
 from python_qt_binding.QtWidgets import (
@@ -75,6 +86,7 @@ from python_qt_binding.QtWidgets import (
 
 NODE_NAMESPACE = "/vision_nav_node"
 GPS_NAMESPACE = "/gps_nav_node"
+DEPLOY_NAMESPACE = "/deploy_supervisor"
 
 
 class LaunchProcess(object):
@@ -158,6 +170,8 @@ class OperatorPanel(QWidget):
 
         self._cameras = LaunchProcess("cameras")
         self._mission = LaunchProcess("vision_nav")
+        self._deploy = LaunchProcess("deploy_mission")
+        self._deploy_text = "(not running)"
         self._status_text = "(no status yet)"
         self._paused = False
         self._route_text = "(gps_nav_node not running)"
@@ -168,6 +182,7 @@ class OperatorPanel(QWidget):
         layout.addWidget(self._build_mission_box())
         layout.addWidget(self._build_control_box())
         layout.addWidget(self._build_route_box())
+        layout.addWidget(self._build_deploy_box())
 
         self._status_label = QLabel(self._status_text)
         self._status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -183,6 +198,9 @@ class OperatorPanel(QWidget):
         )
         rospy.Subscriber(
             GPS_NAMESPACE + "/route_status", String, self._route_cb, queue_size=1
+        )
+        rospy.Subscriber(
+            DEPLOY_NAMESPACE + "/status", String, self._deploy_cb, queue_size=1
         )
         timer = QTimer(self)
         timer.timeout.connect(self._refresh)
@@ -313,6 +331,48 @@ class OperatorPanel(QWidget):
         form.addRow("", note)
         return box
 
+    def _build_deploy_box(self):
+        box = QGroupBox("5. LiDAR deployment (move_base -> rows -> back)")
+        form = QFormLayout(box)
+        self._map_file = QLineEdit()
+        self._map_file.setPlaceholderText(
+            "blank = agbot_nav/maps/field.yaml (the sim field world)")
+        form.addRow("map_file", self._map_file)
+        start = QHBoxLayout()
+        self._initial = []
+        for name, hint in (("x", "-7.92"), ("y", "-1.30"), ("yaw", "1.5917 rad")):
+            field = QLineEdit()
+            field.setPlaceholderText("%s  %s" % (name, hint))
+            start.addWidget(field)
+            self._initial.append(field)
+        form.addRow("start pose (map)", start)
+        self._transit_speed = QLineEdit()
+        self._transit_speed.setPlaceholderText(
+            "blank = move_base.yaml (0.5 m/s); indoors 0.3")
+        form.addRow("transit_speed", self._transit_speed)
+        self._standin = QCheckBox(
+            "vision stand-in (SIM ONLY, no model: steers from Gazebo truth)")
+        form.addRow("", self._standin)
+        self._deploy_rviz = QCheckBox("open RViz (nav view)")
+        self._deploy_rviz.setChecked(True)
+        form.addRow("", self._deploy_rviz)
+        self._return_home = QCheckBox("drive back to the start after the rows")
+        self._return_home.setChecked(True)
+        form.addRow("", self._return_home)
+        self._deploy_btn = QPushButton("Start deployment")
+        self._deploy_btn.clicked.connect(self._toggle_deploy)
+        form.addRow("", self._deploy_btn)
+        self._deploy_label = QLabel(self._deploy_text)
+        self._deploy_label.setWordWrap(True)
+        form.addRow("status", self._deploy_label)
+        note = QLabel(
+            "Rows, turn direction and speeds come from section 2. Then in RViz: "
+            "2D Nav Goal at a row mouth, arrow DOWN the row. After the way home it "
+            "waits for the next goal. A start pose blank = the field world's.")
+        note.setWordWrap(True)
+        form.addRow("", note)
+        return box
+
     # ------------------------------------------------------------ actions --
     def _toggle_cameras(self):
         if self._cameras.running():
@@ -346,12 +406,51 @@ class OperatorPanel(QWidget):
         if self._mission.running():
             self._stop_with_feedback(self._mission, "mission")
             return
+        if self._deploy.running():
+            self._log("stop the deployment first: it runs its own vision_nav_node")
+            return
         try:
             args = self._mission_args()
         except ValueError as exc:
             self._log(str(exc))
             return
         ok, message = self._mission.start(args)
+        self._log(message)
+
+    def _toggle_deploy(self):
+        if self._deploy.running():
+            self._stop_with_feedback(self._deploy, "deployment")
+            return
+        if self._mission.running():
+            self._log("stop the mission first: the deployment starts its own "
+                      "vision_nav_node")
+            return
+        try:
+            args = deploy_launch_args(
+                self._model_path.text(),
+                sim=self._sim.isChecked(),
+                front_source=self._front_source.currentData(),
+                rear_camera_enabled=self._rear_enabled.isChecked(),
+                return_enabled=self._return_home.isChecked(),
+                rviz=self._deploy_rviz.isChecked(),
+                vision_standin=self._standin.isChecked(),
+                num_rows=self._num_rows.text(),
+                first_turn_direction=self._first_turn.currentText(),
+                linear_x_cruise=self._linear_x.text(),
+                angular_z_max=self._angular_z.text(),
+                traverse_speed=self._traverse_speed.text(),
+                exit_clear_speed=self._exit_clear_speed.text(),
+                map_file=self._map_file.text(),
+                initial_x=self._initial[0].text(),
+                initial_y=self._initial[1].text(),
+                initial_yaw=self._initial[2].text(),
+                transit_speed=self._transit_speed.text(),
+            )
+        except ValueError as exc:
+            self._log(str(exc))
+            return
+        self._deploy_text = "(starting)"
+        ok, message = self._deploy.start(args)
         self._log(message)
 
     def _stop_with_feedback(self, launch, label):
@@ -366,6 +465,7 @@ class OperatorPanel(QWidget):
         self._log("stopping %s ..." % label)
         self._cameras_btn.setEnabled(False)
         self._mission_btn.setEnabled(False)
+        self._deploy_btn.setEnabled(False)
         QApplication.processEvents()
         try:
             launch.stop()
@@ -374,6 +474,7 @@ class OperatorPanel(QWidget):
             # disabled by the simulation checkbox, and re-enabling it blindly
             # here would hand back a button that must stay greyed out.
             self._mission_btn.setEnabled(True)
+            self._deploy_btn.setEnabled(True)
             self._refresh()
         self._log("%s stopped" % label)
 
@@ -417,6 +518,10 @@ class OperatorPanel(QWidget):
         self._status_text = msg.data
         self._paused = msg.data.startswith("paused")
 
+    def _deploy_cb(self, msg):
+        # rospy thread: plain attribute only, painted by _refresh.
+        self._deploy_text = msg.data
+
     def _route_cb(self, msg):
         # rospy thread: plain attribute only, painted by _refresh.
         self._route_text = msg.data
@@ -457,10 +562,16 @@ class OperatorPanel(QWidget):
         self._status_label.setText("status: %s" % self._status_text)
         self._route_label.setText(self._route_text)
         self._gps_pause_btn.setText("Resume GPS" if self._gps_paused else "Pause GPS")
+        self._deploy_btn.setText(
+            "Stop deployment" if self._deploy.running() else "Start deployment"
+        )
+        self._deploy_label.setText(
+            self._deploy_text if self._deploy.running() else "(not running)")
 
     def closeEvent(self, event):
         # Closing the window must not leave a robot driving itself.
         self._mission.stop()
+        self._deploy.stop()
         self._cameras.stop()
         event.accept()
 

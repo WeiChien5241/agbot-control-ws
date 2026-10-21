@@ -23,6 +23,8 @@ command line it replaces.
 PKG = "agbot_vision_nav"
 CAMERAS_LAUNCH = "cameras.launch"
 VISION_NAV_LAUNCH = "vision_nav.launch"
+DEPLOY_PKG = "agbot_nav"
+DEPLOY_LAUNCH = "deploy_mission.launch"
 
 # Fields passed through verbatim when non-blank. Booleans are handled
 # separately because a checkbox has no "blank" state -- it is always either
@@ -45,6 +47,28 @@ PASSTHROUGH_FIELDS = (
 BOOLEAN_FIELDS = (
     "mission_enabled",
     "rear_camera_enabled",
+)
+
+# deploy_mission.launch (agbot_nav): the LiDAR transit -> rows -> back. Same
+# row knobs as above (it passes them on to vision_nav.launch), plus the map,
+# where the robot starts on it, and move_base's speed. mission_enabled is not
+# one: a deployment IS a row mission. A blank row entrance is the point --
+# the operator then picks it in RViz -- so the panel has no entrance fields.
+DEPLOY_PASSTHROUGH_FIELDS = PASSTHROUGH_FIELDS + (
+    "map_file",
+    "initial_x",
+    "initial_y",
+    "initial_yaw",
+    "transit_speed",
+)
+
+DEPLOY_BOOLEAN_FIELDS = (
+    "rear_camera_enabled",
+    "return_enabled",
+    "rviz",
+    # SIM ONLY: the ground-truth stand-in for vision nav, for a laptop that
+    # cannot run the model. It also implies sim:=true.
+    "vision_standin",
 )
 
 # Which physical camera sits in the front mount, and what cameras.launch.py
@@ -109,13 +133,32 @@ def mission_launch_args(model_path="", sim=False, front_source="wdr", **fields):
             use the yaml/launch-default value the operator was trying to
             override.
     """
-    unknown = set(fields) - set(PASSTHROUGH_FIELDS) - set(BOOLEAN_FIELDS)
+    return _launch_args([PKG, VISION_NAV_LAUNCH], PASSTHROUGH_FIELDS,
+                        BOOLEAN_FIELDS, model_path, sim, front_source, fields)
+
+
+def deploy_launch_args(model_path="", sim=False, front_source="wdr", **fields):
+    """roslaunch argv for agbot_nav's deploy_mission.launch.
+
+    Same rules as mission_launch_args (blank = not passed, checkboxes always
+    passed, unknown names raise), over DEPLOY_PASSTHROUGH_FIELDS and
+    DEPLOY_BOOLEAN_FIELDS. vision_standin forces sim:=true -- the stand-in
+    only exists in Gazebo.
+    """
+    if fields.get("vision_standin"):
+        sim = True
+    return _launch_args([DEPLOY_PKG, DEPLOY_LAUNCH], DEPLOY_PASSTHROUGH_FIELDS,
+                        DEPLOY_BOOLEAN_FIELDS, model_path, sim, front_source, fields)
+
+
+def _launch_args(args, passthrough, booleans, model_path, sim, front_source, fields):
+    unknown = set(fields) - set(passthrough) - set(booleans)
     if unknown:
         raise ValueError("unknown launch field(s): %s" % ", ".join(sorted(unknown)))
     if front_source not in FRONT_SOURCES:
         raise ValueError("unknown front_source: %s" % front_source)
 
-    args = [PKG, VISION_NAV_LAUNCH]
+    args = list(args)
     model_path = (model_path or "").strip()
     if model_path:
         args.append("model_path:=%s" % model_path)
@@ -124,10 +167,10 @@ def mission_launch_args(model_path="", sim=False, front_source="wdr", **fields):
     elif front_source == "brio_front":
         args.append("camera_topic:=%s" % BRIO_FRONT_TOPIC)
         args.append("camera_topic_is_compressed:=true")
-    for name in BOOLEAN_FIELDS:
+    for name in booleans:
         if name in fields:
             args.append("%s:=%s" % (name, "true" if fields[name] else "false"))
-    for name in PASSTHROUGH_FIELDS:
+    for name in passthrough:
         value = fields.get(name)
         value = "" if value is None else str(value).strip()
         if value:

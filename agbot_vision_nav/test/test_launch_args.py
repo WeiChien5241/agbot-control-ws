@@ -2,6 +2,7 @@ import pytest
 
 from agbot_vision_nav.launch_args import (
     cameras_launch_args,
+    deploy_launch_args,
     mission_launch_args,
 )
 
@@ -167,3 +168,41 @@ def test_a_blank_headland_speed_leaves_params_yaml_alone():
         MODEL, linear_x_cruise="0.6", traverse_speed="", exit_clear_speed="  ",
     )
     assert args_of(argv) == {"model_path": MODEL, "linear_x_cruise": "0.6"}
+
+
+# ---- deploy_mission.launch (agbot_nav): LiDAR transit -> rows -> back -------
+
+def test_deploy_targets_agbot_nav_and_drops_blanks():
+    argv = deploy_launch_args("", num_rows="", map_file="  ", transit_speed="",
+                              linear_x_cruise="")
+    assert argv == ["agbot_nav", "deploy_mission.launch"]
+
+
+def test_deploy_passes_rows_speeds_map_and_start_pose():
+    argv = deploy_launch_args(
+        MODEL, num_rows="2", first_turn_direction="left", linear_x_cruise="0.3",
+        transit_speed="0.3", map_file="/maps/lab.yaml", initial_x="0.245",
+        initial_y="-2.623", initial_yaw="0.288", return_enabled=True, rviz=True)
+    assert argv[:2] == ["agbot_nav", "deploy_mission.launch"]
+    assert args_of(argv) == {
+        "model_path": MODEL, "num_rows": "2", "first_turn_direction": "left",
+        "linear_x_cruise": "0.3", "transit_speed": "0.3",
+        "map_file": "/maps/lab.yaml", "initial_x": "0.245",
+        "initial_y": "-2.623", "initial_yaw": "0.288",
+        "return_enabled": "true", "rviz": "true"}
+
+
+def test_deploy_has_no_mission_enabled_switch():
+    with pytest.raises(ValueError):
+        deploy_launch_args("", mission_enabled=True)
+
+
+def test_deploy_stand_in_implies_sim():
+    a = args_of(deploy_launch_args("", vision_standin=True))
+    assert a["sim"] == "true" and a["vision_standin"] == "true"
+    assert "sim" not in args_of(deploy_launch_args("", vision_standin=False))
+
+
+def test_deploy_brio_front_sets_the_camera_topic():
+    a = args_of(deploy_launch_args("", front_source="brio_front"))
+    assert a["camera_topic"] == "/brio_front/image_raw/compressed"
