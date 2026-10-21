@@ -349,3 +349,41 @@ def test_a_fixed_entrance_ignores_operator_goals():
     tick, message = f.set_entrance((3.0, 1.0, 0.0), 9.0)
     assert tick is None and "fixed" in message
     assert f.entrance == Pose2D(*ENTRANCE)
+
+
+# ---- the click picks the row; the field fixes its bearing --------------------
+
+def test_a_skewed_arrow_is_snapped_onto_the_row_bearing():
+    f = interactive(row_bearing_deg=0.0, entrance_standoff=0.7)
+    to_wait_goal(f)
+    tick, message = f.set_entrance((-0.76, -0.04, math.radians(12.0)), 5.0)
+    assert f.entrance.yaw == pytest.approx(0.0)
+    assert tick.nav_goal == Pose2D(pytest.approx(-1.46), pytest.approx(-0.04),
+                                   pytest.approx(0.0))
+    assert "snapped" in message
+
+
+def test_snapping_keeps_the_direction_the_arrow_was_going():
+    f = interactive(row_bearing_deg=0.0)
+    to_wait_goal(f)
+    f.set_entrance((8.5, 1.52, math.radians(170.0)), 5.0)   # entering from the east
+    assert abs(wrap_deg(math.degrees(f.entrance.yaw))) == pytest.approx(180.0)
+
+
+def test_an_arrow_across_the_rows_is_refused():
+    f = interactive(row_bearing_deg=0.0, max_bearing_snap_deg=30.0)
+    to_wait_goal(f)
+    tick, message = f.set_entrance((0.0, 0.0, math.radians(60.0)), 5.0)
+    assert tick is None and "off the rows" in message
+    assert f.state == STATE_WAIT_GOAL and f.entrance is None
+
+
+def test_no_row_bearing_takes_the_arrow_as_given():
+    f = interactive()
+    to_wait_goal(f)
+    f.set_entrance((0.0, 0.0, math.radians(12.0)), 5.0)
+    assert f.entrance.yaw == pytest.approx(math.radians(12.0))
+
+
+def wrap_deg(d):
+    return (d + 180.0) % 360.0 - 180.0

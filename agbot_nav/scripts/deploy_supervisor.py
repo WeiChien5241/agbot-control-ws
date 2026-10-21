@@ -73,6 +73,10 @@ class DeploySupervisor(object):
             max_arrival_cross_track=p("~max_arrival_cross_track", 0.20),
             max_arrival_heading_error_deg=p("~max_arrival_heading_error_deg", 12.0),
             return_enabled=p("~return_enabled", True),
+            # Blank = take the operator's arrow as the row bearing.
+            row_bearing_deg=(None if str(p("~row_bearing_deg", "")).strip() == ""
+                             else float(p("~row_bearing_deg"))),
+            max_bearing_snap_deg=p("~max_bearing_snap_deg", 30.0),
             reverse_timeout_sec=p("~reverse_timeout_sec", 30.0),
             localize_timeout_sec=p("~localize_timeout_sec", 30.0),
             transit_timeout_sec=p("~transit_timeout_sec", 300.0),
@@ -90,7 +94,7 @@ class DeploySupervisor(object):
 
         self._cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self._status_pub = rospy.Publisher("~status", String, queue_size=1, latch=True)
-        # The entrance in use, for RViz and the sim stand-in's oracle.
+        # The entrance in use (after snapping onto the rows), for RViz.
         self._entrance_pub = rospy.Publisher("~entrance", PoseStamped, queue_size=1,
                                              latch=True)
         self._pending = []                  # operator goals, from the rospy thread
@@ -118,6 +122,10 @@ class DeploySupervisor(object):
             self._publish_entrance()
         rospy.loginfo("move_base stops %.2f m short of the entrance on its axis",
                       f.entrance_standoff)
+        if f.interactive:
+            rospy.loginfo("row bearing: %s", "%.0f deg -- arrows are snapped onto it"
+                          % math.degrees(f.row_bearing) if f.row_bearing is not None
+                          else "NOT SET -- the arrow's own direction is used as the row")
         if f.reverse_distance > 0.0:
             rospy.loginfo("reverse off the trailer: %.2f m at %.2f m/s",
                           f.reverse_distance, f.reverse_speed)

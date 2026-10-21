@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SIM ONLY: re-seed AMCL from Gazebo truth whenever the operator sends a goal.
 
-    (started by deploy_mission.launch when sim:=true or vision_standin:=true)
+    (started by deploy_mission.launch when sim:=true)
 
 ⚠ Why (measured 2026-10-21, field world, both with and without the LiDAR):
 the sim Jackal SLIDES FORWARD while parked -- zero /cmd_vel, wheels all but

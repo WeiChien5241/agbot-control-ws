@@ -129,11 +129,21 @@ class DeployFSM(object):
                  max_arrival_cross_track=0.20,
                  max_arrival_heading_error_deg=12.0,
                  return_enabled=True,
+                 row_bearing_deg=None, max_bearing_snap_deg=30.0,
                  reverse_timeout_sec=30.0, localize_timeout_sec=30.0,
                  transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
                  return_timeout_sec=300.0):
         # No entrance = the operator gives one (and then another) at run time.
         self.interactive = entrance is None
+        # ⚠ The operator's ARROW is not the row. Sim 2026-10-21: a click 12 deg
+        # off the rows passed the handoff gate (the gate checks against the
+        # click), the robot entered the corn ~20 deg across it, and 6.7 m in it
+        # had drifted 0.6 m onto the next plant row, where the camera sees open
+        # ground both sides and EXIT_CLEAR fired mid-field. Rows in one field
+        # are parallel, so a known bearing lets the click pick only the row.
+        self.row_bearing = (None if row_bearing_deg is None
+                            else math.radians(float(row_bearing_deg)))
+        self.max_bearing_snap = math.radians(float(max_bearing_snap_deg))
         self.entrance_standoff = float(entrance_standoff)
         self.entrance = None
         self.transit_goal = None
@@ -211,10 +221,25 @@ class DeployFSM(object):
         if self.state in (STATE_TRANSIT, STATE_ROW_MISSION, STATE_RETURN):
             return None, ("ignored: busy in %s -- wait for WAIT_GOAL, or stop "
                           "the robot with the joystick" % self.state)
+        snap = ""
+        if self.row_bearing is not None:
+            x, y, yaw = entrance
+            best = min((self.row_bearing, self.row_bearing + math.pi),
+                       key=lambda b: abs(wrap(yaw - b)))
+            off = wrap(yaw - best)
+            if abs(off) > self.max_bearing_snap:
+                return None, ("ignored: the arrow points %.0f deg, %.0f deg off the "
+                              "rows (row_bearing_deg %.0f, limit %.0f) -- point it "
+                              "DOWN the row, or set row_bearing_deg for this map"
+                              % (math.degrees(yaw), abs(math.degrees(off)),
+                                 math.degrees(self.row_bearing),
+                                 math.degrees(self.max_bearing_snap)))
+            entrance = (x, y, wrap(best))
+            snap = " (arrow was %.0f deg; snapped to the rows)" % math.degrees(yaw)
         self._set_entrance(entrance)
         e = self.entrance
-        message = "row entrance (%.2f, %.2f) facing %.0f deg" % (
-            e.x, e.y, math.degrees(e.yaw))
+        message = "row entrance (%.2f, %.2f) facing %.0f deg%s" % (
+            e.x, e.y, math.degrees(e.yaw), snap)
         if self.state == STATE_WAIT_GOAL or (
                 self.state == STATE_FAILED and self.drop_off is not None):
             self.reason = ""
