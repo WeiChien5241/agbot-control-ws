@@ -60,15 +60,15 @@ DEPLOY_PASSTHROUGH_FIELDS = PASSTHROUGH_FIELDS + (
     "initial_y",
     "initial_yaw",
     "transit_speed",
+    # The rows' bearing in the map: a clicked entrance arrow is snapped onto
+    # it. Blank = the launch default (0, the field world).
+    "row_bearing_deg",
 )
 
 DEPLOY_BOOLEAN_FIELDS = (
     "rear_camera_enabled",
     "return_enabled",
     "rviz",
-    # SIM ONLY: the ground-truth stand-in for vision nav, for a laptop that
-    # cannot run the model. It also implies sim:=true.
-    "vision_standin",
 )
 
 # Which physical camera sits in the front mount, and what cameras.launch.py
@@ -142,11 +142,8 @@ def deploy_launch_args(model_path="", sim=False, front_source="wdr", **fields):
 
     Same rules as mission_launch_args (blank = not passed, checkboxes always
     passed, unknown names raise), over DEPLOY_PASSTHROUGH_FIELDS and
-    DEPLOY_BOOLEAN_FIELDS. vision_standin forces sim:=true -- the stand-in
-    only exists in Gazebo.
+    DEPLOY_BOOLEAN_FIELDS.
     """
-    if fields.get("vision_standin"):
-        sim = True
     return _launch_args([DEPLOY_PKG, DEPLOY_LAUNCH], DEPLOY_PASSTHROUGH_FIELDS,
                         DEPLOY_BOOLEAN_FIELDS, model_path, sim, front_source, fields)
 

@@ -25,7 +25,11 @@ where it started -- and it waits for the next click. Gazebo (lidar:=true) or
 the robot's own bringup must already be running. It and section 2's Start
 mission are mutually exclusive: both start a vision_nav_node.
 
-Section 4 drives the GPS transit's ROUTE (gps_nav_node): click points in
+Section 4 (GPS route) is COMMENTED OUT since 2026-10-21 -- the LiDAR
+transit (section 5) is the option being pursued. Its methods are kept; undo
+the three "section 4 disabled" comments below to bring it back.
+
+Section 4 drove the GPS transit's ROUTE (gps_nav_node): click points in
 mapviz -- they queue, nothing moves -- then Go. Undo/Clear edit the queue;
 Save/Load use the route-file field (blank = gps_nav_node's ~route_file).
 
@@ -181,7 +185,8 @@ class OperatorPanel(QWidget):
         layout.addWidget(self._build_cameras_box())
         layout.addWidget(self._build_mission_box())
         layout.addWidget(self._build_control_box())
-        layout.addWidget(self._build_route_box())
+        # section 4 disabled (2026-10-21): GPS route, not the option pursued.
+        # layout.addWidget(self._build_route_box())
         layout.addWidget(self._build_deploy_box())
 
         self._status_label = QLabel(self._status_text)
@@ -196,9 +201,10 @@ class OperatorPanel(QWidget):
         rospy.Subscriber(
             NODE_NAMESPACE + "/status", String, self._status_cb, queue_size=1
         )
-        rospy.Subscriber(
-            GPS_NAMESPACE + "/route_status", String, self._route_cb, queue_size=1
-        )
+        # section 4 disabled (2026-10-21)
+        # rospy.Subscriber(
+        #     GPS_NAMESPACE + "/route_status", String, self._route_cb, queue_size=1
+        # )
         rospy.Subscriber(
             DEPLOY_NAMESPACE + "/status", String, self._deploy_cb, queue_size=1
         )
@@ -350,9 +356,10 @@ class OperatorPanel(QWidget):
         self._transit_speed.setPlaceholderText(
             "blank = move_base.yaml (0.5 m/s); indoors 0.3")
         form.addRow("transit_speed", self._transit_speed)
-        self._standin = QCheckBox(
-            "vision stand-in (SIM ONLY, no model: steers from Gazebo truth)")
-        form.addRow("", self._standin)
+        self._row_bearing = QLineEdit()
+        self._row_bearing.setPlaceholderText(
+            "blank = 0 (field world rows run east-west); set it for your own map")
+        form.addRow("row_bearing_deg", self._row_bearing)
         self._deploy_rviz = QCheckBox("open RViz (nav view)")
         self._deploy_rviz.setChecked(True)
         form.addRow("", self._deploy_rviz)
@@ -366,9 +373,11 @@ class OperatorPanel(QWidget):
         self._deploy_label.setWordWrap(True)
         form.addRow("status", self._deploy_label)
         note = QLabel(
-            "Rows, turn direction and speeds come from section 2. Then in RViz: "
-            "2D Nav Goal at a row mouth, arrow DOWN the row. After the way home it "
-            "waits for the next goal. A start pose blank = the field world's.")
+            "Rows, turn direction, speeds, model_path and 'simulation' come from "
+            "section 2; the rows are driven by the camera. Then in RViz: 2D Nav "
+            "Goal at a row mouth, arrow DOWN the row (snapped onto row_bearing_deg). "
+            "After the way home it waits for the next goal. A start pose blank = "
+            "the field world's.")
         note.setWordWrap(True)
         form.addRow("", note)
         return box
@@ -433,7 +442,7 @@ class OperatorPanel(QWidget):
                 rear_camera_enabled=self._rear_enabled.isChecked(),
                 return_enabled=self._return_home.isChecked(),
                 rviz=self._deploy_rviz.isChecked(),
-                vision_standin=self._standin.isChecked(),
+                row_bearing_deg=self._row_bearing.text(),
                 num_rows=self._num_rows.text(),
                 first_turn_direction=self._first_turn.currentText(),
                 linear_x_cruise=self._linear_x.text(),
@@ -560,8 +569,9 @@ class OperatorPanel(QWidget):
         )
         self._pause_btn.setText("Resume" if self._paused else "Pause")
         self._status_label.setText("status: %s" % self._status_text)
-        self._route_label.setText(self._route_text)
-        self._gps_pause_btn.setText("Resume GPS" if self._gps_paused else "Pause GPS")
+        # section 4 disabled (2026-10-21)
+        # self._route_label.setText(self._route_text)
+        # self._gps_pause_btn.setText("Resume GPS" if self._gps_paused else "Pause GPS")
         self._deploy_btn.setText(
             "Stop deployment" if self._deploy.running() else "Start deployment"
         )

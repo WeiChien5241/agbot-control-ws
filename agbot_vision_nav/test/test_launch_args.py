@@ -197,10 +197,15 @@ def test_deploy_has_no_mission_enabled_switch():
         deploy_launch_args("", mission_enabled=True)
 
 
-def test_deploy_stand_in_implies_sim():
-    a = args_of(deploy_launch_args("", vision_standin=True))
-    assert a["sim"] == "true" and a["vision_standin"] == "true"
-    assert "sim" not in args_of(deploy_launch_args("", vision_standin=False))
+def test_deploy_has_no_vision_stand_in():
+    # Rows are driven by the camera only (the stand-in was removed 2026-10-21).
+    with pytest.raises(ValueError):
+        deploy_launch_args("", vision_standin=True)
+
+
+def test_deploy_passes_the_row_bearing():
+    assert args_of(deploy_launch_args("", row_bearing_deg="90"))["row_bearing_deg"] == "90"
+    assert "row_bearing_deg" not in args_of(deploy_launch_args("", row_bearing_deg=""))
 
 
 def test_deploy_brio_front_sets_the_camera_topic():
