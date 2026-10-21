@@ -8,6 +8,8 @@
   <!-- RViz with the nav view: map, scan, AMCL particles, costmaps, plans,
        and the "2D Pose Estimate" / "2D Nav Goal" tools. -->
   <arg name="rviz" default="false"/>
+  <arg name="max_vel"     default=""/>   <!-- m/s; blank = move_base.yaml -->
+  <arg name="simple_goal" default="true"/><!-- see move_base.launch -->
 
   <include file="$(find agbot_nav)/launch/localization.launch">
     <arg name="map_file"    value="$(arg map_file)"/>
@@ -16,7 +18,10 @@
     <arg name="initial_y"   value="$(arg initial_y)"/>
     <arg name="initial_yaw" value="$(arg initial_yaw)"/>
   </include>
-  <include file="$(find agbot_nav)/launch/move_base.launch"/>
+  <include file="$(find agbot_nav)/launch/move_base.launch">
+    <arg name="max_vel"     value="$(arg max_vel)"/>
+    <arg name="simple_goal" value="$(arg simple_goal)"/>
+  </include>
 
   <node if="$(arg rviz)" name="nav_rviz" pkg="rviz" type="rviz"
         args="-d $(find agbot_nav)/rviz/nav.rviz"/>

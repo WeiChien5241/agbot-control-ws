@@ -15,6 +15,7 @@ catkin_install_python(PROGRAMS
   scripts/deploy_supervisor.py
   scripts/vision_standin.py
   scripts/record_start_pose.py
+  scripts/sim_creep_guard.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

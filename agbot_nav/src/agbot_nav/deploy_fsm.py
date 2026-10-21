@@ -9,6 +9,15 @@ agbot_gps_nav's handoff_fsm, which it does not replace (the GPS stack is kept).
                        |             |          |            |            |
                        +-------------+--- timeout / nav failure / gate ---+--> FAILED
 
+INTERACTIVE (no entrance given): the operator picks the row entrance on the
+map instead (RViz "2D Nav Goal", arrow down the row -> `set_entrance`), and
+the deployment REPEATS -- after the way home, or after a failure, it waits
+for the next goal instead of ending. That is how a goal is tested anywhere
+on the map without restarting the stack:
+
+    LOCALIZE -> WAIT_GOAL -goal-> TRANSIT -> ROW_MISSION -> RETURN -> WAIT_GOAL
+                                     \___________\_____________\--> FAILED -goal-> ...
+
 REVERSE_OFF  The supervisor itself reverses the robot `reverse_distance` m
              straight off the ramp on wheel odometry. Blind on purpose: the
              trailer is right in front of the robot and no planner should be
@@ -31,6 +40,7 @@ TRANSIT      move_base drives to the row entrance (a map-frame pose whose yaw
              is the row bearing), or rather to a point `entrance_standoff` m
              BEHIND it on the row axis -- see below.
 ROW_MISSION  Vision nav drives the rows; move_base has no goal.
+WAIT_GOAL    Interactive only. Stopped, nobody commanding, no timeout.
 RETURN       Vision off, move_base drives back to the recorded drop-off pose.
              Driving back UP the ramp is out of scope until the trailer team
              says what the ramp is.
@@ -66,6 +76,7 @@ import math
 STATE_IDLE = "IDLE"
 STATE_REVERSE_OFF = "REVERSE_OFF"
 STATE_LOCALIZE = "LOCALIZE"
+STATE_WAIT_GOAL = "WAIT_GOAL"
 STATE_TRANSIT = "TRANSIT"
 STATE_ROW_MISSION = "ROW_MISSION"
 STATE_RETURN = "RETURN"
@@ -110,7 +121,7 @@ def axis_errors(estimate, entrance):
 class DeployFSM(object):
     """Decides who drives, where to, and when the deployment has failed."""
 
-    def __init__(self, entrance, entrance_standoff=0.7,
+    def __init__(self, entrance=None, entrance_standoff=0.7,
                  reverse_distance=1.5, reverse_speed=0.15,
                  max_std_xy=0.15, max_std_yaw_deg=8.0,
                  localize_max_std_xy=0.30, localize_max_std_yaw_deg=10.0,
@@ -121,13 +132,13 @@ class DeployFSM(object):
                  reverse_timeout_sec=30.0, localize_timeout_sec=30.0,
                  transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
                  return_timeout_sec=300.0):
-        self.entrance = Pose2D(*entrance)
+        # No entrance = the operator gives one (and then another) at run time.
+        self.interactive = entrance is None
         self.entrance_standoff = float(entrance_standoff)
-        e = self.entrance
-        self.transit_goal = Pose2D(
-            e.x - self.entrance_standoff * math.cos(e.yaw),
-            e.y - self.entrance_standoff * math.sin(e.yaw),
-            e.yaw)
+        self.entrance = None
+        self.transit_goal = None
+        if entrance is not None:
+            self._set_entrance(entrance)
         self.reverse_distance = float(reverse_distance)
         # Stored positive; the tick reports it as a NEGATIVE linear.x.
         self.reverse_speed = abs(float(reverse_speed))
@@ -178,10 +189,49 @@ class DeployFSM(object):
         return self._enter(STATE_REVERSE_OFF, now)
 
     def abort(self, reason):
-        """Stop everything. Used for an operator stop or an external fault."""
+        """Stop everything. Used for an operator stop or an external fault.
+
+        Terminal unless interactive: there the operator can send a new goal.
+        """
         self.state = STATE_FAILED
         self.reason = reason
         return self._tick(cancel_nav=True)
+
+    def set_entrance(self, entrance, now):
+        """The operator's row entrance (x, y, row bearing), map frame.
+
+        Returns (tick or None, message). A tick means the caller applies it
+        now; None means nothing changes this instant (refused, or held until
+        LOCALIZE finishes).
+        """
+        if not self.interactive:
+            return None, ("ignored: the entrance is fixed by the launch args "
+                          "(start deploy_mission without entrance_* to pick it "
+                          "on the map)")
+        if self.state in (STATE_TRANSIT, STATE_ROW_MISSION, STATE_RETURN):
+            return None, ("ignored: busy in %s -- wait for WAIT_GOAL, or stop "
+                          "the robot with the joystick" % self.state)
+        self._set_entrance(entrance)
+        e = self.entrance
+        message = "row entrance (%.2f, %.2f) facing %.0f deg" % (
+            e.x, e.y, math.degrees(e.yaw))
+        if self.state == STATE_WAIT_GOAL or (
+                self.state == STATE_FAILED and self.drop_off is not None):
+            self.reason = ""
+            return self._enter(STATE_TRANSIT, now), message
+        if self.state == STATE_FAILED:
+            # Failed before the drop-off was ever recorded: localize first,
+            # or there would be no way home.
+            self.reason = ""
+            return self._enter(STATE_LOCALIZE, now), message + "; localizing first"
+        return None, message + "; held until localized"
+
+    def _set_entrance(self, entrance):
+        self.entrance = e = Pose2D(*entrance)
+        self.transit_goal = Pose2D(
+            e.x - self.entrance_standoff * math.cos(e.yaw),
+            e.y - self.entrance_standoff * math.sin(e.yaw),
+            e.yaw)
 
     def update(self, now, odom_xy=None, estimate=None, nav_state=None,
                vision_done=False):
@@ -194,7 +244,8 @@ class DeployFSM(object):
         vision_done the row mission's /vision_nav_node/mission_done.
         """
         now = float(now)
-        if self.state in (STATE_IDLE, STATE_FINISHED, STATE_FAILED):
+        if self.state in (STATE_IDLE, STATE_FINISHED, STATE_FAILED,
+                          STATE_WAIT_GOAL):
             return self._tick()
 
         elapsed = now - self._entered_at
@@ -219,6 +270,8 @@ class DeployFSM(object):
                     self._confident_since = now
                 if now - self._confident_since >= self.localize_hold_sec:
                     self.drop_off = Pose2D(estimate.x, estimate.y, estimate.yaw)
+                    if self.entrance is None:
+                        return self._enter(STATE_WAIT_GOAL, now)
                     return self._enter(STATE_TRANSIT, now)
             else:
                 self._confident_since = None
@@ -253,19 +306,22 @@ class DeployFSM(object):
             if vision_done:
                 if self.return_enabled:
                     return self._enter(STATE_RETURN, now)
-                return self._enter(STATE_FINISHED, now)
+                return self._enter(self._finished_state(), now)
             return self._tick()
 
         if self.state == STATE_RETURN:
             if nav_state == NAV_FAILED:
                 return self.abort("move_base gave up on the way back to the trailer")
             if nav_state == NAV_SUCCEEDED:
-                return self._enter(STATE_FINISHED, now)
+                return self._enter(self._finished_state(), now)
             return self._tick()
 
         return self._tick()
 
     # ---- helpers ----------------------------------------------------------
+
+    def _finished_state(self):
+        return STATE_WAIT_GOAL if self.interactive else STATE_FINISHED
 
     def _confident(self, estimate, max_std_xy=None, max_std_yaw=None):
         """AMCL's spread under the limits; the ARRIVAL limits by default."""
@@ -305,6 +361,7 @@ class DeployFSM(object):
             cancel_nav=cancel_nav,
             request_localize_update=self.state == STATE_LOCALIZE,
             done=self.state == STATE_FINISHED,
-            failed=self.state == STATE_FAILED,
+            # Terminal only when nothing can follow it.
+            failed=self.state == STATE_FAILED and not self.interactive,
             reason=self.reason,
         )

@@ -7,7 +7,7 @@ from agbot_nav.deploy_fsm import (
     COMMANDER_MOVE_BASE, COMMANDER_SUPERVISOR, COMMANDER_VISION,
     NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
     STATE_FAILED, STATE_FINISHED, STATE_LOCALIZE, STATE_RETURN,
-    STATE_REVERSE_OFF, STATE_ROW_MISSION, STATE_TRANSIT,
+    STATE_REVERSE_OFF, STATE_ROW_MISSION, STATE_TRANSIT, STATE_WAIT_GOAL,
     DeployFSM, Estimate, Pose2D, axis_errors,
 )
 
@@ -257,3 +257,95 @@ def test_axis_errors_sign_convention():
     cross, heading = axis_errors(Estimate(1.0, 0.2, 0.1, 0, 0), entrance)
     assert cross == pytest.approx(0.2)          # left of the axis is positive
     assert heading == pytest.approx(0.1)
+
+
+# ---- interactive: the operator picks the entrance on the map ---------------
+
+def interactive(**kw):
+    kw.setdefault("reverse_distance", 0.0)
+    return DeployFSM(None, **kw)
+
+
+def to_wait_goal(f):
+    f.start(0.0)
+    f.update(1.0, estimate=AT_DROP)
+    return f.update(3.5, estimate=AT_DROP)
+
+
+def test_no_entrance_waits_for_the_operator_after_localizing():
+    f = interactive()
+    tick = to_wait_goal(f)
+    assert tick.state == STATE_WAIT_GOAL
+    assert tick.commander is None and tick.nav_goal is None
+    assert not tick.request_localize_update
+    assert f.drop_off == Pose2D(AT_DROP.x, AT_DROP.y, AT_DROP.yaw)
+    # no timeout: an operator may take as long as they like
+    assert f.update(10000.0, estimate=AT_DROP).state == STATE_WAIT_GOAL
+
+
+def test_a_goal_starts_the_transit_to_its_standoff_point():
+    f = interactive(entrance_standoff=0.7)
+    to_wait_goal(f)
+    tick, _ = f.set_entrance(ENTRANCE, 5.0)
+    assert tick.state == STATE_TRANSIT and tick.commander == COMMANDER_MOVE_BASE
+    assert tick.nav_goal.y == pytest.approx(ENTRANCE[1] - 0.7)
+    assert f.update(20.0, estimate=GOOD, nav_state=NAV_SUCCEEDED).vision_enabled
+
+
+def test_a_goal_before_localizing_is_held_not_driven():
+    f = interactive()
+    f.start(0.0)
+    tick, message = f.set_entrance(ENTRANCE, 0.5)
+    assert tick is None and "held" in message
+    f.update(1.0, estimate=AT_DROP)
+    assert f.update(3.5, estimate=AT_DROP).state == STATE_TRANSIT
+
+
+def test_interactive_returns_home_then_waits_for_the_next_goal():
+    f = interactive()
+    to_wait_goal(f)
+    f.set_entrance(ENTRANCE, 5.0)
+    f.update(20.0, estimate=GOOD, nav_state=NAV_SUCCEEDED)
+    assert f.update(200.0, vision_done=True).state == STATE_RETURN
+    tick = f.update(260.0, nav_state=NAV_SUCCEEDED)
+    assert tick.state == STATE_WAIT_GOAL and not tick.done
+    second = (3.0, 1.0, 0.0)
+    tick, _ = f.set_entrance(second, 270.0)
+    assert tick.state == STATE_TRANSIT
+    assert tick.nav_goal == Pose2D(2.3, 1.0, 0.0)
+
+
+def test_goals_while_driving_are_refused():
+    f = interactive()
+    to_wait_goal(f)
+    f.set_entrance(ENTRANCE, 5.0)
+    tick, message = f.set_entrance((3.0, 1.0, 0.0), 6.0)
+    assert tick is None and "busy" in message
+    assert f.entrance == Pose2D(*ENTRANCE)
+
+
+def test_interactive_failure_is_not_terminal():
+    f = interactive()
+    to_wait_goal(f)
+    f.set_entrance(ENTRANCE, 5.0)
+    tick = f.update(20.0, estimate=GOOD._replace(x=GOOD.x + 0.3),
+                    nav_state=NAV_SUCCEEDED)
+    assert tick.state == STATE_FAILED and not tick.failed and tick.cancel_nav
+    tick, _ = f.set_entrance(ENTRANCE, 30.0)
+    assert tick.state == STATE_TRANSIT and tick.reason == ""
+
+
+def test_failure_before_the_drop_off_localizes_again():
+    f = interactive(localize_timeout_sec=30.0)
+    f.start(0.0)
+    f.update(40.0, estimate=None)
+    tick, _ = f.set_entrance(ENTRANCE, 50.0)
+    assert tick.state == STATE_LOCALIZE
+
+
+def test_a_fixed_entrance_ignores_operator_goals():
+    f = fsm()
+    to_transit(f)
+    tick, message = f.set_entrance((3.0, 1.0, 0.0), 9.0)
+    assert tick is None and "fixed" in message
+    assert f.entrance == Pose2D(*ENTRANCE)

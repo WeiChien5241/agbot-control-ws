@@ -10,9 +10,16 @@
          roslaunch agbot_bringup agbot_gazebo.launch lidar:=true rviz:=false \
            x:=-7.92 y:=-1.30 z:=0.35 yaw:=1.5917
          roslaunch agbot_nav deploy_mission.launch vision_standin:=true rviz:=true
-       Every default below is that world's. With your own SLAM map, pass
-       map_file, initial_* (0 0 0 if you start where mapping started) and the
-       entrance in THAT map's frame (read it off RViz with "Publish Point").
+       then in RViz: "2D Nav Goal" at a row mouth, arrow DOWN the row. The
+       robot drives there, does num_rows rows, comes back, and waits for the
+       next goal (status: rostopic echo /deploy_supervisor/status). Or start
+       it from the operator panel (rosrun agbot_vision_nav operator_panel.py,
+       section 5), which also sets num_rows and the speeds.
+       The map/start defaults below are that world's. With your own SLAM map,
+       pass map_file and initial_* (save_map.sh prints them).
+       Scripted runs: pass entrance_x/_y/_yaw_deg and the goal is fixed, the
+       run ends after the way home, and RViz goals are ignored
+       (field world: entrance_x:=-0.5 entrance_y:=0.0 entrance_yaw_deg:=0).
 
        ⚠ Start with gps:=false on the sim. AMCL owns map->odom here, and
        agbot_gps_nav's ekf_map would publish it too. -->
@@ -26,10 +33,12 @@
   <arg name="initial_y"   default="-1.30"/>
   <arg name="initial_yaw" default="1.5917"/>
 
-  <!-- Row entrance, MAP frame; yaw is the row bearing. Default: the field
-       world's entrance, the north block's 3rd/4th-row corridor, facing east. -->
-  <arg name="entrance_x"       default="-0.5"/>
-  <arg name="entrance_y"       default="0.0"/>
+  <!-- Row entrance, MAP frame; yaw is the row bearing. BLANK (default) =
+       pick it in RViz with 2D Nav Goal, as often as you like. ⚠ While this
+       launch runs, 2D Nav Goal NEVER drives move_base directly: the click
+       goes to the supervisor, which checks the arrival and hands over. -->
+  <arg name="entrance_x"       default=""/>
+  <arg name="entrance_y"       default=""/>
   <arg name="entrance_yaw_deg" default="0.0"/>
   <!-- move_base stops this far BEFORE the entrance, on its axis; vision nav
        drives the rest. Corn leaves reach ~0.6 m into the headland and the
@@ -42,6 +51,9 @@
   <arg name="reverse_distance" default="0.0"/>
   <arg name="rviz"             default="false"/>
   <arg name="return_enabled"   default="true"/>
+  <!-- move_base top speed (m/s) on the way to the row and back; blank =
+       move_base.yaml (0.5). Indoors on the robot: 0.3. -->
+  <arg name="transit_speed"    default=""/>
 
   <!-- Row mission. vision_standin:=true replaces vision nav with a blind
        straight-line stand-in (SIM ONLY: the laptop cannot run the model). -->
@@ -51,11 +63,25 @@
        headland, where a real row mission ends. -->
   <arg name="standin_oracle"       default="true"/>
   <arg name="standin_row_distance" default="10.7"/>  <!-- field world: 8 m row + standoff + 1.5 m out -->
+  <arg name="standin_row_spacing"  default="0.76"/>  <!-- field world (agbot_field_layout.yaml) -->
   <arg name="sim"            default="false"/>
   <arg name="num_rows"       default="3"/>
-  <arg name="first_turn_direction" default="right"/>
+  <!-- left: from the field world's default corridor (the north block's
+       SOUTHERNMOST) the other two corridors are to the north; turning right
+       there leads into the cross alley. Match it to the corridor you pick. -->
+  <arg name="first_turn_direction" default="left"/>
   <arg name="rear_camera_enabled"  default="true"/>
   <arg name="model_path"     default=""/>
+  <!-- In-row and headland speeds; blank = vision nav's params.yaml.
+       The stand-in drives its rows at linear_x_cruise (blank: 0.3). -->
+  <arg name="linear_x_cruise"  default=""/>
+  <arg name="angular_z_max"    default=""/>
+  <arg name="traverse_speed"   default=""/>
+  <arg name="exit_clear_speed" default=""/>
+  <!-- Real robot with the spare Brio in front (operator panel's frame
+       source); blank = vision_nav.launch's own topic choice. -->
+  <arg name="camera_topic"               default=""/>
+  <arg name="camera_topic_is_compressed" default=""/>
 
   <include file="$(find agbot_nav)/launch/transit.launch">
     <arg name="map_file"    value="$(arg map_file)"/>
@@ -63,15 +89,18 @@
     <arg name="initial_y"   value="$(arg initial_y)"/>
     <arg name="initial_yaw" value="$(arg initial_yaw)"/>
     <arg name="rviz"        value="$(arg rviz)"/>
+    <arg name="max_vel"     value="$(arg transit_speed)"/>
+    <arg name="simple_goal" value="false"/>
   </include>
 
   <group if="$(arg vision_standin)">
     <node name="vision_nav_node" pkg="agbot_nav" type="vision_standin.py" output="screen">
       <param name="oracle"       value="$(arg standin_oracle)"/>
       <param name="row_distance" value="$(arg standin_row_distance)"/>
-      <param name="axis_x"       value="$(arg entrance_x)"/>
-      <param name="axis_y"       value="$(arg entrance_y)"/>
-      <param name="axis_yaw_deg" value="$(arg entrance_yaw_deg)"/>
+      <param name="row_spacing"  value="$(arg standin_row_spacing)"/>
+      <param name="num_rows"     value="$(arg num_rows)"/>
+      <param name="first_turn_direction" value="$(arg first_turn_direction)"/>
+      <param name="speed" value="$(eval arg('linear_x_cruise') or 0.3)"/>
     </node>
   </group>
   <group unless="$(arg vision_standin)">
@@ -84,8 +113,22 @@
       <arg name="rear_camera_enabled"  value="$(arg rear_camera_enabled)"/>
       <arg name="model_path"       value="$(arg model_path)"
            if="$(eval arg('model_path') != '')"/>
+      <arg name="linear_x_cruise"  value="$(arg linear_x_cruise)"/>
+      <arg name="angular_z_max"    value="$(arg angular_z_max)"/>
+      <arg name="traverse_speed"   value="$(arg traverse_speed)"/>
+      <arg name="exit_clear_speed" value="$(arg exit_clear_speed)"/>
+      <arg name="camera_topic"     value="$(arg camera_topic)"
+           if="$(eval arg('camera_topic') != '')"/>
+      <arg name="camera_topic_is_compressed" value="$(arg camera_topic_is_compressed)"
+           if="$(eval arg('camera_topic_is_compressed') != '')"/>
     </include>
   </group>
+
+  <!-- SIM ONLY: the parked sim Jackal slides forward, invisible to odometry
+       and so to AMCL; every 2D Nav Goal re-seeds AMCL from Gazebo truth
+       (scripts/sim_creep_guard.py has the measurement). -->
+  <node if="$(eval arg('sim') or arg('vision_standin'))" name="sim_creep_guard"
+        pkg="agbot_nav" type="sim_creep_guard.py" output="screen"/>
 
   <node name="deploy_supervisor" pkg="agbot_nav" type="deploy_supervisor.py"
         output="screen" required="true">

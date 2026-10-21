@@ -7,6 +7,12 @@ and is unit-tested; this is plumbing.
 
     roslaunch agbot_nav deploy_mission.launch ...
 
+With no ~entrance_x the operator picks the row entrance: RViz "2D Nav Goal"
+(/move_base_simple/goal) at the row mouth, arrow DOWN the row. The launch
+remaps move_base's own copy of that topic away, so a click goes HERE and
+never straight to move_base -- otherwise it would drive with nobody checking
+the arrival or handing over to vision. Another goal after each run home.
+
 ⚠ EXACTLY ONE COMMANDER ON /cmd_vel. This node (reverse leg), move_base and
 vision nav all publish /cmd_vel, which twist_mux takes as ONE input and does
 not arbitrate between publishers. The FSM names the commander on every tick;
@@ -23,7 +29,7 @@ import sys
 import actionlib
 import rospy
 from actionlib_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
@@ -33,7 +39,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agbot_nav.deploy_fsm import (  # noqa: E402
     COMMANDER_SUPERVISOR, NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
-    DeployFSM, Estimate,
+    STATE_ROW_MISSION, STATE_WAIT_GOAL, DeployFSM, Estimate,
 )
 
 _ACTIVE = (GoalStatus.PENDING, GoalStatus.ACTIVE)
@@ -48,8 +54,12 @@ class DeploySupervisor(object):
     def __init__(self):
         rospy.init_node("deploy_supervisor")
         p = rospy.get_param
-        entrance = (p("~entrance_x"), p("~entrance_y"),
-                    math.radians(p("~entrance_yaw_deg")))
+        # Blank (the launch default) = the operator picks it on the map.
+        if str(p("~entrance_x", "")).strip() == "":
+            entrance = None
+        else:
+            entrance = (float(p("~entrance_x")), float(p("~entrance_y")),
+                        math.radians(float(p("~entrance_yaw_deg", 0.0))))
         self._fsm = DeployFSM(
             entrance,
             entrance_standoff=p("~entrance_standoff", 0.7),
@@ -80,6 +90,10 @@ class DeploySupervisor(object):
 
         self._cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self._status_pub = rospy.Publisher("~status", String, queue_size=1, latch=True)
+        # The entrance in use, for RViz and the sim stand-in's oracle.
+        self._entrance_pub = rospy.Publisher("~entrance", PoseStamped, queue_size=1,
+                                             latch=True)
+        self._pending = []                  # operator goals, from the rospy thread
         rospy.Subscriber("/odometry/filtered", Odometry, self._odom_cb, queue_size=1)
         rospy.Subscriber("/amcl_pose", PoseWithCovarianceStamped, self._amcl_cb, queue_size=1)
         rospy.Subscriber("/vision_nav_node/mission_done", Bool, self._done_cb, queue_size=1)
@@ -95,9 +109,14 @@ class DeploySupervisor(object):
         rospy.on_shutdown(self._on_shutdown)
         f = self._fsm
         rospy.loginfo("---- deploy supervisor ----")
-        rospy.loginfo("row entrance (map): (%.2f, %.2f) facing %.0f deg; "
-                      "move_base stops %.2f m short of it on the axis",
-                      f.entrance.x, f.entrance.y, math.degrees(f.entrance.yaw),
+        if f.interactive:
+            rospy.loginfo("row entrance: PICKED ON THE MAP -- RViz 2D Nav Goal at the "
+                          "row mouth, arrow down the row; one more after each run")
+        else:
+            rospy.loginfo("row entrance (map): (%.2f, %.2f) facing %.0f deg",
+                          f.entrance.x, f.entrance.y, math.degrees(f.entrance.yaw))
+            self._publish_entrance()
+        rospy.loginfo("move_base stops %.2f m short of the entrance on its axis",
                       f.entrance_standoff)
         if f.reverse_distance > 0.0:
             rospy.loginfo("reverse off the trailer: %.2f m at %.2f m/s",
@@ -116,6 +135,8 @@ class DeploySupervisor(object):
                       "yes" if f.return_enabled else "no")
         rospy.loginfo("---------------------------")
 
+        rospy.Subscriber("/move_base_simple/goal", PoseStamped, self._goal_cb,
+                         queue_size=5)
         self._apply(self._fsm.start(rospy.get_time()))
         rospy.Timer(rospy.Duration(0.1), self._tick)
 
@@ -137,6 +158,16 @@ class DeploySupervisor(object):
         if self._vision_on:
             self._vision_done = bool(msg.data)
 
+    def _goal_cb(self, msg):
+        # rospy thread: queue it; the FSM is only touched from _tick.
+        frame = msg.header.frame_id.lstrip("/")
+        if frame != "map":
+            rospy.logwarn("goal ignored: it is in frame '%s', not 'map' (set RViz's "
+                          "Fixed Frame to map)", frame)
+            return
+        p = msg.pose
+        self._pending.append((p.position.x, p.position.y, yaw_of(p.orientation)))
+
     def _nav_state(self):
         if not self._goal_active:
             return None
@@ -152,6 +183,16 @@ class DeploySupervisor(object):
     def _tick(self, _event):
         if self._finished:
             return
+        while self._pending:
+            tick, message = self._fsm.set_entrance(self._pending.pop(0),
+                                                   rospy.get_time())
+            if tick is None and message.startswith("ignored"):
+                rospy.logwarn("goal %s", message)
+            else:
+                rospy.loginfo("goal accepted: %s", message)
+                self._publish_entrance()
+            if tick is not None:
+                self._apply(tick)
         tick = self._fsm.update(rospy.get_time(), odom_xy=self._odom_xy,
                                 estimate=self._estimate,
                                 nav_state=self._nav_state(),
@@ -160,9 +201,14 @@ class DeploySupervisor(object):
 
     def _apply(self, tick):
         if tick.state != self._last_state:
-            rospy.loginfo("%s (commander: %s)%s", tick.state, tick.commander or "none",
-                          ("  -- " + tick.reason) if tick.reason else "")
-            if tick.state == "ROW_MISSION" and self._fsm.arrival:
+            log = rospy.logerr if tick.state == "FAILED" else rospy.loginfo
+            log("%s (commander: %s)%s", tick.state, tick.commander or "none",
+                ("  -- " + tick.reason) if tick.reason else "")
+            if tick.state == STATE_WAIT_GOAL or (tick.state == "FAILED"
+                                                 and self._fsm.interactive):
+                rospy.loginfo("waiting for a 2D Nav Goal at a row entrance "
+                              "(arrow down the row)")
+            if tick.state == STATE_ROW_MISSION and self._fsm.arrival:
                 cross, heading = self._fsm.arrival
                 rospy.loginfo("arrived %.3f m off the corridor axis, %+.1f deg "
                               "off its bearing (AMCL)", cross, math.degrees(heading))
@@ -195,8 +241,12 @@ class DeploySupervisor(object):
             except rospy.ServiceException:
                 pass
 
+        hint = ""
+        if tick.state == STATE_WAIT_GOAL:
+            hint = " -- send a 2D Nav Goal at a row entrance, arrow down the row"
         self._status_pub.publish(String(
-            data="%s%s" % (tick.state, (" -- " + tick.reason) if tick.reason else "")))
+            data="%s%s%s" % (tick.state, (" -- " + tick.reason) if tick.reason else "",
+                             hint)))
 
         if tick.done:
             self._finished = True
@@ -208,6 +258,16 @@ class DeploySupervisor(object):
             self._finished = True
             rospy.logerr("DEPLOYMENT FAILED: %s", tick.reason)
             rospy.signal_shutdown("deployment failed")
+
+    def _publish_entrance(self):
+        e = self._fsm.entrance
+        msg = PoseStamped()
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()
+        msg.pose.position.x, msg.pose.position.y = e.x, e.y
+        msg.pose.orientation.z = math.sin(e.yaw / 2.0)
+        msg.pose.orientation.w = math.cos(e.yaw / 2.0)
+        self._entrance_pub.publish(msg)
 
     def _send_goal(self, pose):
         goal = MoveBaseGoal()

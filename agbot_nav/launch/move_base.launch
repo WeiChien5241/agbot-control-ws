@@ -7,6 +7,12 @@
   <arg name="mapping" default="false"/>
   <arg name="global_costmap" value="global_costmap_mapping" if="$(arg mapping)"/>
   <arg name="global_costmap" value="global_costmap" unless="$(arg mapping)"/>
+  <!-- Top speed (m/s) for this run; blank = config/move_base.yaml (0.5). -->
+  <arg name="max_vel" default=""/>
+  <!-- simple_goal:=false stops move_base listening to RViz's 2D Nav Goal
+       (/move_base_simple/goal): deploy_mission's supervisor takes those
+       clicks as row entrances and must be the only one acting on them. -->
+  <arg name="simple_goal" default="true"/>
 
   <node pkg="move_base" type="move_base" name="move_base" output="screen" respawn="false">
     <rosparam file="$(find agbot_nav)/config/costmap_common.yaml" command="load" ns="global_costmap"/>
@@ -15,5 +21,11 @@
     <rosparam file="$(find agbot_nav)/config/local_costmap.yaml"  command="load"/>
     <rosparam file="$(find agbot_nav)/config/move_base.yaml"      command="load"/>
     <remap from="odom" to="/odometry/filtered"/>
+    <remap unless="$(arg simple_goal)" from="move_base_simple/goal"
+           to="move_base_simple/goal_unused"/>
+    <param if="$(eval arg('max_vel') != '')" name="DWAPlannerROS/max_vel_x"
+           value="$(arg max_vel)"/>
+    <param if="$(eval arg('max_vel') != '')" name="DWAPlannerROS/max_vel_trans"
+           value="$(arg max_vel)"/>
   </node>
 </launch>
