@@ -62,9 +62,19 @@ rosrun agbot_nav save_map.sh my_map
 roslaunch agbot_nav transit.launch rviz:=true map_file:=$(rospack find agbot_nav)/maps/my_map.yaml \
   initial_x:=0 initial_y:=0 initial_yaw:=0
 
-# C. full sequence (no args = ground-truth field map and its entrance)
-roslaunch agbot_nav deploy_mission.launch vision_standin:=true rviz:=true
+# C. full sequence: then RViz "2D Nav Goal" at a row mouth, arrow DOWN the row.
+#    It drives there, does num_rows rows, comes back, waits for the next goal.
+roslaunch agbot_nav deploy_mission.launch vision_standin:=true rviz:=true num_rows:=2
+#    or the operator panel, section 5 (rows + speeds from section 2):
+rosrun agbot_vision_nav operator_panel.py
+#    scripted (fixed goal, ends after the way home):
+#    ... entrance_x:=-0.5 entrance_y:=0.0 entrance_yaw_deg:=0
 ```
+
+⚠ `vision_standin` is NOT vision nav: no camera, no MPC, no
+`/vision_nav_node/debug/image`. It steers on Gazebo truth along the CLICKED
+axis, so a sloppy arrow drives it into the corn. The real node needs torch,
+lightly_train and the weights, none of which are on this laptop.
 
 End a sim session with `rosrun agbot_bringup sim_teardown.sh`.
 
@@ -151,6 +161,33 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
 - "REQUIRED process [deploy_supervisor] has died" after FINISHED is the
   supervisor exiting on purpose (`required="true"` takes the launch down
   with it), not a crash.
+
+## 2026-10-21: interactive deployment (pick the entrance in RViz)
+
+- No `entrance_*` → after LOCALIZE the supervisor waits (`WAIT_GOAL`) for a
+  2D Nav Goal = the row mouth, arrow down the row; after RETURN, or a
+  failure, it waits again. move_base's own `/move_base_simple/goal` is
+  remapped away in this launch, so a click never drives move_base unchecked.
+  `/deploy_supervisor/entrance` (latched) shows the goal in RViz and feeds
+  the stand-in.
+- Stand-in now drives `num_rows` (boustrophedon, `first_turn_direction`,
+  `standin_row_spacing` 0.76) at `linear_x_cruise` (blank: 0.3).
+  `transit_speed` sets move_base's top speed.
+- Operator panel section 5 starts `deploy_mission.launch`.
+- ⚠ **The parked sim Jackal SLIDES** (zero cmd_vel, wheels ~still): 3 cm
+  in the first minute, then accelerating, 0.45-0.56 m in a later minute,
+  with or without the LiDAR, at 5 ms and 2 ms physics steps. Odometry can't
+  see it, so AMCL stays put. After a 5-minute wait, move_base planned from a
+  pose 0.5 m stale and drove into the pen wall ("valid control could not be
+  found"). `sim_creep_guard.py` (sim only) re-seeds AMCL from Gazebo truth
+  on every goal. Root cause not found.
+- Verified (field world, headless, 2 rows each): waited 3 min (crept
+  0.45 m), goal (-0.5, 0, 0°) → arrived -0.09 m / -7.6° → 2 rows → home →
+  WAIT_GOAL; goal (8.5, 1.52, 180°, entering from the EAST end) → 0.10 m /
+  -7.5° → 2 rows → home, 0.06 m from the start.
+- ⚠ The field world's default corridor is the north block's SOUTHERNMOST,
+  so `first_turn_direction` defaults to `left` now (right led into the
+  cross alley).
 
 ## Replaying a robot bag into SLAM (no robot needed)
 

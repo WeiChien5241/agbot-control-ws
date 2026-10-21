@@ -88,6 +88,10 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
    **Sim-validated end to end, never run on the robot.** START A SESSION
    with `HANDOFF_LIDAR.md` (where things stand, how to run, next steps);
    full record and robot checklist: `LIDAR_notes.md`.
+   With no `entrance_*` args the row entrance is an RViz **2D Nav Goal**
+   (arrow down the row) and it repeats per goal; operator panel section 5
+   starts it with num_rows/speeds. ⚠ In sim the parked Jackal slides
+   (invisible to odometry); `sim_creep_guard.py` re-seeds AMCL on each goal.
    ⚠ AMCL owns `map → odom` — never run it with `agbot_gps_nav`'s `ekf_map`
    or slam_toolbox. ⚠ AMCL must stay on the BEAM model (the likelihood
    field aliases along corn rows). URDF: `agbot_bringup/urdf/agbot_lidar.urdf.xacro`
@@ -237,7 +241,7 @@ PYTHONPATH=src python3 -m pytest test/ -v      # expected: 264 passed
 cd ../agbot_gps_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 193 passed
 cd ../agbot_nav
-PYTHONPATH=src:$PYTHONPATH python3 -m pytest test/ -v   # expected: 27 passed
+PYTHONPATH=src:$PYTHONPATH python3 -m pytest test/ -v   # expected: 36 passed
 ```
 (`agbot_nav`'s TF test runs xacro, so keep ROS's `PYTHONPATH` — sourced
 `devel/setup.bash` — or it skips.) The vision-nav launch tests now count 77,
