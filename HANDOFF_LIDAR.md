@@ -31,12 +31,9 @@ The full workflow is drop-off → row entrance → vision in-row nav → back.
 | real-robot `base_link → velodyne` TF | `agbot_nav/launch/lidar_tf.launch` (a test keeps it equal to the xacro) |
 | SIM-ONLY helpers | `gt_occupancy_map.py` (map from plant positions), `amcl_truth.py` (AMCL vs Gazebo truth), `vision_standin.py` (vision nav stand-in; `standin_oracle` steers from ground truth) |
 
-**Robot model:**
-- 15 cm housing on a 7 cm standoff, VLP-16 on top.
-- The scan centre is 0.258 m above the deck, 0.10 m forward of the deck
-  centre, just behind the front camera.
-- The old camera stand is removed.
-- The sizes are hand estimates; re-measure.
+**Robot model** (since 2026-10-21, matches the real robot):
+- VLP-16 on the CAD holder on a 5 cm spacer, 0.125 m behind base_link,
+  facing BACKWARDS, frame `velodyne1`, 0.49 m above the floor.
 
 **The field world** (active world; all nav launches default to it):
 - The robot starts at (-7.92, -1.30) facing north, with the corn on its
@@ -140,6 +137,20 @@ cd ../agbot_gps_nav && PYTHONPATH=src python3 -m pytest test -q            # 193
   bases land in the static map; do not lower the live obstacle band.
 - ⚠ `~/bags` did not exist, so the first lap was not recorded. Fixed:
   `record_mapping_bag.sh` creates it.
+
+## 2026-10-21: sim LiDAR moved to the real mount; full deploy re-run
+
+- The sim LiDAR now matches cpr-j100-0864 (`f75d82d`): 0.125 m behind
+  base_link, facing backwards, optical centre 0.425 m above base_link, frame
+  `velodyne1`, on a holder modelled from the STEP files.
+- Re-ran `deploy_mission.launch vision_standin:=true` on the `field` world
+  with it (headless): LOCALIZE 2 s → TRANSIT 22 s → handoff
+  **-0.109 m / +4.8°** off the axis (AMCL) → stand-in row 10.7 m → RETURN
+  42 s → DEPLOYMENT COMPLETE. Gazebo truth at the end: 0.13 m and ~5° from
+  the start pose.
+- "REQUIRED process [deploy_supervisor] has died" after FINISHED is the
+  supervisor exiting on purpose (`required="true"` takes the launch down
+  with it), not a crash.
 
 ## Replaying a robot bag into SLAM (no robot needed)
 
