@@ -222,6 +222,24 @@ headland drift and back-outs (HANDOFF3.md, last section; this file, the
 tall-maize note) are recorded, not fixed. What sim must prove is the
 transit: start → row entrance → (rows) → back to the start.
 
+## 2026-10-21: planning on a map YOU built (`plan_on_map:=false`)
+
+- `walled_map` / `noloop_map` are the field world, built by the user with
+  slam_toolbox starting at the spawn, so in sim their start pose is
+  `initial_x:=0 initial_y:=0 initial_yaw:=0`. Their frame is the robot's
+  start frame: map +x = world NORTH, map -y = world east (rows run along map
+  y, so `row_bearing_deg` is -90/90 there, not 0).
+- With them, every goal out of the pen failed ("Failed to get a plan"):
+  SLAM maps hold the corn LEAVES (built from the full /scan band) and the
+  inflated leaves closed the 1.9 m start corridor. AMCL was fine (0.03 m).
+- `transit.launch` / `deploy_mission.launch plan_on_map:=false` plans on
+  the live stalk-height scan (rolling global costmap) and keeps the map for
+  AMCL only. walled_map, Gazebo truth: start → entrance standoff in 25 s
+  (SUCCEEDED) → back to the start, 0.07 m / 5° off.
+- ⚠ It arrived 0.33 m SOUTH of the true standoff point: the map itself is
+  skewed (sim SLAM + the parked creep, see above). Fine for transit, NOT
+  for a row handoff (0.20 m gate) -- re-map if that map is to feed rows.
+
 ## Replaying a robot bag into SLAM (no robot needed)
 
 Verified 2026-10-19 on `old_bags/2024-07-01-15-29-38.bag` (real corn, 6.5 m

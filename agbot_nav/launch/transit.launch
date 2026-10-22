@@ -10,6 +10,15 @@
   <arg name="rviz" default="false"/>
   <arg name="max_vel"     default=""/>   <!-- m/s; blank = move_base.yaml -->
   <arg name="simple_goal" default="true"/><!-- see move_base.launch -->
+  <!-- plan_on_map:=false plans on the LIVE stalk-height scan only (a rolling
+       global costmap) and uses the map for AMCL alone. Use it with a map
+       YOU built: SLAM maps are made from the full 0.10-1.20 m band, so they
+       hold the corn LEAVES, and inflated leaves closed the field world's
+       1.9 m start corridor in `walled_map` ("Failed to get a plan",
+       2026-10-21). Ground-truth maps (field.yaml) hold stalks only: keep
+       true. The cost: walls the LiDAR cannot see yet (> 4 m) are unknown
+       to the planner until it gets close. -->
+  <arg name="plan_on_map" default="true"/>
 
   <include file="$(find agbot_nav)/launch/localization.launch">
     <arg name="map_file"    value="$(arg map_file)"/>
@@ -21,6 +30,7 @@
   <include file="$(find agbot_nav)/launch/move_base.launch">
     <arg name="max_vel"     value="$(arg max_vel)"/>
     <arg name="simple_goal" value="$(arg simple_goal)"/>
+    <arg name="mapping"     value="$(eval not arg('plan_on_map'))"/>
   </include>
 
   <node if="$(arg rviz)" name="nav_rviz" pkg="rviz" type="rviz"

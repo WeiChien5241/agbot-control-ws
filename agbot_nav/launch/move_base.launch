@@ -3,7 +3,8 @@
        takes at autonomy priority, so it must not have a goal while vision nav
        is enabled. move_base is silent without a goal (one zero on finish). -->
   <!-- mapping:=true swaps the static-map global costmap for a rolling one
-       (config/global_costmap_mapping.yaml explains why). -->
+       (config/global_costmap_mapping.yaml explains why); transit.launch's
+       plan_on_map:=false uses the same thing on a saved map. -->
   <arg name="mapping" default="false"/>
   <arg name="global_costmap" value="global_costmap_mapping" if="$(arg mapping)"/>
   <arg name="global_costmap" value="global_costmap" unless="$(arg mapping)"/>

@@ -65,6 +65,8 @@
   <!-- move_base top speed (m/s) on the way to the row and back; blank =
        move_base.yaml (0.5). Indoors on the robot: 0.3. -->
   <arg name="transit_speed"    default=""/>
+  <!-- false with a map YOU built (transit.launch explains). -->
+  <arg name="plan_on_map"      default="true"/>
 
   <arg name="sim"            default="false"/>
   <arg name="num_rows"       default="3"/>
@@ -92,6 +94,7 @@
     <arg name="rviz"        value="$(arg rviz)"/>
     <arg name="max_vel"     value="$(arg transit_speed)"/>
     <arg name="simple_goal" value="false"/>
+    <arg name="plan_on_map" value="$(arg plan_on_map)"/>
   </include>
 
   <include file="$(find agbot_vision_nav)/launch/vision_nav.launch">
