@@ -296,6 +296,45 @@ rosrun agbot_nav save_map.sh bag2024      # when playback ends
 - **Run ROS commands unsandboxed.** Topic data didn't flow from the
   sandboxed Bash; XML-RPC did.
 
+## 2026-10-26: georeferencing a saved map (GPS back in, step 1)
+
+Agreed approach: AMCL keeps owning `map -> odom`; GPS is tied to the map by
+ONE fixed rigid transform, fitted offline. That gives lat/lon row entrances,
+an RTK initial pose (next), and an AMCL-vs-GPS check (next). Neither
+nickcharron/waypoint_nav (goals in `odom` via a `utm -> odom` TF, no map, no
+AMCL) nor ArghyaChatterjee's rover repo (gmapping + navsat EKF) combines a
+saved map + AMCL with GPS, so this part is ours.
+
+- `agbot_nav/src/agbot_nav/georef.py` (rospy-free, `test_georef.py`): 2D
+  Kabsch fit `map = R(yaw) * ENU + t`, no scale; ENU is `agbot_gps_nav.geo`'s
+  true-metre plane about a datum stored WITH the fit (not gps_datum.yaml).
+  Refuses a span < 3 m; drops pairs > max(0.5 m, 3*RMS) once and refits.
+- `rosrun agbot_nav fit_georef.py <bag> [--lever x,y] --out maps/<name>_georef.yaml`:
+  pairs each good fix (`--min-status 2` = RTK fixed, `--max-std 0.05`) with
+  the antenna's map position from the bag's TF, thinned to one per 0.25 m.
+- `rosrun agbot_nav latlon_to_map.py <georef.yaml> LAT LON COMPASS_BEARING --args`
+  prints `entrance_x/y/yaw_deg` + `row_bearing_deg` for `deploy_mission.launch`.
+- `mapping.launch record:=true` now also bags `/gps/fix` and `/navsat/fix`.
+
+**Sim validation** (AMCL + move_base, start -> entrance standoff -> start):
+
+| map | fit | truth | RMS |
+|---|---|---|---|
+| `field` (ground-truth map, world frame) | +0.12 deg, (-0.02, -0.03) m | 0, (0, 0) | 0.042 m |
+| `walled_map` (user SLAM, start frame) | -89.37 deg, origin at world (-7.91, -1.27) | start (-7.92, -1.30), -91.2 deg | 0.055 m |
+
+Entrance (-0.5, 0) round-tripped through lat/lon -> (-0.522, -0.033).
+walled_map's 1.8 deg is the SLAM map's own rotation (it explains much of
+its 0.33 m arrival error on 10/21), not a fit error.
+
+- ⚠ **In sim pass `--lever 0,0`.** Gazebo lumps `navsat_link` into the
+  chassis, so hector's fix IS base_link (TF arm: RMS 0.21 m; 0,0: 0.04 m).
+  On the robot, tape-measure the Reach antenna from base_link and pass it.
+- **The parked slide, measured by GPS for the first time:** after parking,
+  the fix moved 0.6 m north over ~3 min while AMCL/odom stayed put.
+- ⚠ A shell wait on `pgrep -f goal_sequence.py` never ends: it matches its
+  own command line (same trap as `pkill -f`). Wait on the log line instead.
+
 ## Next steps
 
 1. **Sim:** the user builds their own map (A), navigates on it (B), then runs
@@ -310,12 +349,12 @@ rosrun agbot_nav save_map.sh bag2024      # when playback ends
    `transit.launch` with 2D Nav Goals only, watching AMCL in the open.
 4. **Hand over into REACQUIRE (centering) instead of FOLLOW_ROW.** This is
    a vision_nav change; it absorbs the 0.1–0.2 m handoff offset.
-5. **GPS back in** (agreed direction, not started):
-   - georeference the SLAM map: record `/gps/fix` during the mapping lap and
-     fit map↔lat/lon;
-   - take the start pose from RTK;
-   - take the row entrance from surveyed lat/lon (`waypoints_maize_gps.yaml`
-     format) → map frame → move_base;
+5. **GPS back in** (step 1 done 2026-10-26, see above):
+   - DONE (sim): georeference the map (`fit_georef.py`), lat/lon entrance
+     → `latlon_to_map.py --args` → `deploy_mission.launch`;
+   - ROBOT: mapping lap at the fake-corn site with RTK fixed and the
+     antenna lever arm measured, then a transit run bagging AMCL + GPS;
+   - next code: RTK initial pose for AMCL; a live AMCL-vs-GPS monitor;
    - later, maybe fuse GPS + AMCL so GPS covers open ground.
 6. **Not done:**
    - fusing the GX5 yaw rate into the local EKF;
