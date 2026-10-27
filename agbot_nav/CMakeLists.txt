@@ -15,6 +15,8 @@ catkin_install_python(PROGRAMS
   scripts/deploy_supervisor.py
   scripts/record_start_pose.py
   scripts/sim_creep_guard.py
+  scripts/fit_georef.py
+  scripts/latlon_to_map.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

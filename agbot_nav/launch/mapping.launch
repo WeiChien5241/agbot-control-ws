@@ -25,7 +25,9 @@
   <arg name="loop_closing" default="false"/>
   <!-- record:=true bags the raw inputs to ~/bags/mapping_<time>.bag, so a map
        ruined late in a lap can be rebuilt by replaying the bag (other
-       settings, other SLAM) instead of driving the lap again. -->
+       settings, other SLAM) instead of driving the lap again. The GPS fix
+       (/gps/fix on the robot, /navsat/fix in sim) is in it so the map can be
+       georeferenced afterwards: rosrun agbot_nav fit_georef.py <bag>. -->
   <arg name="record"      default="false"/>
 
   <node pkg="agbot_nav" type="record_start_pose.py" name="record_start_pose" output="screen"/>
@@ -50,7 +52,8 @@
        re-tuned offline (GX5 yaw rate) without driving the lap again. -->
   <node if="$(arg record)" pkg="agbot_nav" type="record_mapping_bag.sh" name="mapping_bag"
         args="/ns1/velodyne_points /scan /tf /tf_static /odometry/filtered /clock
-              /jackal_velocity_controller/odom /imu/data /gx5/imu/data"/>
+              /jackal_velocity_controller/odom /imu/data /gx5/imu/data
+              /gps/fix /navsat/fix"/>
 
   <node if="$(arg rviz)" name="nav_rviz" pkg="rviz" type="rviz"
         args="-d $(find agbot_nav)/rviz/nav.rviz"/>
