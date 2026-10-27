@@ -249,7 +249,7 @@ PYTHONPATH=src python3 -m pytest test/ -v      # expected: 264 passed
 cd ../agbot_gps_nav
 PYTHONPATH=src python3 -m pytest test/ -v      # expected: 193 passed
 cd ../agbot_nav
-PYTHONPATH=src:$PYTHONPATH python3 -m pytest test/ -v   # expected: 36 passed
+PYTHONPATH=src:$PYTHONPATH python3 -m pytest test/ -v   # expected: 50 passed
 ```
 (`agbot_nav`'s TF test runs xacro, so keep ROS's `PYTHONPATH` — sourced
 `devel/setup.bash` — or it skips.) The vision-nav launch tests now count 77,
