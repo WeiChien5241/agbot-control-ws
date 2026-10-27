@@ -25,6 +25,7 @@
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>rviz</exec_depend>
   <exec_depend>agbot_vision_nav</exec_depend>
+  <exec_depend>agbot_gps_nav</exec_depend>   <!-- georef.py uses its geo.py -->
 
   <export>
     <!-- models/: the trailer stand-in and the tall maize variants -->
