@@ -369,6 +369,12 @@ The lever arm is confirmed by the RMS drop. The fit is preliminary, though:
   whole bag reads 0.25 m RMS / +1.4 deg / 0.12 m only because of that burst.
   So the georef holds. AMCL in open ground is the weak link, which is the
   case a live AMCL-vs-GPS monitor would catch.
+- **Lat/lon goal test, same day:** a fixed reading at the mapping start spot was
+  converted to map (-21.586, -2.865) and sent as a move_base goal from 5-10 m
+  away. The robot drove back on AMCL (GPS is not in the loop) and stopped
+  "pretty close" by eye. The arrival fix was FLOAT and reads (-21.691, -2.599),
+  0.29 m off, which is within float's own error plus xy_goal_tolerance
+  0.12 m. Repeat with a fixed arrival reading to get a real number.
 - No remap is needed. The next fixed session goes straight to the AMCL
   check on `georef_test` with this fit.
 - A 4.6 m span leaves roughly 0.5-1 deg of yaw uncertainty. Redo the fit on a
