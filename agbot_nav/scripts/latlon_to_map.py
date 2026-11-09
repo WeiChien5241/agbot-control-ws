@@ -35,7 +35,11 @@ def main():
     opt = ap.parse_args()
 
     with open(opt.georef) as f:
-        g = Georef.from_dict(yaml.safe_load(f))
+        d = yaml.safe_load(f)
+    if not isinstance(d, dict) or "datum" not in d:
+        sys.exit("%s is not a fit_georef.py output (no 'datum'); pass the "
+                 "<map>_georef.yaml, not the map's own .yaml" % opt.georef)
+    g = Georef.from_dict(d)
 
     if opt.reverse:
         lat, lon = g.map_to_latlon(opt.a, opt.b)

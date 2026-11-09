@@ -360,6 +360,15 @@ The lever arm is confirmed by the RMS drop. The fit is preliminary, though:
   happened with the LiDAR fully removed and the antenna held high. Suspect
   the corrections (baseline, mountpoint constellations) or the Reach's own
   config. Debug the Reach off the robot.
+- **AMCL check, same day** (`georef_amcl_2026-11-09-16-47-17.bag`, 190 s,
+  191 fixes, 51 float): the AMCL pose + lever vs GPS through the MAPPING fit
+  agrees to **RMS 0.071 m, max 0.15 m** over 105 fixed points. Exception:
+  t = 112-146 s, RMS 0.46 m (max 0.86). In that window AMCL was wrong, not
+  GPS: the GPS steps match odometry steps to within 3 cm, while AMCL's spread
+  tripled (0.1 -> 0.37 m) about 12 m from the start. A blind refit on the
+  whole bag reads 0.25 m RMS / +1.4 deg / 0.12 m only because of that burst.
+  So the georef holds. AMCL in open ground is the weak link, which is the
+  case a live AMCL-vs-GPS monitor would catch.
 - No remap is needed. The next fixed session goes straight to the AMCL
   check on `georef_test` with this fit.
 - A 4.6 m span leaves roughly 0.5-1 deg of yaw uncertainty. Redo the fit on a
