@@ -337,6 +337,8 @@ its 0.33 m arrival error on 10/21), not a fit error.
 
 ## 2026-11-09: first georef on the robot (empty ground, RTK fixed)
 
+Full write-up, failed commands and the next-field-run checklist: `GPS_testing_11-09.md`.
+
 Reach module mounted ON TOP of the Velodyne gets RTK fixed (status 2) with the
 LiDAR spinning; next to it, it stayed float (2026-11-06). Mapping lap bag
 `georef_map_2026-11-09-15-42-08.bag` (96 s, 22.5 m of odometry):
