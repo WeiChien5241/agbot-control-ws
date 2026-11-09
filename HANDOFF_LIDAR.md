@@ -350,8 +350,13 @@ The lever arm is confirmed by the RMS drop. The fit is preliminary, though:
 - ⚠ **`/gps/fix` stopped at t = 49.4 s** with the robot still driving, so
   the second half of the lap (11 m) has no GPS. Cause unknown; check the
   Reach driver terminal next time.
-- The Reach outputs at only **1 Hz**. Raising its position output rate to
-  5 Hz gives 5x the pairs.
+- `/gps/fix` arrived at **1 Hz** although the Reach's update rate was already
+  5 Hz. The driver publishes once per GGA+GST pair, so the slower of the two
+  sets the rate; GST is probably 1 Hz. Check with
+  `telnet 192.168.2.15 7777` and count each type per second.
+- Later the same day RTK dropped to float and stayed there, with nothing
+  touched: >30 satellites, correction age <2 s, LiDAR on throughout.
+  Unresolved; the LiDAR power-off test has not been done yet.
 - A 4.6 m span leaves roughly 0.5-1 deg of yaw uncertainty. Redo the fit on a
   lap that keeps GPS for its whole length.
 - `--lever -0.125,0` used to be refused by argparse (negative value read as a
