@@ -356,7 +356,12 @@ The lever arm is confirmed by the RMS drop. The fit is preliminary, though:
   `telnet 192.168.2.15 7777` and count each type per second.
 - Later the same day RTK dropped to float and stayed there, with nothing
   touched: >30 satellites, correction age <2 s, LiDAR on throughout.
-  Unresolved; the LiDAR power-off test has not been done yet.
+  The LiDAR is NOT the cause: on 2026-11-06 the same fix-then-float
+  happened with the LiDAR fully removed and the antenna held high. Suspect
+  the corrections (baseline, mountpoint constellations) or the Reach's own
+  config. Debug the Reach off the robot.
+- No remap is needed. The next fixed session goes straight to the AMCL
+  check on `georef_test` with this fit.
 - A 4.6 m span leaves roughly 0.5-1 deg of yaw uncertainty. Redo the fit on a
   lap that keeps GPS for its whole length.
 - `--lever -0.125,0` used to be refused by argparse (negative value read as a
