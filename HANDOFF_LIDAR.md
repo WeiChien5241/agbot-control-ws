@@ -335,6 +335,28 @@ its 0.33 m arrival error on 10/21), not a fit error.
 - ⚠ A shell wait on `pgrep -f goal_sequence.py` never ends: it matches its
   own command line (same trap as `pkill -f`). Wait on the log line instead.
 
+## 2026-11-09: first georef on the robot (empty ground, RTK fixed)
+
+Reach module mounted ON TOP of the Velodyne gets RTK fixed (status 2) with the
+LiDAR spinning; next to it, it stayed float (2026-11-06). Mapping lap bag
+`georef_map_2026-11-09-15-42-08.bag` (96 s, 22.5 m of odometry):
+
+| lever | RMS | max | pairs | span |
+|---|---|---|---|---|
+| 0,0 | 0.134 m | 0.220 m | 24 | 4.6 m |
+| -0.125,0 (antenna on the LiDAR) | **0.046 m** | 0.101 m | 24 | 4.6 m |
+
+The lever arm is confirmed by the RMS drop. The fit is preliminary, though:
+- ⚠ **`/gps/fix` stopped at t = 49.4 s** with the robot still driving, so
+  the second half of the lap (11 m) has no GPS. Cause unknown; check the
+  Reach driver terminal next time.
+- The Reach outputs at only **1 Hz**. Raising its position output rate to
+  5 Hz gives 5x the pairs.
+- A 4.6 m span leaves roughly 0.5-1 deg of yaw uncertainty. Redo the fit on a
+  lap that keeps GPS for its whole length.
+- `--lever -0.125,0` used to be refused by argparse (negative value read as a
+  flag); fit_georef.py now rejoins it.
+
 ## Next steps
 
 1. **Sim:** the user builds their own map (A), navigates on it (B), then runs

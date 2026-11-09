@@ -73,7 +73,15 @@ def main():
     ap.add_argument("--reject", type=float, default=0.5)
     ap.add_argument("--datum", help="lat,lon of the ENU plane (default: first fix)")
     ap.add_argument("--out", help="write the fit here (YAML)")
-    args = ap.parse_args()
+    # `--lever -0.125,0` (antenna BEHIND base_link, the usual case) would be
+    # read by argparse as a new flag and refused ("expected one argument");
+    # rejoin it as `--lever=-0.125,0` so both spellings work.
+    argv = sys.argv[1:]
+    for i in range(len(argv) - 1):
+        if argv[i] == "--lever" and argv[i + 1].startswith("-"):
+            argv[i:i + 2] = ["--lever=" + argv[i + 1]]
+            break
+    args = ap.parse_args(argv)
 
     bag = rosbag.Bag(args.bag)
     buf, ntf = _load_tf(bag)
