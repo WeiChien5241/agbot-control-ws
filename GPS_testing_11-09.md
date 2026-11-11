@@ -184,6 +184,21 @@ would flag exactly this. Not written yet.
 
 ## 6. Next field run (outside the lab)
 
+### New Reach mount (built 2026-11-11)
+A 3D-printed **cap** over the Velodyne replaces the stuck-on housing used on
+11/9, which sat lower and had gaps. The Reach module sits about **20 mm above
+the LiDAR**, and the antenna about **12 cm above the cap**.
+- It should help with *getting* a fix. On 11/9, lifting the module was the
+  only thing that brought fix back.
+- It probably won't stop fix being *lost* on its own. 11/6 lost fix with no
+  LiDAR and the antenna held high, so still do the off-robot checks below.
+- **Measure the antenna's x/y from `base_link` again before fitting.** If it
+  is on the LiDAR's vertical axis, the lever stays `-0.125,0`. Height does not
+  enter the 2D fit, but at about 0.6 m above ground, 5° of tilt moves the
+  antenna about 5 cm sideways.
+- First on-robot test: park on open ground and check the robot holds status 2
+  for 10 minutes with the new cap.
+
 ### Before going
 1. **Debug RTK on the Reach alone, off the robot** (tripod or box, open ground),
    changing one thing at a time and giving each about 10 min. In Emlid Flow:
