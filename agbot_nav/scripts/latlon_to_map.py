@@ -32,6 +32,10 @@ def main():
     ap.add_argument("--args", action="store_true",
                     help="print only the entrance_* launch args")
     ap.add_argument("--reverse", action="store_true", help="map x y -> lat lon")
+    ap.add_argument("--goal-yaw", type=float, metavar="MAP_YAW_RAD",
+                    help="print a ready-to-paste /move_base_simple/goal that puts the "
+                         "ANTENNA on LAT LON with the robot facing MAP_YAW_RAD (e.g. the "
+                         "initial_yaw save_map.sh printed); applies the fit's lever arm")
     opt = ap.parse_args()
 
     with open(opt.georef) as f:
@@ -54,6 +58,18 @@ def main():
         launch += " row_bearing_deg:=%.1f" % yaw_deg
     if opt.args:
         print(launch)
+        return 0
+    if opt.goal_yaw is not None:
+        lx, ly = (d.get("lever_arm") or [0.0, 0.0])[:2]
+        c, s = math.cos(opt.goal_yaw), math.sin(opt.goal_yaw)
+        bx, by = x - (c * lx - s * ly), y - (s * lx + c * ly)
+        print("antenna at map (%.3f, %.3f); lever (%.3f, %.3f) -> base_link goal (%.3f, %.3f), yaw %.4f rad"
+              % (x, y, lx, ly, bx, by, opt.goal_yaw))
+        print("paste on the robot:")
+        print("rostopic pub -1 /move_base_simple/goal geometry_msgs/PoseStamped "
+              "'{header: {frame_id: map}, pose: {position: {x: %.3f, y: %.3f}, "
+              "orientation: {z: %.4f, w: %.4f}}}'"
+              % (bx, by, math.sin(opt.goal_yaw / 2), math.cos(opt.goal_yaw / 2)))
         return 0
     print("map (%.3f, %.3f)" % (x, y) + ("" if opt.bearing is None else
           ", facing %.1f deg (compass %.1f)" % (yaw_deg, opt.bearing)))
