@@ -192,10 +192,9 @@ the LiDAR**, and the antenna about **12 cm above the cap**.
   only thing that brought fix back.
 - It probably won't stop fix being *lost* on its own. 11/6 lost fix with no
   LiDAR and the antenna held high, so still do the off-robot checks below.
-- **Measure the antenna's x/y from `base_link` again before fitting.** If it
-  is on the LiDAR's vertical axis, the lever stays `-0.125,0`. Height does not
-  enter the 2D fit, but at about 0.6 m above ground, 5° of tilt moves the
-  antenna about 5 cm sideways.
+- The module is still centred on the LiDAR, so only the height changed and
+  the lever arm stays **`-0.125,0`** (height does not enter the 2D fit). At
+  about 0.6 m above ground, 5° of tilt moves the antenna about 5 cm sideways.
 - First on-robot test: park on open ground and check the robot holds status 2
   for 10 minutes with the new cap.
 
