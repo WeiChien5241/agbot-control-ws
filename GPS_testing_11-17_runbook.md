@@ -11,6 +11,35 @@ On 11/11 the steps before this all passed: fit RMS 8.1 cm, AMCL check, and a
 lat/lon goal reached to 6.8 cm (`GPS_testing_11-11.md`). `deploy_mission.launch`
 has only ever run in **sim**. Today is its first run on the robot.
 
+## At a glance
+
+**Order of the day**
+1. **Tonight:** bundle the code over to the robot, then check the model weights and the deploy args are there (§2).
+2. **Field:** pre-flight (§4) → survey the entrance (§5) → mapping lap (§6) → fit on the laptop (§7).
+3. **Check the new map:** AMCL check, then a lat/lon goal to the start spot (§8).
+4. **Vision check:** one corridor by itself (§10). The model has never been checked on the fake corn.
+5. **Full run:** `deploy_mission.launch` with `num_rows:=1`, then with all corridors (§11).
+
+**The lat/lon readings.** Read every one with `/gps/fix` on status 2 (RTK fixed).
+
+| placeholder | where the robot is when you read it |
+|---|---|
+| `⟨ENT_LAT⟩ ⟨ENT_LON⟩` | **inside** the chosen corridor, at its mouth: centred between the two plant rows, facing down the row, robot centre about level with the first plants |
+| `⟨FAR_LAT⟩ ⟨FAR_LON⟩` | **still inside the same corridor**, driven straight ahead ≥ 2 m (ideally near the far end), centred, facing down the row. Only used to get the row's direction |
+| `⟨START_LAT⟩ ⟨START_LON⟩` | on the taped start mark, facing the arrow, right after the mapping lap |
+| `⟨ARR_LAT⟩ ⟨ARR_LON⟩` | where the robot stopped after the lat/lon goal test (§8.2) |
+| `⟨HOME_LAT⟩ ⟨HOME_LON⟩` | where the robot stopped after a deploy run came home (§11) |
+
+**What gets copied**
+- **Robot → laptop:** the mapping bag and `corn_1117.{yaml,pgm,start_pose}` straight after mapping (§7.1). The AMCL-check bag (§8.1). At the end of the day, all of the day's bags and the vision-nav CSVs from `~/agbot_logs` (§12).
+- **Laptop → robot:** the bundle tonight (§2.1). The georef afterwards, as a backup only (§7.5). Every `fit_georef.py` and `latlon_to_map.py` command runs on the laptop.
+
+**What could go wrong**
+- `deploy_mission.launch` has only run in sim. Both passes use `transit_speed:=0.3`, and the second also uses `traverse_speed:=0.3`.
+- The handoff into the row is refused if AMCL's spread is over 0.15 m. On 11/11 it was 10–19 cm while driving in the open. If it refuses, write the numbers down and retry once.
+- The fake corn's wooden bases are invisible to the LiDAR within about 1.5 m. Keep the joystick in hand near the corn.
+- `latlon_to_map.py --toward` (the row direction from the two in-row fixes) is new and has not been used in the field yet.
+
 ---
 
 ## 0. Names used today (all new, nothing collides with 11/9 or 11/11)
