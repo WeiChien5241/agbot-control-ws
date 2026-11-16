@@ -9,6 +9,12 @@ deploy_mission.launch args, e.g.
 
     roslaunch agbot_nav deploy_mission.launch ... $(rosrun agbot_nav latlon_to_map.py --args f.yaml 40.42 -86.92 90)
 
+`--toward LAT2 LON2` takes the row's direction from a SECOND fix down the
+row instead of a compass bearing (more accurate, and it uses the fit itself).
+Read both fixes with the robot standing in the corridor FACING DOWN THE ROW:
+then the fit's lever arm is applied along that axis, so the printed entrance
+is where base_link was at the first fix (the bearing is lever-free anyway).
+
 The reverse (`--reverse X Y`) prints the lat/lon of a map point, for checking a
 fit against a spot you can stand on.
 """
@@ -29,6 +35,9 @@ def main():
     ap.add_argument("b", type=float, help="LON (or map Y with --reverse)")
     ap.add_argument("bearing", type=float, nargs="?",
                     help="compass bearing down the row, deg CW from north")
+    ap.add_argument("--toward", type=float, nargs=2, metavar=("LAT2", "LON2"),
+                    help="a second fix further DOWN the same row; the row axis is "
+                         "LAT LON -> LAT2 LON2 (replaces BEARING_DEG)")
     ap.add_argument("--args", action="store_true",
                     help="print only the entrance_* launch args")
     ap.add_argument("--reverse", action="store_true", help="map x y -> lat lon")
@@ -51,6 +60,23 @@ def main():
         return 0
 
     x, y = g.latlon_to_map(opt.a, opt.b)
+    if opt.toward is not None:
+        if opt.bearing is not None:
+            sys.exit("give BEARING_DEG or --toward, not both")
+        x2, y2 = g.latlon_to_map(*opt.toward)
+        length = math.hypot(x2 - x, y2 - y)
+        if length < 1.0:
+            sys.exit("the two fixes are only %.2f m apart; read the second one at "
+                     "least 2 m further down the row" % length)
+        axis = math.atan2(y2 - y, x2 - x)
+        # robot faced down the row at both fixes: base_link = antenna - R(axis) * lever
+        lx, ly = (d.get("lever_arm") or [0.0, 0.0])[:2]
+        c, s = math.cos(axis), math.sin(axis)
+        x, y = x - (c * lx - s * ly), y - (s * lx + c * ly)
+        opt.bearing = g.map_yaw_to_compass(axis)
+        if not opt.args:
+            print("row axis from 2 fixes %.2f m apart: compass %.1f deg; entrance moved "
+                  "by the lever arm (%.3f, %.3f) to base_link" % (length, opt.bearing, lx, ly))
     yaw_deg = math.degrees(g.compass_to_map_yaw(opt.bearing)) if opt.bearing is not None else 0.0
     launch = "entrance_x:=%.3f entrance_y:=%.3f entrance_yaw_deg:=%.1f" % (x, y, yaw_deg)
     if opt.bearing is not None:
