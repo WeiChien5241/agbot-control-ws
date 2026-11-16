@@ -38,7 +38,7 @@ has only ever run in **sim**. Today is its first run on the robot.
 - `deploy_mission.launch` has only run in sim. Both passes use `transit_speed:=0.3`, and the second also uses `traverse_speed:=0.3`.
 - The handoff into the row is refused if AMCL's spread is over 0.15 m. On 11/11 it was 10–19 cm while driving in the open. If it refuses, write the numbers down and retry once.
 - The fake corn's wooden bases are invisible to the LiDAR within about 1.5 m. Keep the joystick in hand near the corn.
-- `latlon_to_map.py --toward` (the row direction from the two in-row fixes) is new and has not been used in the field yet.
+- `latlon_to_map.py --toward` (the row direction from the entrance fix and the far-end fix) is new and has not been used in the field yet.
 
 ---
 
@@ -77,7 +77,7 @@ cd ~/agbot_control_ws && source devel/setup.bash
 | terminal | what runs in it | how long |
 |---|---|---|
 | **R1** | Reach driver | **all day**, keep visible |
-| **R2** | cameras (front WDR + rear Brio) | **all day** from step 3 on |
+| **R2** | cameras (front WDR + rear Brio) | **all day** from §4 on |
 | **R3** | the main launch. It changes per step: mapping → transit → vision check → deploy | Ctrl-C between steps (said each time) |
 | **R4** | `rosbag record`, `save_map.sh` | per step |
 | **R5** | one-off checks (`rostopic echo -n1 /gps/fix`, etc.) | as needed |
