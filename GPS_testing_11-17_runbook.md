@@ -14,7 +14,7 @@ has only ever run in **sim**. Today is its first run on the robot.
 ## At a glance
 
 **Order of the day**
-1. **Tonight:** bundle the code over to the robot, then check the model weights and the deploy args are there (§2).
+1. **Tonight:** a 10-second check that the robot has the model weights and the deploy args (§2). No bundle is needed.
 2. **Field:** pre-flight (§4) → survey the entrance (§5) → mapping lap (§6) → fit on the laptop (§7).
 3. **Check the new map:** AMCL check, then a lat/lon goal to the start spot (§8).
 4. **Vision check:** one corridor by itself (§10). The model has never been checked on the fake corn.
@@ -25,14 +25,14 @@ has only ever run in **sim**. Today is its first run on the robot.
 | placeholder | where the robot is when you read it |
 |---|---|
 | `⟨ENT_LAT⟩ ⟨ENT_LON⟩` | **inside** the chosen corridor, at its mouth: centred between the two plant rows, facing down the row, robot centre about level with the first plants |
-| `⟨FAR_LAT⟩ ⟨FAR_LON⟩` | **still inside the same corridor**, driven straight ahead ≥ 2 m (ideally near the far end), centred, facing down the row. Only used to get the row's direction |
+| `⟨FAR_LAT⟩ ⟨FAR_LON⟩` | **out the far end** of the same corridor: driven straight through it and stopped just past the last plants, in open headland, still on the corridor's line and facing the same way. Only used to get the row's direction |
 | `⟨START_LAT⟩ ⟨START_LON⟩` | on the taped start mark, facing the arrow, right after the mapping lap |
 | `⟨ARR_LAT⟩ ⟨ARR_LON⟩` | where the robot stopped after the lat/lon goal test (§8.2) |
 | `⟨HOME_LAT⟩ ⟨HOME_LON⟩` | where the robot stopped after a deploy run came home (§11) |
 
 **What gets copied**
 - **Robot → laptop:** the mapping bag and `corn_1117.{yaml,pgm,start_pose}` straight after mapping (§7.1). The AMCL-check bag (§8.1). At the end of the day, all of the day's bags and the vision-nav CSVs from `~/agbot_logs` (§12).
-- **Laptop → robot:** the bundle tonight (§2.1). The georef afterwards, as a backup only (§7.5). Every `fit_georef.py` and `latlon_to_map.py` command runs on the laptop.
+- **Laptop → robot:** only the georef, as a backup (§7.5). No bundle (§2). Every `fit_georef.py` and `latlon_to_map.py` command runs on the laptop.
 
 **What could go wrong**
 - `deploy_mission.launch` has only run in sim. Both passes use `transit_speed:=0.3`, and the second also uses `traverse_speed:=0.3`.
@@ -91,36 +91,25 @@ to finish before starting the next launch there.**
 
 ---
 
-## 2. Tonight (laptop + robot, in the lab)
+## 2. Tonight (robot, in the lab): no code update needed
 
-### 2.1 Bring the latest code over (the robot has no internet)
-L1:
-```bash
-cd ~/agbot_control_ws/src
-git bundle create ~/agbot-20261116.bundle main
-scp ~/agbot-20261116.bundle administrator@192.168.0.231:~/
-```
-R1:
-```bash
-cd ~/agbot_control_ws/src
-git status --short          # expect only ?? lines (untracked maps). An " M" line = a local edit: stop and look at it
-git bundle verify ~/agbot-20261116.bundle
-git fetch ~/agbot-20261116.bundle main:refs/remotes/bundle/main
-git merge --ff-only bundle/main
-git log -1 --oneline         # must match `git log -1 --oneline` on the laptop
-cd ~/agbot_control_ws && catkin build && source devel/setup.bash
-```
-`git pull` on the robot says "already up to date". That message is wrong
-(origin is an old bundle file). Use the fetch/merge above.
+The robot already has every file it runs tomorrow. It ran `mapping.launch
+record:=true` on 11/11, and that arrived in commit `aedc7e2` (10/26). The
+deploy files (`deploy_mission.launch`, `deploy_supervisor.py`,
+`deploy_fsm.py`) were last changed on 10/21, before that. Everything changed
+since then is a laptop-only script (`fit_georef.py`, `latlon_to_map.py`, which
+now has `--toward`) or the sim-only trailer model. **No bundle.**
 
-### 2.2 Check what the run needs is on the robot
+### 2.1 Confirm in 10 seconds
 R1:
 ```bash
 ls -lh ~/agbot_control_ws/src/agbot_vision_nav/config/exported_best.pt   # the model; must exist
-roslaunch agbot_nav deploy_mission.launch --ros-args | grep -E "entrance_x|row_bearing|transit_speed"   # args exist = code is new enough
+roslaunch agbot_nav deploy_mission.launch --ros-args | grep -E "entrance_x|row_bearing|plan_on_map"
 ```
+All three args listed means the robot's deploy code is the current one. If any
+are missing, bundle it over (the flow is in `GPS_testing_10-05.md` §1).
 
-### 2.3 Pack
+### 2.2 Pack
 Tape and marker for the start spot, a measuring tape (row spacing), the
 joystick (charged), the robot battery (charged), the phone/hotspot for
 corrections, this sheet.
@@ -203,10 +192,18 @@ This only needs lat/lon, not the map, so do it now while RTK is fixed.
    ```
    status must be **2**. Write latitude → **`⟨ENT_LAT⟩`** and longitude →
    **`⟨ENT_LON⟩`**.
-3. Joystick it straight **down the same corridor**, as far as possible (≥ 2 m,
-   ideally near the far end), still centred and facing down the row. Stop,
-   wait 3 s, and run the same command. status **2**. Write **`⟨FAR_LAT⟩`**,
-   **`⟨FAR_LON⟩`**.
+   If it won't reach status 2 within ~30 s in the mouth (corn shading the
+   antenna), back it straight out ~0.5 m into the headland, still on the
+   corridor's line, and read it there. The entrance then sits 0.5 m earlier,
+   which is harmless: move_base stops 0.7 m before it, and vision nav drives
+   the rest.
+3. Joystick it **straight through the whole corridor and out the far end**.
+   Stop just past the last plants, in open headland, without turning, so it
+   is still on the corridor's line and facing the same way. Wait 3 s, run the
+   same command, status **2**. Write **`⟨FAR_LAT⟩`**, **`⟨FAR_LON⟩`**. Out in
+   the open the sky is clear, and the two fixes are a whole row length apart,
+   which gives a better bearing than 2 m would. If it lost fix in the corridor,
+   wait at this spot until it's back on 2.
 4. Measure: the row length, the corridor number counted from the side you
    entered, and the number of corridors. Then joystick back out to the start
    spot.
@@ -507,7 +504,6 @@ python3 ~/agbot_control_ws/src/agbot_vision_nav/scripts/analyze_run.py ~/agbot_l
 ### Laptop → robot
 | file | when |
 |---|---|
-| `~/agbot-20261116.bundle` | tonight (§2.1) |
 | `corn_1117_georef.yaml` | after the fit (§7.5), backup only |
 
 Nothing else goes to the robot. Every `latlon_to_map.py` and `fit_georef.py`
