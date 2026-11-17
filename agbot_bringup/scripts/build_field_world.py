@@ -317,6 +317,23 @@ def main():
     if n != 2:
         sys.exit("expected 2 heightmap <size> tags in the template, found %d" % n)
     head = head.replace("<pos>0 0 0</pos>", "<pos>%.3f %.3f 0</pos>" % (cx, cy))
+    trailer = trailer_geometry(spec)
+    if trailer:
+        # ⚠ The ramp needs a 1 ms physics step (the template's is 5 ms).
+        # Measured 2026-11-16, this world, trailer_deploy at -0.1 m/s down the
+        # 16 deg ramp, Gazebo truth:
+        #   5 ms + ramp_traction   yawed 18-33 deg in 7-11 deg SNAPS on the
+        #                          slope and ended 0.9 m off, at the corn
+        #   1 ms, stock wheels     straight, but slid 1 m in 2 s on the ramp
+        #                          and ended against pen_south, wheels spinning
+        #   1 ms + ramp_traction   1 deg, no slide, 0.10 m from `spawn`
+        # RTF on the laptop was still 0.99 with the LiDAR on.
+        for tag, value in (("max_step_size", "0.001"),
+                           ("real_time_update_rate", "1000")):
+            head, n = re.subn(r"<%s>[^<]*</%s>" % (tag, tag),
+                              "<%s>%s</%s>" % (tag, value, tag), head)
+            if n != 1:
+                sys.exit("expected one <%s> in the template, found %d" % (tag, n))
 
     model = MODELS[spec.get("plant_model", "tall")]
     body = []
@@ -331,7 +348,6 @@ def main():
             % (model % rng.integers(1, 3), x, y, GROUND_Z,
                rng.uniform(0, 2 * math.pi), i))
     body.extend(wall_sdf(*w) for w in walls)
-    trailer = trailer_geometry(spec)
     if trailer:
         body.append(trailer_sdf(trailer))
     sx, sy, syaw = spec["spawn"]
