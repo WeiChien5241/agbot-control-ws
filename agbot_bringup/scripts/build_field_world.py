@@ -28,6 +28,12 @@ Optional `walls:` are static boxes (a fence, a pen around the start) that
 the LiDAR sees cleanly. They are written to gt_map.csv as `wall` points every
 WALL_STEP m, so the ground-truth map carries them too.
 
+Optional `trailer:` puts a static trailer with a ramp in the world, placed
+so that the robot, backed straight down the ramp, stops exactly at `spawn`
+(see trailer_geometry). It is deliberately NOT in gt_map.csv: the real
+trailer parks somewhere different every time, so the map is built without it
+and AMCL has to live with it as an unmapped object, as on the robot.
+
 Also writes agbot_nav/maps/<snapshot>.{pgm,yaml} via gt_occupancy_map.py
 unless --no-map.
 """
@@ -52,6 +58,8 @@ GROUND_PIXEL = 250     # flat ground: 250/255 * 0.305 = 0.299 m, the template's
 HEIGHTMAP_PX = 129     # Gazebo wants 2^n + 1 pixels a side
 WALL_STEP = 0.05      # m between `wall` points in gt_map.csv
 MODELS = {"tall": "agbot_maize_tall_0%d", "stock": "maize_0%d"}
+JACKAL_HALF_LENGTH = 0.254   # m, base_link to either bumper
+JACKAL_DECK_Z = 0.10         # m above a surface to spawn the robot on it
 
 
 def place_block(block, defaults, rng):
@@ -113,6 +121,89 @@ def wall_points(a, b):
             for k in range(n + 1)]
 
 
+def trailer_geometry(spec):
+    """Where the trailer goes, from `spawn` and the `trailer:` dimensions.
+
+    The robot parks on the deck facing the trailer's front, backs straight
+    down the ramp at the rear without turning, and stops at `spawn` -- so the
+    trailer is on the line through `spawn` along the spawn heading, AHEAD of
+    it. Distances along that heading, from `spawn`:
+        ramp foot  = half robot length + ramp_foot_gap
+        deck rear  = ramp foot + the ramp's horizontal run
+        robot      = deck rear + robot_setback      (where it is parked)
+    Returns a dict (all metres / radians, world frame) or None.
+    """
+    tr = spec.get("trailer")
+    if not tr:
+        return None
+    sx, sy, syaw_deg = (float(v) for v in spec["spawn"])
+    yaw = math.radians(syaw_deg)
+    h = float(tr["deck_height"])
+    ramp = float(tr["ramp_length"])
+    if not 0.0 < h < ramp:
+        sys.exit("trailer: need 0 < deck_height < ramp_length")
+    theta = math.asin(h / ramp)
+    run = ramp * math.cos(theta)
+    s_foot = JACKAL_HALF_LENGTH + float(tr.get("ramp_foot_gap", 0.5))
+    s_rear = s_foot + run
+    s_robot = s_rear + float(tr.get("robot_setback", 0.55))
+    deck_len = float(tr.get("deck_length", 3.0))
+    if s_robot + JACKAL_HALF_LENGTH > s_rear + deck_len:
+        sys.exit("trailer: robot_setback puts the robot off the front of the deck")
+
+    def along(s):
+        return sx + s * math.cos(yaw), sy + s * math.sin(yaw)
+
+    return dict(
+        yaw=yaw, theta=theta, deck_height=h, ramp_length=ramp, run=run,
+        deck_length=deck_len, deck_width=float(tr.get("deck_width", 1.3)),
+        ramp_width=float(tr.get("ramp_width", 1.0)),
+        origin=along(s_rear),          # model frame: deck rear edge, on the ground
+        robot=along(s_robot) + (yaw,),
+        # Wheel travel from the parked pose to `spawn`: the straight-line
+        # distance plus what the slope adds over its horizontal run.
+        reverse_wheel_distance=s_robot + (ramp - run),
+    )
+
+
+def trailer_sdf(g):
+    """A static deck box plus one tilted plank, origin at the deck's rear edge.
+
+    The plank's TOP edge sits exactly on the deck's rear edge (no lip for the
+    wheels to catch) and its foot continues 0.10 m into the ground.
+    """
+    th, h, t = g["theta"], g["deck_height"], 0.04
+    plank = g["ramp_length"] + 0.10
+    # centre of the plank's top surface, then down its normal by t/2
+    tx = -(plank / 2.0) * math.cos(th)
+    tz = h - (plank / 2.0) * math.sin(th)
+    px, pz = tx + (t / 2.0) * math.sin(th), tz - (t / 2.0) * math.cos(th)
+    ox, oy = g["origin"]
+
+    def box(name, pose, size, colour):
+        geo = "<box><size>%.4f %.4f %.4f</size></box>" % size
+        return (
+            "      <link name=\"%s\">\n"
+            "        <pose>%.6f 0 %.6f 0 %.6f 0</pose>\n"
+            "        <collision name=\"collision\"><geometry>%s</geometry>\n"
+            "          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>\n"
+            "        </collision>\n"
+            "        <visual name=\"visual\"><geometry>%s</geometry>\n"
+            "          <material><script><uri>file://media/materials/scripts/gazebo.material</uri>"
+            "<name>%s</name></script></material>\n"
+            "        </visual>\n"
+            "      </link>\n" % ((name,) + pose + (geo, geo, colour)))
+
+    return (
+        "    <model name=\"agbot_trailer_ramp\">\n"
+        "      <static>true</static>\n"
+        "      <pose>%.4f %.4f %.3f 0 0 %.4f</pose>\n" % (ox, oy, GROUND_Z, g["yaw"])
+        + box("deck", (g["deck_length"] / 2.0, h / 2.0, 0.0),
+              (g["deck_length"], g["deck_width"], h), "Gazebo/Grey")
+        + box("ramp", (px, pz, -th), (plank, g["ramp_width"], t), "Gazebo/DarkGrey")
+        + "    </model>\n")
+
+
 def split_template(world_text):
     """(head, tail) of a virtual_maize_field world, without its plants."""
     first = world_text.index("<include>")
@@ -149,13 +240,18 @@ def write_preview(path, plants, spec):
     ax.plot([sx, ex], [sy, ey], ":", color="grey")
     ax.text((sx + ex) / 2, (sy + ey) / 2, " %.1f m" % math.hypot(ex - sx, ey - sy),
             color="grey")
-    if spec.get("trailer"):
-        tx, ty, th = spec["trailer"]
-        rect = Rectangle((-2.0, -1.0), 4.0, 2.0, color="grey", alpha=0.5,
-                         label="trailer")
-        t = matplotlib.transforms.Affine2D().rotate_deg(th).translate(tx, ty)
-        rect.set_transform(t + ax.transData)
-        ax.add_patch(rect)
+    g = trailer_geometry(spec)
+    if g:
+        rot = matplotlib.transforms.Affine2D().rotate(g["yaw"]).translate(*g["origin"])
+        for x0, length, width, colour, label in (
+                (0.0, g["deck_length"], g["deck_width"], "grey", "trailer deck"),
+                (-g["run"], g["run"], g["ramp_width"], "darkgrey", "ramp")):
+            rect = Rectangle((x0, -width / 2.0), length, width, color=colour,
+                             alpha=0.6, label=label)
+            rect.set_transform(rot + ax.transData)
+            ax.add_patch(rect)
+        rx, ry, ryaw = g["robot"]
+        arrow((rx, ry, math.degrees(ryaw)), "purple", "robot parked on the trailer")
     for i, (_, a, b, _, _) in enumerate(wall_specs(spec)):
         ax.plot([a[0], b[0]], [a[1], b[1]], "-", color="dimgrey", lw=3,
                 label="wall" if i == 0 else None)
@@ -235,6 +331,9 @@ def main():
             % (model % rng.integers(1, 3), x, y, GROUND_Z,
                rng.uniform(0, 2 * math.pi), i))
     body.extend(wall_sdf(*w) for w in walls)
+    trailer = trailer_geometry(spec)
+    if trailer:
+        body.append(trailer_sdf(trailer))
     sx, sy, syaw = spec["spawn"]
     tail = tail.replace(
         tail[tail.index("<pose"):tail.index("</pose>") + len("</pose>")],
@@ -269,6 +368,17 @@ def main():
     print("spawn:    x:=%.3f y:=%.3f z:=0.35 yaw:=%.4f" % (sx, sy, math.radians(syaw)))
     print("entrance: entrance_x:=%.3f entrance_y:=%.3f entrance_yaw_deg:=%.1f "
           "(%.1f m from the spawn)" % (ex, ey, eyaw, math.hypot(ex - sx, ey - sy)))
+
+    if trailer:
+        rx, ry, ryaw = trailer["robot"]
+        print("trailer:  deck %.2f m high, ramp %.2f m at %.1f deg; robot parked on it:"
+              % (trailer["deck_height"], trailer["ramp_length"],
+                 math.degrees(trailer["theta"])))
+        print("          x:=%.3f y:=%.3f z:=%.2f yaw:=%.4f   (agbot_gazebo.launch)"
+              % (rx, ry, GROUND_Z + trailer["deck_height"] + JACKAL_DECK_Z, ryaw))
+        print("          backing straight off to the spawn = %.2f m of wheel travel "
+              "(%.1f s at 0.1 m/s)" % (trailer["reverse_wheel_distance"],
+                                       trailer["reverse_wheel_distance"] / 0.1))
 
     if not args.no_map:
         map_base = os.path.join(SRC, "agbot_nav", "maps", name)

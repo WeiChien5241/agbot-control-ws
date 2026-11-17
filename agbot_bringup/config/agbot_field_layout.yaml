@@ -82,7 +82,8 @@ blocks:
 # north block's 3rd and 4th rows (y = 0.38 and -0.38).
 entrance: [-0.5, 0.0, 0]     # x, y, yaw_deg
 
-# Where the robot starts (set down off the trailer by hand): just west of the
+# Where the robot starts -- and, with `trailer:` below, where it STOPS after
+# backing off the trailer: just west of the
 # short corridor, FACING NORTH with the corn to its right. Its first move is a
 # right turn into the corridor. Pose read from the user's Gazebo model
 # state, 2026-10-14 (yaw 1.5917 rad).
@@ -95,21 +96,42 @@ spawn: [-7.92, -1.30, 91.2]  # x, y, yaw_deg
 # the block to get the corn-only field back. (Added 2026-10-14.)
 #   fence:  closes the whole field, ~1.1 m north of the north block, 1.2 m
 #           south of the south blocks, 2 m east of the row ends.
-#   pen:    the fence's west side plus two stubs that continue the start
-#           corridor's two inner rows west to the fence, so from the spawn
-#           the ONLY way out is RIGHT (east) through the corridor. The stubs
-#           stop 0.1 m short of the first plant so they don't shove it.
+#   pen:    the start area. Its south stub continues the start corridor's
+#           southern inner row west to the fence, so from the spawn the ONLY
+#           way out is RIGHT (east) through the corridor.
+#   bay:    (2026-11-16) the trailer's parking bay, north of the spawn,
+#           replacing the old pen_north stub: the trailer comes in from the
+#           south and parks heading north, so the bay is closed west, east and
+#           north. fence_west moved 0.4 m west (to -9.2) to make it 2.05 m
+#           wide for a 1.3 m trailer. bay_east stops 0.15 m short of the west
+#           arm's first plants (x = -7.0), like the stubs, so it doesn't shove
+#           them.
 walls:
   height: 1.5                # m; the scan slice is 0.10-1.20 m above base_link
   thickness: 0.10
   segments:
-    - {name: fence_west,  from: [-8.8, -5.0], to: [-8.8,  3.0]}
-    - {name: fence_north, from: [-8.8,  3.0], to: [10.0,  3.0]}
+    - {name: fence_west,  from: [-9.2, -5.0], to: [-9.2,  5.0]}
+    - {name: bay_north,   from: [-9.2,  5.0], to: [-7.15, 5.0]}
+    - {name: bay_east,    from: [-7.15, 5.0], to: [-7.15, -0.38]}
+    - {name: fence_north, from: [-7.15, 3.0], to: [10.0,  3.0]}
     - {name: fence_east,  from: [10.0,  3.0], to: [10.0, -5.0]}
-    - {name: fence_south, from: [10.0, -5.0], to: [-8.8, -5.0]}
-    - {name: pen_north,   from: [-8.8, -0.38], to: [-7.1, -0.38]}
-    - {name: pen_south,   from: [-8.8, -2.28], to: [-7.1, -2.28]}
+    - {name: fence_south, from: [10.0, -5.0], to: [-9.2, -5.0]}
+    - {name: pen_south,   from: [-9.2, -2.28], to: [-7.1, -2.28]}
 
-# Optional: a box standing in for the trailer, drawn in the preview and
-# spawned by agbot_nav's sim_trailer.launch if you pass its pose.
-trailer: null                # e.g. [-6.0, -6.5, 90]  (centre x, y, heading)
+# The trailer the robot is unloaded from (2026-11-16). Placed by the builder
+# so that backing STRAIGHT off it ends exactly at `spawn`: it is parked
+# heading the spawn's way (north), the robot sits on the deck facing north,
+# reverses south down the ramp and stops at the spawn, corn on its right.
+# In the world but NOT in the map (the real trailer moves). The builder prints
+# the on-deck spawn pose for agbot_gazebo.launch and the wheel travel back to
+# `spawn`.
+# ⚠ PLACEHOLDER DIMENSIONS -- nobody has measured the real trailer yet.
+# "About knee height" (the user) -> 0.50 m deck; ramp length guessed.
+trailer:
+  deck_height: 0.50          # m
+  ramp_length: 1.80          # m along the slope -> 16.1 deg
+  deck_length: 3.0           # m
+  deck_width: 1.3            # m
+  ramp_width: 1.0            # m
+  ramp_foot_gap: 0.5         # m from the robot's front bumper (at spawn) to the ramp foot
+  robot_setback: 0.55        # m from the deck's rear edge to base_link when parked
