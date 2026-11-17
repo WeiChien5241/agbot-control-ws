@@ -33,13 +33,14 @@ from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Empty, SetBool
+from std_srvs.srv import Empty, SetBool, Trigger
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from agbot_nav.deploy_fsm import (  # noqa: E402
     COMMANDER_SUPERVISOR, NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
-    STATE_ROW_MISSION, STATE_WAIT_GOAL, DeployFSM, Estimate,
+    REVERSE_TRAILER_DEPLOY, STATE_ROW_MISSION, STATE_WAIT_GOAL, DeployFSM,
+    Estimate,
 )
 
 _ACTIVE = (GoalStatus.PENDING, GoalStatus.ACTIVE)
@@ -82,7 +83,12 @@ class DeploySupervisor(object):
             transit_timeout_sec=p("~transit_timeout_sec", 300.0),
             mission_timeout_sec=p("~mission_timeout_sec", 1800.0),
             return_timeout_sec=p("~return_timeout_sec", 300.0),
+            # "trailer_deploy": marker_follower's trailer_deploy_ros.py does
+            # the reverse (deploy_fsm.py, REVERSE_OFF).
+            reverse_mode=str(p("~reverse_mode", "odometry")).strip(),
         )
+        self._trailer_mode = self._fsm.reverse_mode == REVERSE_TRAILER_DEPLOY
+        self._trailer_status = None
 
         self._odom_xy = None
         self._estimate = None
@@ -101,6 +107,14 @@ class DeploySupervisor(object):
         rospy.Subscriber("/odometry/filtered", Odometry, self._odom_cb, queue_size=1)
         rospy.Subscriber("/amcl_pose", PoseWithCovarianceStamped, self._amcl_cb, queue_size=1)
         rospy.Subscriber("/vision_nav_node/mission_done", Bool, self._done_cb, queue_size=1)
+        if self._trailer_mode:
+            # Not latched, ~50 Hz while it drives; DEPLOY_COMPLETE comes once.
+            rospy.Subscriber("/trailer_deploy/status", String, self._trailer_cb,
+                             queue_size=10)
+            rospy.loginfo("waiting for /trailer_deploy/start ...")
+            rospy.wait_for_service("/trailer_deploy/start")
+            self._trailer_start = rospy.ServiceProxy("/trailer_deploy/start", Trigger)
+            self._trailer_stop = rospy.ServiceProxy("/trailer_deploy/stop", Trigger)
 
         self._nav = actionlib.SimpleActionClient("move_base", MoveBaseAction)
         rospy.loginfo("waiting for move_base ...")
@@ -126,7 +140,11 @@ class DeploySupervisor(object):
             rospy.loginfo("row bearing: %s", "%.0f deg -- arrows are snapped onto it"
                           % math.degrees(f.row_bearing) if f.row_bearing is not None
                           else "NOT SET -- the arrow's own direction is used as the row")
-        if f.reverse_distance > 0.0:
+        if self._trailer_mode:
+            rospy.loginfo("reverse off the trailer: by the trailer_deploy node "
+                          "(/trailer_deploy/start; its own speed and duration), "
+                          "timeout %.0f s", f.timeouts["REVERSE_OFF"])
+        elif f.reverse_distance > 0.0:
             rospy.loginfo("reverse off the trailer: %.2f m at %.2f m/s",
                           f.reverse_distance, f.reverse_speed)
         else:
@@ -166,6 +184,13 @@ class DeploySupervisor(object):
         if self._vision_on:
             self._vision_done = bool(msg.data)
 
+    def _trailer_cb(self, msg):
+        # Log only when the kind of status changes (it repeats at ~50 Hz).
+        kind = msg.data.split(":")[0]
+        if self._trailer_status is None or kind != self._trailer_status.split(":")[0]:
+            rospy.loginfo("trailer_deploy: %s", msg.data)
+        self._trailer_status = msg.data
+
     def _goal_cb(self, msg):
         # rospy thread: queue it; the FSM is only touched from _tick.
         frame = msg.header.frame_id.lstrip("/")
@@ -204,7 +229,8 @@ class DeploySupervisor(object):
         tick = self._fsm.update(rospy.get_time(), odom_xy=self._odom_xy,
                                 estimate=self._estimate,
                                 nav_state=self._nav_state(),
-                                vision_done=self._vision_done)
+                                vision_done=self._vision_done,
+                                trailer_status=self._trailer_status)
         self._apply(tick)
 
     def _apply(self, tick):
@@ -223,6 +249,16 @@ class DeploySupervisor(object):
             if self._last_state == "REVERSE_OFF":
                 self._cmd_pub.publish(Twist())       # one stop, then silent
             self._last_state = tick.state
+
+        if tick.stop_trailer_deploy:
+            self._call_trailer(self._trailer_stop, "stop")
+        if tick.start_trailer_deploy:
+            self._trailer_status = None        # only statuses from THIS run count
+            ok, message = self._call_trailer(self._trailer_start, "start")
+            if not ok:
+                self._apply(self._fsm.abort("trailer deploy did not start: %s"
+                                            % message))
+                return
 
         # ⚠ Off before on. Anything that should stop driving stops first.
         if tick.cancel_nav and self._goal_active:
@@ -267,6 +303,16 @@ class DeploySupervisor(object):
             rospy.logerr("DEPLOYMENT FAILED: %s", tick.reason)
             rospy.signal_shutdown("deployment failed")
 
+    def _call_trailer(self, proxy, what):
+        try:
+            resp = proxy()
+        except rospy.ServiceException as exc:
+            rospy.logerr("/trailer_deploy/%s failed: %s", what, exc)
+            return False, str(exc)
+        log = rospy.loginfo if resp.success else rospy.logwarn
+        log("/trailer_deploy/%s: %s", what, resp.message)
+        return resp.success, resp.message
+
     def _publish_entrance(self):
         e = self._fsm.entrance
         msg = PoseStamped()
@@ -304,6 +350,11 @@ class DeploySupervisor(object):
 
     def _on_shutdown(self):
         """Leave nothing driving, whatever happened."""
+        if self._trailer_mode and self._fsm.state == "REVERSE_OFF":
+            try:
+                self._trailer_stop()
+            except Exception:                       # shutting down; best effort
+                pass
         try:
             self._nav.cancel_all_goals()
         except Exception:                           # shutting down; best effort

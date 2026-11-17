@@ -23,6 +23,16 @@
        The rows are driven by the real vision nav only (camera + model;
        needs agbot_vision_nav/config/exported_best.pt or model_path).
 
+       TRAILER LEG (2026-11-16): the field world has a trailer whose ramp
+       ends at the start pose. Spawn the robot ON the deck and let the trailer
+       team's own node back it off (marker_follower trailer_deploy_ros.py):
+         roslaunch agbot_bringup agbot_gazebo.launch lidar:=true rviz:=false \
+           ramp_traction:=true x:=-7.984 y:=1.732 z:=0.90 yaw:=1.5917
+         roslaunch agbot_nav deploy_mission.launch sim:=true rviz:=true \
+           trailer_deploy:=true trailer_deploy_duration:=31.0 \
+           initial_x:=-7.984 initial_y:=1.732
+       (build_field_world.py prints that pose and the wheel travel.)
+
        ⚠ Start with gps:=false on the sim. AMCL owns map->odom here, and
        agbot_gps_nav's ekf_map would publish it too. -->
 
@@ -60,6 +70,15 @@
        the sequence starts at LOCALIZE. A positive value reverses that many
        metres blind before localizing (off a ramp). -->
   <arg name="reverse_distance" default="0.0"/>
+  <!-- OR let the trailer team's node do the reverse (deploy_fsm.py,
+       REVERSE_OFF): starts marker_follower's trailer_deploy_ros.py and the
+       supervisor calls its /trailer_deploy/start, then localizes once it
+       reports DEPLOY_COMPLETE. reverse_distance is then unused.
+       Duration/speed blank = that script's own defaults (40 s at -0.1 m/s,
+       i.e. 4 m); set the duration to the trailer: wheel travel / speed. -->
+  <arg name="trailer_deploy"          default="false"/>
+  <arg name="trailer_deploy_duration" default=""/>
+  <arg name="trailer_deploy_speed"    default=""/>
   <arg name="rviz"             default="false"/>
   <arg name="return_enabled"   default="true"/>
   <!-- move_base top speed (m/s) on the way to the row and back; blank =
@@ -122,6 +141,16 @@
   <node if="$(arg sim)" name="sim_creep_guard"
         pkg="agbot_nav" type="sim_creep_guard.py" output="screen"/>
 
+  <!-- The trailer team's deploy node, unchanged but for ROS time. output=log:
+       it logs every 20 ms tick; the supervisor relays its status changes. -->
+  <node if="$(arg trailer_deploy)" name="trailer_deploy" pkg="marker_follower"
+        type="trailer_deploy_ros.py" output="log">
+    <param if="$(eval arg('trailer_deploy_duration') != '')"
+           name="deploy_duration" value="$(arg trailer_deploy_duration)"/>
+    <param if="$(eval arg('trailer_deploy_speed') != '')"
+           name="deploy_speed" value="$(arg trailer_deploy_speed)"/>
+  </node>
+
   <node name="deploy_supervisor" pkg="agbot_nav" type="deploy_supervisor.py"
         output="screen" required="true">
     <param name="entrance_x"       value="$(arg entrance_x)"/>
@@ -129,6 +158,10 @@
     <param name="entrance_yaw_deg" value="$(arg entrance_yaw_deg)"/>
     <param name="entrance_standoff" value="$(arg entrance_standoff)"/>
     <param name="reverse_distance" value="$(arg reverse_distance)"/>
+    <param name="reverse_mode"
+           value="$(eval 'trailer_deploy' if arg('trailer_deploy') else 'odometry')"/>
+    <!-- The trailer node's leg is timed by IT; this only catches a hang. -->
+    <param if="$(arg trailer_deploy)" name="reverse_timeout_sec" value="120.0"/>
     <param name="return_enabled"   value="$(arg return_enabled)"/>
     <param name="row_bearing_deg"  value="$(arg row_bearing_deg)"/>
     <param name="max_bearing_snap_deg" value="$(arg max_bearing_snap_deg)"/>

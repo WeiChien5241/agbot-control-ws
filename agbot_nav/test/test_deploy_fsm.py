@@ -4,7 +4,8 @@ import math
 import pytest
 
 from agbot_nav.deploy_fsm import (
-    COMMANDER_MOVE_BASE, COMMANDER_SUPERVISOR, COMMANDER_VISION,
+    COMMANDER_MOVE_BASE, COMMANDER_SUPERVISOR, COMMANDER_TRAILER_DEPLOY,
+    COMMANDER_VISION, REVERSE_TRAILER_DEPLOY,
     NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
     STATE_FAILED, STATE_FINISHED, STATE_LOCALIZE, STATE_RETURN,
     STATE_REVERSE_OFF, STATE_ROW_MISSION, STATE_TRANSIT, STATE_WAIT_GOAL,
@@ -55,6 +56,76 @@ def test_reverse_ends_on_odometry_distance_not_time():
     tick = f.update(4.0, odom_xy=(3.4, 5.0))
     assert tick.state == STATE_LOCALIZE
     assert tick.reverse_speed == 0.0 and tick.commander is None
+
+
+# ---- reverse off the ramp by the trailer team's node -----------------------
+
+def trailer(**kw):
+    return fsm(reverse_mode=REVERSE_TRAILER_DEPLOY, **kw)
+
+
+def test_trailer_mode_starts_the_trailer_node_and_stays_off_cmd_vel():
+    tick = trailer(reverse_distance=0.0).start(0.0)   # distance is not its business
+    assert tick.state == STATE_REVERSE_OFF
+    assert tick.commander == COMMANDER_TRAILER_DEPLOY
+    assert tick.start_trailer_deploy and not tick.stop_trailer_deploy
+    assert tick.reverse_speed == 0.0                  # the trailer node drives
+    assert not tick.vision_enabled and tick.nav_goal is None
+
+
+def test_trailer_start_is_an_edge_not_a_level():
+    f = trailer()
+    f.start(0.0)
+    tick = f.update(1.0, trailer_status="DEPLOYING: 30.0s remaining")
+    assert tick.state == STATE_REVERSE_OFF and not tick.start_trailer_deploy
+    assert tick.reverse_speed == 0.0
+
+
+def test_trailer_mode_ignores_odometry_and_waits_for_deploy_complete():
+    f = trailer(reverse_distance=1.0, reverse_timeout_sec=60.0)
+    f.start(0.0)
+    f.update(0.1, odom_xy=(0.0, 0.0))
+    assert f.update(20.0, odom_xy=(-3.0, 0.0)).state == STATE_REVERSE_OFF
+    tick = f.update(31.0, odom_xy=(-3.1, 0.0), trailer_status="DEPLOY_COMPLETE")
+    assert tick.state == STATE_LOCALIZE and tick.commander is None
+    assert tick.request_localize_update
+
+
+@pytest.mark.parametrize("status", ["DEPLOY_ABORTED: Emergency stop",
+                                    "DEPLOY_STOPPED: User request"])
+def test_trailer_node_ending_early_fails_the_deployment(status):
+    f = trailer()
+    f.start(0.0)
+    tick = f.update(5.0, trailer_status=status)
+    assert tick.state == STATE_FAILED and tick.failed
+    assert status in tick.reason
+    assert not tick.stop_trailer_deploy               # it has already stopped
+
+
+def test_trailer_timeout_stops_the_trailer_node():
+    f = trailer(reverse_timeout_sec=45.0)
+    f.start(0.0)
+    tick = f.update(46.0, trailer_status="DEPLOYING: 0.5s remaining")
+    assert tick.state == STATE_FAILED and tick.stop_trailer_deploy
+
+
+def test_abort_after_the_trailer_leg_does_not_touch_the_trailer_node():
+    f = trailer()
+    f.start(0.0)
+    f.update(31.0, trailer_status="DEPLOY_COMPLETE")
+    assert not f.abort("operator").stop_trailer_deploy
+
+
+def test_odometry_mode_never_signals_the_trailer_node():
+    f = fsm(reverse_timeout_sec=10.0)
+    tick = f.start(0.0)
+    assert not tick.start_trailer_deploy
+    assert not f.update(11.0).stop_trailer_deploy     # timed out in REVERSE_OFF
+
+
+def test_unknown_reverse_mode_is_refused():
+    with pytest.raises(ValueError):
+        fsm(reverse_mode="trailer")
 
 
 def test_zero_reverse_distance_skips_the_reverse_leg():

@@ -18,11 +18,21 @@ on the map without restarting the stack:
     LOCALIZE -> WAIT_GOAL -goal-> TRANSIT -> ROW_MISSION -> RETURN -> WAIT_GOAL
                                      \___________\_____________\--> FAILED -goal-> ...
 
-REVERSE_OFF  The supervisor itself reverses the robot `reverse_distance` m
-             straight off the ramp on wheel odometry. Blind on purpose: the
+REVERSE_OFF  The robot reverses straight off the ramp. Blind on purpose: the
              trailer is right in front of the robot and no planner should be
              turning near it. Real layout: trailer heading north, robot backs
-             off still facing north.
+             off still facing north. Two ways (`reverse_mode`):
+               "odometry"        the supervisor itself reverses
+                                 `reverse_distance` m on wheel odometry.
+               "trailer_deploy"  the trailer team's own node does it
+                                 (marker_follower's trailer_deploy_ros.py, a
+                                 timed straight reverse, no markers): the
+                                 supervisor calls /trailer_deploy/start, keeps
+                                 OFF /cmd_vel, and moves on when that node
+                                 reports DEPLOY_COMPLETE. Its ABORTED/STOPPED
+                                 ends the deployment. (2026-11-16: the lab
+                                 runs that node on the robot, so it is the one
+                                 to exercise, not a copy of it.)
 LOCALIZE     Stopped. AMCL must hold its estimate below
              `localize_max_std_xy` / `localize_max_std_yaw_deg` for
              `localize_hold_sec`. AMCL only updates on motion, so each tick
@@ -90,15 +100,22 @@ NAV_FAILED = "FAILED"
 COMMANDER_SUPERVISOR = "supervisor"
 COMMANDER_MOVE_BASE = "move_base"
 COMMANDER_VISION = "vision"
+COMMANDER_TRAILER_DEPLOY = "trailer_deploy"
+
+REVERSE_ODOMETRY = "odometry"
+REVERSE_TRAILER_DEPLOY = "trailer_deploy"
 
 Pose2D = collections.namedtuple("Pose2D", "x y yaw")
 # AMCL's estimate: pose plus its 1-sigma spread (m, rad).
 Estimate = collections.namedtuple("Estimate", "x y yaw std_xy std_yaw")
 
+# start_/stop_trailer_deploy are EDGES (true on one tick only): call the
+# trailer node's /trailer_deploy/start or /stop service now.
 DeployTick = collections.namedtuple(
     "DeployTick",
     "state commander reverse_speed vision_enabled nav_goal cancel_nav "
-    "request_localize_update done failed reason",
+    "request_localize_update done failed reason "
+    "start_trailer_deploy stop_trailer_deploy",
 )
 
 
@@ -132,7 +149,7 @@ class DeployFSM(object):
                  row_bearing_deg=None, max_bearing_snap_deg=30.0,
                  reverse_timeout_sec=30.0, localize_timeout_sec=30.0,
                  transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
-                 return_timeout_sec=300.0):
+                 return_timeout_sec=300.0, reverse_mode=REVERSE_ODOMETRY):
         # No entrance = the operator gives one (and then another) at run time.
         self.interactive = entrance is None
         # ⚠ The operator's ARROW is not the row. Sim 2026-10-21: a click 12 deg
@@ -149,6 +166,10 @@ class DeployFSM(object):
         self.transit_goal = None
         if entrance is not None:
             self._set_entrance(entrance)
+        if reverse_mode not in (REVERSE_ODOMETRY, REVERSE_TRAILER_DEPLOY):
+            raise ValueError("reverse_mode must be %r or %r, not %r"
+                             % (REVERSE_ODOMETRY, REVERSE_TRAILER_DEPLOY, reverse_mode))
+        self.reverse_mode = reverse_mode
         self.reverse_distance = float(reverse_distance)
         # Stored positive; the tick reports it as a NEGATIVE linear.x.
         self.reverse_speed = abs(float(reverse_speed))
@@ -193,6 +214,9 @@ class DeployFSM(object):
         self.drop_off = None
         self.arrival = None
         self._reverse_start = None
+        if self.reverse_mode == REVERSE_TRAILER_DEPLOY:
+            # The trailer node decides how far; reverse_distance is unused.
+            return self._enter(STATE_REVERSE_OFF, now)
         if self.reverse_distance <= 0.0:
             # Driven off the trailer by hand: nothing to reverse.
             return self._enter(STATE_LOCALIZE, now)
@@ -203,9 +227,11 @@ class DeployFSM(object):
 
         Terminal unless interactive: there the operator can send a new goal.
         """
+        stop_trailer = (self.state == STATE_REVERSE_OFF
+                        and self.reverse_mode == REVERSE_TRAILER_DEPLOY)
         self.state = STATE_FAILED
         self.reason = reason
-        return self._tick(cancel_nav=True)
+        return self._tick(cancel_nav=True, stop_trailer_deploy=stop_trailer)
 
     def set_entrance(self, entrance, now):
         """The operator's row entrance (x, y, row bearing), map frame.
@@ -259,7 +285,7 @@ class DeployFSM(object):
             e.yaw)
 
     def update(self, now, odom_xy=None, estimate=None, nav_state=None,
-               vision_done=False):
+               vision_done=False, trailer_status=None):
         """Advance one tick and return the full desired state.
 
         odom_xy     (x, y) of /odometry/filtered -- the reverse leg's distance.
@@ -267,6 +293,9 @@ class DeployFSM(object):
         nav_state   NAV_ACTIVE / NAV_SUCCEEDED / NAV_FAILED for the goal sent
                     in THIS state, or None before one is known.
         vision_done the row mission's /vision_nav_node/mission_done.
+        trailer_status  the last /trailer_deploy/status received since this
+                    REVERSE_OFF began (the caller clears it on
+                    start_trailer_deploy), or None.
         """
         now = float(now)
         if self.state in (STATE_IDLE, STATE_FINISHED, STATE_FAILED,
@@ -276,6 +305,17 @@ class DeployFSM(object):
         elapsed = now - self._entered_at
         if elapsed > self.timeouts[self.state]:
             return self.abort("%s timed out after %.0f s" % (self.state, elapsed))
+
+        if self.state == STATE_REVERSE_OFF and \
+                self.reverse_mode == REVERSE_TRAILER_DEPLOY:
+            status = (trailer_status or "").strip()
+            if status.startswith("DEPLOY_COMPLETE"):
+                return self._enter(STATE_LOCALIZE, now)
+            if status.startswith(("DEPLOY_ABORTED", "DEPLOY_STOPPED")):
+                self.state = STATE_FAILED      # already stopped: nothing to stop
+                self.reason = "trailer deploy ended early: %s" % status
+                return self._tick(cancel_nav=True)
+            return self._tick()
 
         if self.state == STATE_REVERSE_OFF:
             if odom_xy is None:
@@ -367,11 +407,17 @@ class DeployFSM(object):
             goal = self.transit_goal
         elif state == STATE_RETURN:
             goal = self.drop_off
-        return self._tick(nav_goal=goal)
+        return self._tick(
+            nav_goal=goal,
+            start_trailer_deploy=(state == STATE_REVERSE_OFF
+                                  and self.reverse_mode == REVERSE_TRAILER_DEPLOY))
 
-    def _tick(self, nav_goal=None, cancel_nav=False):
+    def _tick(self, nav_goal=None, cancel_nav=False, start_trailer_deploy=False,
+              stop_trailer_deploy=False):
+        trailer = self.reverse_mode == REVERSE_TRAILER_DEPLOY
         commander = {
-            STATE_REVERSE_OFF: COMMANDER_SUPERVISOR,
+            STATE_REVERSE_OFF: (COMMANDER_TRAILER_DEPLOY if trailer
+                                else COMMANDER_SUPERVISOR),
             STATE_TRANSIT: COMMANDER_MOVE_BASE,
             STATE_ROW_MISSION: COMMANDER_VISION,
             STATE_RETURN: COMMANDER_MOVE_BASE,
@@ -379,8 +425,10 @@ class DeployFSM(object):
         return DeployTick(
             state=self.state,
             commander=commander,
+            # Only the supervisor's own reverse publishes a speed.
             reverse_speed=(-self.reverse_speed
-                           if self.state == STATE_REVERSE_OFF else 0.0),
+                           if self.state == STATE_REVERSE_OFF and not trailer
+                           else 0.0),
             vision_enabled=self.state == STATE_ROW_MISSION,
             nav_goal=nav_goal,
             cancel_nav=cancel_nav,
@@ -389,4 +437,6 @@ class DeployFSM(object):
             # Terminal only when nothing can follow it.
             failed=self.state == STATE_FAILED and not self.interactive,
             reason=self.reason,
+            start_trailer_deploy=start_trailer_deploy,
+            stop_trailer_deploy=stop_trailer_deploy,
         )
