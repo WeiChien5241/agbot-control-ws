@@ -29,9 +29,15 @@
          roslaunch agbot_bringup agbot_gazebo.launch lidar:=true rviz:=false \
            ramp_traction:=true x:=-7.984 y:=1.732 z:=0.90 yaw:=1.5917
          roslaunch agbot_nav deploy_mission.launch sim:=true rviz:=true \
-           trailer_deploy:=true trailer_deploy_duration:=31.0 \
+           trailer_deploy:=true trailer_deploy_duration:=26.7 \
            initial_x:=-7.984 initial_y:=1.732
-       (build_field_world.py prints that pose and the wheel travel.)
+       (build_field_world.py prints that pose and the wheel travel: 3.10 m =
+       31.0 s at 0.1 m/s. ⚠ 26.7, not 31.0: even with ramp_traction the sim
+       robot slides a repeatable 0.43 m on the ramp, so 31.0 s ended at
+       y=-1.73 with its bumper 0.25 m from pen_south -- inside the wall's
+       inflation, and move_base spun in recovery for ~30 s before leaving.
+       26.7 s (the trailer team's own calibration rule, duration x target /
+       actual) ends 0.02 m from the spawn. Measured 2026-11-16.)
 
        ⚠ Start with gps:=false on the sim. AMCL owns map->odom here, and
        agbot_gps_nav's ekf_map would publish it too. -->

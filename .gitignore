@@ -46,3 +46,10 @@ AIAgNav_Overleaf.zip
 
 # Old lab rosbags copied in for inspection (multi-GB)
 old_bags/
+
+# marker_follower (the trailer team's package): code only. The example videos
+# (135 MB) and PDF copies of the READMEs stay with the copy they handed over;
+# Zone.Identifier files are Windows download metadata.
+marker_follower/**/examples/
+marker_follower/**/*.pdf
+*:Zone.Identifier

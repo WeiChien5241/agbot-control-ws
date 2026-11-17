@@ -96,6 +96,11 @@ This is Purdue's P-AgBot project: an agricultural robot (built on a Clearpath Ja
    or slam_toolbox. ⚠ AMCL must stay on the BEAM model (the likelihood
    field aliases along corn rows). URDF: `agbot_bringup/urdf/agbot_lidar.urdf.xacro`
    (opt-in `lidar:=true`; must be the GPU ray sensor).
+   Trailer leg (2026-11-16): `trailer_deploy:=true` hands REVERSE_OFF to the
+   trailer team's `marker_follower` `trailer_deploy_ros.py` (local, untracked);
+   the field world has a ramp trailer ending at the spawn. ⚠ Sim needs
+   `ramp_traction:=true` AND the 1 ms step the builder writes, or the Jackal
+   slides/yaws on the ramp (HANDOFF_LIDAR.md).
 5. **`DINOv3-Segmentation-Training/`** *(if present)* — model training pipeline (trains on annotated rosbag footage, produces `exported_best.pt`).
 6. **`Papers/`** — lab papers (P-AgBot, P-AgSLAM, P-AgNav) and related external papers (Agronav, ROW-SLAM, CropFollow). Read before designing navigation/control logic.
 

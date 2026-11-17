@@ -7,8 +7,10 @@ where things stand and what to do next.
 
 The full workflow is drop-off → row entrance → vision in-row nav → back.
 
-- The robot is set down near the corn by hand. **The trailer is out of
-  scope for now** (it needs ArUco marker work).
+- The robot is unloaded from the trailer by the trailer team's own node
+  (`marker_follower` `trailer_deploy_ros.py`, a timed straight reverse, no
+  markers) -- simulated since 2026-11-16, see that section. Loading back ON
+  (ArUco docking) is still out of scope.
 - **Transit** (start → row entrance → back) uses the standard ROS1 stack: a
   2D map (slam_toolbox or gmapping) → **AMCL** → **move_base**. It runs on
   the robot's 3D Velodyne. This is the same workflow as Nav2: map, then
@@ -383,6 +385,79 @@ The lever arm is confirmed by the RMS drop. The fit is preliminary, though:
   lap that keeps GPS for its whole length.
 - `--lever -0.125,0` used to be refused by argparse (negative value read as a
   flag); fit_georef.py now rejoins it.
+
+## 2026-11-16: the trailer leg in sim (trailer team's deploy node)
+
+**What `marker_follower` is** (handed over by the trailer team; local only,
+NOT pushed -- someone else's code, the user decides): ArUco marker following
+(`marker_detector.py`, `marker_follower*_ros.py`), docking ONTO the trailer
+by markers 1 -> 2 -> 3 (`trailer_docking_ros*.py`), their own whole-mission
+controllers (`integrated_mission{,2,3}.py`), and **`trailer_deploy_ros.py`**:
+on `/trailer_deploy/start` it publishes `linear.x = -0.1`, `angular.z = 0` at
+50 Hz for `deploy_duration` (default 40 s = 4 m), then `DEPLOY_COMPLETE` on
+`/trailer_deploy/status`. No sensing. Only change made to it: ROS time instead
+of `time.time()` (same on the robot; under a slowed sim the wall clock ran
+ahead). Scripts made executable; `catkin build marker_follower` builds.
+
+**Wiring:** `deploy_mission.launch trailer_deploy:=true` starts that node,
+and `deploy_fsm`'s REVERSE_OFF (`reverse_mode: trailer_deploy`) calls its
+start service, stays OFF `/cmd_vel`, and goes to LOCALIZE on
+`DEPLOY_COMPLETE` (ABORTED/STOPPED fail the deployment; timeout 120 s
+calls its stop). 9 new FSM tests (59 total).
+
+**World:** `agbot_field_layout.yaml` `trailer:` -- placeholder 0.50 m deck
+("about knee height"), 1.8 m ramp (16.1 deg), 3.0 x 1.3 m deck. The builder
+places it so backing STRAIGHT off ends at `spawn` (north-facing, corn east),
+writes it into the world but NOT the map, prints the on-deck pose
+(-7.984, 1.732, z 0.90). Walls: the old `pen_north` stub became a parking
+bay (fence_west moved to x=-9.2, `bay_east` at x=-7.15, `bay_north` y=5).
+
+**Sim physics -- two fixes, both needed (measured, Gazebo truth):**
+
+| setup | on the ramp |
+|---|---|
+| 5 ms step, stock wheels (blank world, 17.5 deg) | slid 1.35 m extra, 1.6 m/s while commanded 0.1 |
+| 5 ms step + `ramp_traction` (field world) | yawed 18-33 deg in 7-11 deg snaps, ended at the corn |
+| 1 ms step, stock wheels | straight, slid 1 m in 2 s, ended against `pen_south` |
+| **1 ms step + `ramp_traction`** | **~1 deg, ends where calibrated** |
+
+The builder writes the 1 ms step whenever there is a trailer (RTF was still
+~1.0 before vision loads, ~0.56 with everything up). `ramp_traction:=true`
+(agbot_gazebo.launch, opt-in) = wheel mu 1.0, kp 1e6, kd 100. A/B from the
+spawn with and without it: both entered the corn normally, so it does not
+explain any in-row behaviour.
+
+**Full runs** (`entrance (-0.5, 0, 0)`, CPU vision):
+
+| run | trailer leg end (truth) | transit | handoff (AMCL) | rows | end |
+|---|---|---|---|---|---|
+| 1 (5 ms) | 0.9 m off, yawed 18 deg | 18 s | refused: std 0.16 | - | - |
+| 2, 31.0 s | 0.43 m past spawn | 89 s (recovery spins) | -0.048 m / +7.2 deg | 1/3: vision veered into the cross alley pre-row | home, 0.07 m from drop-off: COMPLETE |
+| 3, 31.0 s | 0.43 m past spawn | ~140 s | -0.051 m / -2.2 deg | 2, false BLOCKED in row 2 | return failed from inside the corn |
+| 4, **26.7 s** | **0.02 m from spawn** | **41 s** | refused: std 0.15 (true error 0.08 m) | - | - |
+
+- AMCL rides the ramp at up to ~0.5 m error (tilted scans) and is back to
+  0.015-0.03 m / std 0.05 at the bottom, so the drop-off point is recorded
+  well. The arrival gate `max_std_xy` 0.15 is marginal in the headland with
+  or without the trailer (2 of 6 arrivals today at 0.15-0.16). NOT changed
+  -- user decision.
+- Ending near `pen_south` is what made transit slow: inside the wall's
+  inflation the first plans fail and move_base runs recovery spins. Ending
+  at the spawn (26.7 s) removed it.
+- In-row failures (veer, mid-row exit/blocked, then move_base unable to
+  plan out of the corn) are the known sim-only tall-maize behaviour, not
+  tuned (2026-10-21 decision).
+
+Run it:
+```bash
+rosrun agbot_bringup switch_maize_world.sh field
+roslaunch agbot_bringup agbot_gazebo.launch lidar:=true rviz:=false ramp_traction:=true \
+  x:=-7.984 y:=1.732 z:=0.90 yaw:=1.5917
+roslaunch agbot_nav deploy_mission.launch sim:=true rviz:=true num_rows:=2 \
+  trailer_deploy:=true trailer_deploy_duration:=26.7 \
+  initial_x:=-7.984 initial_y:=1.732 initial_yaw:=1.5917 \
+  entrance_x:=-0.5 entrance_y:=0.0 entrance_yaw_deg:=0
+```
 
 ## Next steps
 
