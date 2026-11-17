@@ -49,6 +49,13 @@
        Needs ros-noetic-velodyne-gazebo-plugins. -->
   <arg name="lidar" default="false"/>
 
+  <!-- Wheel contact that holds the Jackal on the trailer ramp instead of
+       letting it slide (agbot_ramp_traction.urdf.xacro has the measurement).
+       Off by default: vision nav was validated on the stock wheels. The
+       trailer workflow (spawn on the deck, agbot_nav deploy_mission.launch
+       trailer_deploy:=true) needs it on. -->
+  <arg name="ramp_traction" default="false"/>
+
   <!-- false skips this launch's own RViz (the URDF/camera view), e.g. when
        agbot_nav's nav view is opened instead.
        ⚠ That RViz's camera display was also the camera's only steady
@@ -106,7 +113,8 @@
                   $(find agbot_bringup)/urdf/agbot_camera.urdf.xacro
                   $(find jackal_description)/urdf/jackal.urdf.xacro
                   $(arg datum_file)
-                  lidar:=$(arg lidar)" />
+                  lidar:=$(arg lidar)
+                  ramp_traction:=$(arg ramp_traction)" />
 
   <!-- 3b. GPS localization. Purely additive: the Jackal's own EKF keeps
        publishing /odometry/filtered and owning odom to base_link, which

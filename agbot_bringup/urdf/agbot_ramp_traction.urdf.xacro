@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- SIM ONLY, opt-in (agbot_gazebo.launch ramp_traction:=true, which the
+       trailer workflow sets): wheel contact that holds the Jackal on the
+       trailer ramp. Overrides jackal.urdf.xacro's per-wheel <gazebo> block
+       (a later block for the same link wins; checked with `gz sdf -p`).
+
+       Measured 2026-11-16, blank world, 0.45 m deck, 1.5 m ramp (17.5 deg),
+       the trailer_deploy script at -0.1 m/s, Gazebo truth vs odometry:
+         stock (mu 0.5, kp 1e7, kd 1)    slid 1.35 m extra; 1.6 m/s on the
+                                         ramp while commanded 0.1
+         mu 0.5, kp 1e6, kd 100          0.94 m extra
+         mu 1.0 / 1.5 / 3.0, kp 1e6/kd 100   0.55 m extra, repeatable to 6 mm
+       So the stiff, undamped stock contact chatters and lets go on a slope.
+       Parked on the ramp with no command it only creeps (~3 mm/s).
+       ⚠ Why OFF by default: every vision-nav run so far was validated on the
+       stock wheels, and skid-steer turning depends on wheel friction. -->
+  <xacro:macro name="agbot_ramp_traction_wheel" params="prefix">
+    <gazebo reference="${prefix}_wheel_link">
+      <mu1 value="1.0"/>
+      <mu2 value="1.0"/>
+      <kp value="1000000.0"/>
+      <kd value="100.0"/>
+      <minDepth value="0.001"/>
+    </gazebo>
+  </xacro:macro>
+  <xacro:agbot_ramp_traction_wheel prefix="front_left"/>
+  <xacro:agbot_ramp_traction_wheel prefix="front_right"/>
+  <xacro:agbot_ramp_traction_wheel prefix="rear_left"/>
+  <xacro:agbot_ramp_traction_wheel prefix="rear_right"/>
+</robot>

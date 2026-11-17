@@ -6,6 +6,8 @@
     Included via JACKAL_URDF_EXTRAS into jackal.urdf.xacro.
     xacro arg lidar:=true (default false) also includes
     agbot_lidar.urdf.xacro, the horizontal Velodyne on its housing.
+    xacro arg ramp_traction:=true (sim only) firms up the wheel contact for
+    the trailer ramp (agbot_ramp_traction.urdf.xacro).
     Parent link: mid_mount (top-centre of Jackal chassis).
 
     Layout (all offsets relative to mid_mount):
@@ -140,6 +142,14 @@
   <xacro:arg name="lidar" default="false"/>
   <xacro:if value="$(arg lidar)">
     <xacro:include filename="$(find agbot_bringup)/urdf/agbot_lidar.urdf.xacro"/>
+  </xacro:if>
+
+  <!-- ─── Ramp traction (SIM ONLY, opt-in) ─────────────────────── -->
+  <!-- Wheel contact that holds on the trailer ramp; see the file for the
+       measurement. load_robot_description.sh forwards ramp_traction:=true. -->
+  <xacro:arg name="ramp_traction" default="false"/>
+  <xacro:if value="$(arg ramp_traction)">
+    <xacro:include filename="$(find agbot_bringup)/urdf/agbot_ramp_traction.urdf.xacro"/>
   </xacro:if>
 
 </robot>
