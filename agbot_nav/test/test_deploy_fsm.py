@@ -7,9 +7,9 @@ from agbot_nav.deploy_fsm import (
     COMMANDER_MOVE_BASE, COMMANDER_SUPERVISOR, COMMANDER_TRAILER_DEPLOY,
     COMMANDER_VISION, REVERSE_TRAILER_DEPLOY,
     NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
-    STATE_FAILED, STATE_FINISHED, STATE_LOCALIZE, STATE_RETURN,
+    STATE_ALIGN_HOME, STATE_FAILED, STATE_FINISHED, STATE_LOCALIZE, STATE_RETURN,
     STATE_REVERSE_OFF, STATE_ROW_MISSION, STATE_TRANSIT, STATE_WAIT_GOAL,
-    DeployFSM, Estimate, Pose2D, axis_errors,
+    DeployFSM, Estimate, HomeAligner, Pose2D, axis_errors,
 )
 
 ENTRANCE = (-0.8, -3.9, math.pi / 2)        # corridor mouth, row runs +y
@@ -276,6 +276,19 @@ def test_mission_done_returns_to_the_recorded_drop_off():
     assert tick.state == STATE_RETURN
     assert tick.commander == COMMANDER_MOVE_BASE and not tick.vision_enabled
     assert tick.nav_goal == f.drop_off
+    tick = f.update(260.0, nav_state=NAV_SUCCEEDED)
+    assert tick.state == STATE_ALIGN_HOME
+    assert tick.commander == COMMANDER_SUPERVISOR and tick.cancel_nav is False
+    # Already facing the drop-off heading: one settle, then done.
+    f.update(260.1, estimate=AT_DROP, odom_yaw=0.0)
+    assert f.update(261.2, estimate=AT_DROP, odom_yaw=0.0).state == STATE_FINISHED
+    assert f.home_heading_error == pytest.approx(0.0)
+
+
+def test_home_align_can_be_disabled():
+    f = fsm(home_align=False)
+    to_row(f)
+    f.update(200.0, vision_done=True)
     assert f.update(260.0, nav_state=NAV_SUCCEEDED).state == STATE_FINISHED
 
 
@@ -378,7 +391,9 @@ def test_interactive_returns_home_then_waits_for_the_next_goal():
     f.set_entrance(ENTRANCE, 5.0)
     f.update(20.0, estimate=GOOD, nav_state=NAV_SUCCEEDED)
     assert f.update(200.0, vision_done=True).state == STATE_RETURN
-    tick = f.update(260.0, nav_state=NAV_SUCCEEDED)
+    assert f.update(260.0, nav_state=NAV_SUCCEEDED).state == STATE_ALIGN_HOME
+    f.update(260.1, estimate=AT_DROP, odom_yaw=0.0)
+    tick = f.update(261.2, estimate=AT_DROP, odom_yaw=0.0)
     assert tick.state == STATE_WAIT_GOAL and not tick.done
     second = (3.0, 1.0, 0.0)
     tick, _ = f.set_entrance(second, 270.0)
@@ -458,3 +473,113 @@ def test_no_row_bearing_takes_the_arrow_as_given():
 
 def wrap_deg(d):
     return (d + 180.0) % 360.0 - 180.0
+
+
+# ---- turning to the drop-off heading at home --------------------------------
+
+def simulate_align(aligner, yaw0, coast=0.0, rate_scale=1.0, dt=0.1, t_max=60.0):
+    """Robot that turns at rate_scale x the command and coasts `coast` rad
+    past every stop. AMCL = truth; odometry = truth + a constant offset."""
+    yaw, t, prev_cmd = yaw0, 0.0, 0.0
+    odom_offset = 0.7
+    while t < t_max:
+        cmd, done, _ = aligner.update(t, yaw, wrap_(yaw + odom_offset))
+        if done:
+            return yaw, t
+        if prev_cmd != 0.0 and cmd == 0.0:
+            yaw += math.copysign(coast, prev_cmd)
+        yaw += cmd * rate_scale * dt
+        prev_cmd = cmd
+        t += dt
+    raise AssertionError("aligner never finished")
+
+
+def wrap_(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+@pytest.mark.parametrize("start_deg", [90.0, -120.0, 175.0, 20.0])
+def test_aligner_turns_to_the_target_heading(start_deg):
+    a = HomeAligner(math.radians(10.0))
+    yaw, _ = simulate_align(a, math.radians(10.0 + start_deg))
+    assert a.converged
+    assert abs(math.degrees(wrap_(yaw - math.radians(10.0)))) <= 5.0
+
+
+def test_aligner_survives_the_concrete_turn_rate_and_coast():
+    # 11/17: 70% of the commanded rate, 1.1-1.8 deg of coast after a stop.
+    a = HomeAligner(0.0)
+    yaw, _ = simulate_align(a, math.radians(100.0), coast=math.radians(1.8),
+                            rate_scale=0.7)
+    assert a.converged and abs(math.degrees(yaw)) <= 5.0
+
+
+def test_aligner_takes_the_short_way_round():
+    a = HomeAligner(math.radians(170.0))
+    a.update(0.0, math.radians(-170.0), 0.0)
+    cmd, _, _ = a.update(1.1, math.radians(-170.0), 0.0)
+    assert cmd < 0.0                      # -170 -> 170 is 20 deg clockwise
+
+
+def test_aligner_never_commands_below_the_turn_deadband():
+    a = HomeAligner(0.0, min_rate=0.3)
+    a.update(0.0, math.radians(8.0), 0.0)
+    cmd, _, _ = a.update(1.1, math.radians(8.0), 0.0)
+    assert abs(cmd) == pytest.approx(0.3)
+
+
+def test_aligner_asks_amcl_for_a_fresh_pose_while_settling():
+    a = HomeAligner(0.0)
+    cmd, done, ask = a.update(0.0, math.radians(50.0), 0.0)
+    assert cmd == 0.0 and not done and ask
+
+
+def test_aligner_gives_up_after_max_attempts():
+    # Odometry says it turns; AMCL says it never moved (slipping wheels).
+    a = HomeAligner(0.0, max_attempts=2)
+    t = 0.0
+    done = False
+    while not done and t < 120.0:
+        _, done, _ = a.update(t, math.radians(40.0), -0.3 * t)
+        t += 0.1
+    assert done and not a.converged and a.attempts == 2
+
+
+def test_aligner_stops_a_turn_that_goes_the_wrong_way():
+    a = HomeAligner(0.0)
+    t = 0.0
+    a.update(t, math.radians(40.0), 0.0)
+    t = 1.1
+    a.update(t, math.radians(40.0), 0.0)          # starts turning: wants -40 deg
+    while a.phase == a.TURN and t < 20.0:
+        t += 0.1
+        a.update(t, math.radians(40.0), 0.3 * (t - 1.1))  # odometry goes +
+    assert a.phase == a.SETTLE and t < 3.0
+
+
+def test_align_failure_still_finishes_but_says_so():
+    f = fsm(home_align_max_attempts=1)
+    to_row(f)
+    f.update(200.0, vision_done=True)
+    f.update(260.0, nav_state=NAV_SUCCEEDED)
+    off = Estimate(AT_DROP.x, AT_DROP.y, AT_DROP.yaw + math.radians(40.0),
+                   0.05, 0.02)
+    t, tick = 260.1, None
+    while t < 300.0:
+        tick = f.update(t, estimate=off, odom_yaw=-0.3 * t)  # odom sweeps, AMCL never moves
+        if tick.state != STATE_ALIGN_HOME:
+            break
+        t += 0.1
+    assert tick.state == STATE_FINISHED
+    assert "home heading" in tick.reason
+
+
+def test_goals_are_refused_while_aligning_at_home():
+    f = interactive()
+    to_wait_goal(f)
+    f.set_entrance(ENTRANCE, 5.0)
+    f.update(20.0, estimate=GOOD, nav_state=NAV_SUCCEEDED)
+    f.update(200.0, vision_done=True)
+    assert f.update(260.0, nav_state=NAV_SUCCEEDED).state == STATE_ALIGN_HOME
+    tick, message = f.set_entrance((3.0, 1.0, 0.0), 261.0)
+    assert tick is None and "busy" in message

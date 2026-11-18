@@ -94,6 +94,11 @@
        The robot ends home facing the way it drove in. -->
   <arg name="return_xy_goal_tolerance"  default="0.12"/>
   <arg name="return_yaw_goal_tolerance" default="3.14"/>
+  <!-- After move_base gets home (any heading), the supervisor turns in place
+       to the drop-off heading so the trailer's marker is in view for the
+       drive up the ramp. Position is not re-checked during that turn. -->
+  <arg name="home_align"               default="true"/>
+  <arg name="home_align_tolerance_deg" default="5.0"/>
   <!-- move_base top speed (m/s) on the way to the row and back; blank =
        move_base.yaml (0.5). Indoors on the robot: 0.3. -->
   <arg name="transit_speed"    default=""/>
@@ -178,6 +183,8 @@
     <param name="return_enabled"   value="$(arg return_enabled)"/>
     <param name="return_xy_goal_tolerance"  value="$(arg return_xy_goal_tolerance)"/>
     <param name="return_yaw_goal_tolerance" value="$(arg return_yaw_goal_tolerance)"/>
+    <param name="home_align"               value="$(arg home_align)"/>
+    <param name="home_align_tolerance_deg" value="$(arg home_align_tolerance_deg)"/>
     <param name="row_bearing_deg"  value="$(arg row_bearing_deg)"/>
     <param name="max_bearing_snap_deg" value="$(arg max_bearing_snap_deg)"/>
   </node>

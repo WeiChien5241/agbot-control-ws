@@ -5,7 +5,7 @@ this; every decision about who drives and every way the sequence can fail is
 here, where it can be tested without a simulator. Same shape as
 agbot_gps_nav's handoff_fsm, which it does not replace (the GPS stack is kept).
 
-    IDLE -start-> REVERSE_OFF -> LOCALIZE -> TRANSIT -> ROW_MISSION -> RETURN -> FINISHED
+    IDLE -start-> REVERSE_OFF -> LOCALIZE -> TRANSIT -> ROW_MISSION -> RETURN -> ALIGN_HOME -> FINISHED
                        |             |          |            |            |
                        +-------------+--- timeout / nav failure / gate ---+--> FAILED
 
@@ -15,7 +15,7 @@ the deployment REPEATS -- after the way home, or after a failure, it waits
 for the next goal instead of ending. That is how a goal is tested anywhere
 on the map without restarting the stack:
 
-    LOCALIZE -> WAIT_GOAL -goal-> TRANSIT -> ROW_MISSION -> RETURN -> WAIT_GOAL
+    LOCALIZE -> WAIT_GOAL -goal-> TRANSIT -> ROW_MISSION -> RETURN -> ALIGN_HOME -> WAIT_GOAL
                                      \___________\_____________\--> FAILED -goal-> ...
 
 REVERSE_OFF  The robot reverses straight off the ramp. Blind on purpose: the
@@ -51,9 +51,22 @@ TRANSIT      move_base drives to the row entrance (a map-frame pose whose yaw
              BEHIND it on the row axis -- see below.
 ROW_MISSION  Vision nav drives the rows; move_base has no goal.
 WAIT_GOAL    Interactive only. Stopped, nobody commanding, no timeout.
-RETURN       Vision off, move_base drives back to the recorded drop-off pose.
-             Driving back UP the ramp is out of scope until the trailer team
-             says what the ramp is.
+RETURN       Vision off, move_base drives back to the recorded drop-off
+             POSITION. Its heading tolerance is opened to any heading by the
+             supervisor for this goal only (see ALIGN_HOME).
+ALIGN_HOME   The supervisor turns the robot in place to the drop-off heading
+             (facing the ramp), so the trailer team's marker follower has the
+             ArUco marker in view for the drive up. `HomeAligner` below.
+             ⚠ WHY NOT LET move_base DO THE TURN (field 2026-11-17, sim
+             2026-11-18): move_base's goal needs position AND heading inside
+             tolerance at the same moment. A skid-steer turn in place does
+             not pivot on base_link, so the final turn walked the robot a few
+             cm back out of the position circle, DWA dropped "position
+             reached", and it kept turning -- 50 s on the robot, 412-441 deg
+             in sim, with a looser circle and with replanning off alike. Here
+             position is never re-checked once home: the few cm a turn costs
+             do not matter, the heading does. Driving back UP the ramp is the
+             marker follower's, not this FSM's.
 
 ⚠ EXACTLY ONE COMMANDER AT A TIME. The supervisor's reverse leg, move_base and
 vision nav all publish /cmd_vel, which twist_mux takes as ONE input -- it
@@ -90,6 +103,7 @@ STATE_WAIT_GOAL = "WAIT_GOAL"
 STATE_TRANSIT = "TRANSIT"
 STATE_ROW_MISSION = "ROW_MISSION"
 STATE_RETURN = "RETURN"
+STATE_ALIGN_HOME = "ALIGN_HOME"
 STATE_FINISHED = "FINISHED"
 STATE_FAILED = "FAILED"
 
@@ -115,7 +129,7 @@ DeployTick = collections.namedtuple(
     "DeployTick",
     "state commander reverse_speed vision_enabled nav_goal cancel_nav "
     "request_localize_update done failed reason "
-    "start_trailer_deploy stop_trailer_deploy",
+    "start_trailer_deploy stop_trailer_deploy angular_speed",
 )
 
 
@@ -135,6 +149,91 @@ def axis_errors(estimate, entrance):
     return cross, wrap(estimate.yaw - entrance.yaw)
 
 
+class HomeAligner(object):
+    """Turn in place to a map heading, then stop. Position is never checked.
+
+    Settle -> check -> turn -> settle -> ... The CHECK uses AMCL's map yaw
+    (absolute, but only fresh after a no-motion update, so each settle asks
+    for one); the TURN is measured on odometry yaw (smooth, continuous,
+    gyro-integrated) because AMCL does not update often enough to stop a
+    turn on. Each turn stops `stop_early` short of the error: the robot
+    coasts on after a zero command (1.1-1.8 deg measured on concrete,
+    GPS_testing_11-17.md), and the next check catches what is left.
+
+    update() -> (angular_speed, done, request_localize_update). After done,
+    `error` is the last measured heading error (rad) and `converged` says
+    whether it was within tolerance or the attempts ran out.
+    """
+
+    SETTLE, TURN, DONE = "settle", "turn", "done"
+
+    def __init__(self, target_yaw, tolerance_deg=5.0, stop_early_deg=1.5,
+                 min_rate=0.3, max_rate=0.4, gain=1.0, settle_sec=1.0,
+                 max_attempts=3):
+        self.target_yaw = float(target_yaw)
+        self.tolerance = math.radians(float(tolerance_deg))
+        self.stop_early = math.radians(float(stop_early_deg))
+        # ⚠ min_rate 0.3: below it the robot barely turns on concrete (0.20
+        # commanded gave ~0.10 rad/s on the 11/17 home spot), so a turn that
+        # slows toward zero would stall short of the target.
+        self.min_rate = float(min_rate)
+        self.max_rate = float(max_rate)
+        self.gain = float(gain)
+        self.settle_sec = float(settle_sec)
+        self.max_attempts = int(max_attempts)
+        self.phase = self.SETTLE
+        self.attempts = 0
+        self.error = None
+        self.converged = False
+        self._settle_since = None
+        self._turn_goal = 0.0       # signed rad to sweep this turn
+        self._swept = 0.0
+        self._last_odom_yaw = None
+
+    def update(self, now, estimate_yaw, odom_yaw):
+        now = float(now)
+        if self.phase == self.DONE:
+            return 0.0, True, False
+        if self.phase == self.SETTLE:
+            if self._settle_since is None:
+                self._settle_since = now
+            if now - self._settle_since < self.settle_sec or estimate_yaw is None:
+                return 0.0, False, True
+            self.error = wrap(self.target_yaw - estimate_yaw)
+            if abs(self.error) <= self.tolerance:
+                self.converged = True
+                self.phase = self.DONE
+                return 0.0, True, False
+            if self.attempts >= self.max_attempts:
+                self.phase = self.DONE
+                return 0.0, True, False
+            self.attempts += 1
+            self._turn_goal = self.error
+            self._swept = 0.0
+            self._last_odom_yaw = None
+            self.phase = self.TURN
+            # fall through: start turning this tick
+        # TURN
+        if odom_yaw is None:
+            return 0.0, False, False
+        if self._last_odom_yaw is not None:
+            self._swept += wrap(odom_yaw - self._last_odom_yaw)
+        self._last_odom_yaw = odom_yaw
+        remaining = self._turn_goal - self._swept
+        # Ends the turn: close enough, past the target, or odometry says the
+        # robot is turning AWAY from it (sign error, a wheel fault) -- then
+        # the next check decides, instead of turning until the state timeout.
+        wrong_way = self._swept * self._turn_goal < 0.0 and \
+            abs(self._swept) > math.radians(20.0)
+        if (abs(remaining) <= self.stop_early or remaining * self._turn_goal <= 0.0
+                or wrong_way):
+            self.phase = self.SETTLE
+            self._settle_since = now
+            return 0.0, False, True
+        rate = min(self.max_rate, max(self.min_rate, self.gain * abs(remaining)))
+        return math.copysign(rate, remaining), False, False
+
+
 class DeployFSM(object):
     """Decides who drives, where to, and when the deployment has failed."""
 
@@ -149,7 +248,11 @@ class DeployFSM(object):
                  row_bearing_deg=None, max_bearing_snap_deg=30.0,
                  reverse_timeout_sec=30.0, localize_timeout_sec=30.0,
                  transit_timeout_sec=300.0, mission_timeout_sec=1800.0,
-                 return_timeout_sec=300.0, reverse_mode=REVERSE_ODOMETRY):
+                 return_timeout_sec=300.0, reverse_mode=REVERSE_ODOMETRY,
+                 home_align=True, home_align_tolerance_deg=5.0,
+                 home_align_stop_early_deg=1.5, home_align_min_rate=0.3,
+                 home_align_max_rate=0.4, home_align_max_attempts=3,
+                 home_align_timeout_sec=60.0):
         # No entrance = the operator gives one (and then another) at run time.
         self.interactive = entrance is None
         # ⚠ The operator's ARROW is not the row. Sim 2026-10-21: a click 12 deg
@@ -196,7 +299,18 @@ class DeployFSM(object):
             STATE_TRANSIT: float(transit_timeout_sec),
             STATE_ROW_MISSION: float(mission_timeout_sec),
             STATE_RETURN: float(return_timeout_sec),
+            STATE_ALIGN_HOME: float(home_align_timeout_sec),
         }
+        self.home_align = bool(home_align)
+        self._aligner_args = dict(
+            tolerance_deg=home_align_tolerance_deg,
+            stop_early_deg=home_align_stop_early_deg,
+            min_rate=home_align_min_rate, max_rate=home_align_max_rate,
+            max_attempts=home_align_max_attempts)
+        self.aligner = None
+        self.home_heading_error = None   # rad, after ALIGN_HOME
+        self._angular = 0.0
+        self._localize_request = False
 
         self.state = STATE_IDLE
         self.reason = ""
@@ -244,7 +358,8 @@ class DeployFSM(object):
             return None, ("ignored: the entrance is fixed by the launch args "
                           "(start deploy_mission without entrance_* to pick it "
                           "on the map)")
-        if self.state in (STATE_TRANSIT, STATE_ROW_MISSION, STATE_RETURN):
+        if self.state in (STATE_TRANSIT, STATE_ROW_MISSION, STATE_RETURN,
+                          STATE_ALIGN_HOME):
             return None, ("ignored: busy in %s -- wait for WAIT_GOAL, or stop "
                           "the robot with the joystick" % self.state)
         snap = ""
@@ -285,7 +400,7 @@ class DeployFSM(object):
             e.yaw)
 
     def update(self, now, odom_xy=None, estimate=None, nav_state=None,
-               vision_done=False, trailer_status=None):
+               vision_done=False, trailer_status=None, odom_yaw=None):
         """Advance one tick and return the full desired state.
 
         odom_xy     (x, y) of /odometry/filtered -- the reverse leg's distance.
@@ -296,6 +411,8 @@ class DeployFSM(object):
         trailer_status  the last /trailer_deploy/status received since this
                     REVERSE_OFF began (the caller clears it on
                     start_trailer_deploy), or None.
+        odom_yaw    yaw of /odometry/filtered -- ALIGN_HOME measures its turn
+                    on it.
         """
         now = float(now)
         if self.state in (STATE_IDLE, STATE_FINISHED, STATE_FAILED,
@@ -378,7 +495,25 @@ class DeployFSM(object):
             if nav_state == NAV_FAILED:
                 return self.abort("move_base gave up on the way back to the trailer")
             if nav_state == NAV_SUCCEEDED:
+                if self.home_align:
+                    return self._enter(STATE_ALIGN_HOME, now)
                 return self._enter(self._finished_state(), now)
+            return self._tick()
+
+        if self.state == STATE_ALIGN_HOME:
+            angular, done, ask = self.aligner.update(
+                now, None if estimate is None else estimate.yaw, odom_yaw)
+            if done:
+                a = self.aligner
+                self.home_heading_error = a.error
+                if not a.converged:
+                    self.reason = ("home heading still %+.1f deg off after %d "
+                                   "turns (tolerance %.1f deg)"
+                                   % (math.degrees(a.error), a.attempts,
+                                      math.degrees(a.tolerance)))
+                return self._enter(self._finished_state(), now)
+            self._angular = angular
+            self._localize_request = ask
             return self._tick()
 
         return self._tick()
@@ -402,6 +537,11 @@ class DeployFSM(object):
         self.state = state
         self._entered_at = float(now)
         self._confident_since = None
+        self._angular = 0.0
+        self._localize_request = False
+        if state == STATE_ALIGN_HOME:
+            self.home_heading_error = None
+            self.aligner = HomeAligner(self.drop_off.yaw, **self._aligner_args)
         goal = None
         if state == STATE_TRANSIT:
             goal = self.transit_goal
@@ -421,6 +561,7 @@ class DeployFSM(object):
             STATE_TRANSIT: COMMANDER_MOVE_BASE,
             STATE_ROW_MISSION: COMMANDER_VISION,
             STATE_RETURN: COMMANDER_MOVE_BASE,
+            STATE_ALIGN_HOME: COMMANDER_SUPERVISOR,
         }.get(self.state)
         return DeployTick(
             state=self.state,
@@ -432,11 +573,15 @@ class DeployFSM(object):
             vision_enabled=self.state == STATE_ROW_MISSION,
             nav_goal=nav_goal,
             cancel_nav=cancel_nav,
-            request_localize_update=self.state == STATE_LOCALIZE,
+            request_localize_update=(self.state == STATE_LOCALIZE
+                                     or (self.state == STATE_ALIGN_HOME
+                                         and self._localize_request)),
             done=self.state == STATE_FINISHED,
             # Terminal only when nothing can follow it.
             failed=self.state == STATE_FAILED and not self.interactive,
             reason=self.reason,
             start_trailer_deploy=start_trailer_deploy,
             stop_trailer_deploy=stop_trailer_deploy,
+            angular_speed=(self._angular if self.state == STATE_ALIGN_HOME
+                           else 0.0),
         )

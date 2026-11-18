@@ -40,7 +40,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agbot_nav.deploy_fsm import (  # noqa: E402
     COMMANDER_SUPERVISOR, NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
-    REVERSE_TRAILER_DEPLOY, STATE_RETURN, STATE_ROW_MISSION, STATE_WAIT_GOAL,
+    REVERSE_TRAILER_DEPLOY, STATE_ALIGN_HOME, STATE_RETURN, STATE_ROW_MISSION,
+    STATE_WAIT_GOAL,
     DeployFSM,
     Estimate,
 )
@@ -88,11 +89,18 @@ class DeploySupervisor(object):
             # "trailer_deploy": marker_follower's trailer_deploy_ros.py does
             # the reverse (deploy_fsm.py, REVERSE_OFF).
             reverse_mode=str(p("~reverse_mode", "odometry")).strip(),
+            home_align=p("~home_align", True),
+            home_align_tolerance_deg=p("~home_align_tolerance_deg", 5.0),
+            home_align_stop_early_deg=p("~home_align_stop_early_deg", 1.5),
+            home_align_min_rate=p("~home_align_min_rate", 0.3),
+            home_align_max_rate=p("~home_align_max_rate", 0.4),
+            home_align_max_attempts=p("~home_align_max_attempts", 3),
         )
         self._trailer_mode = self._fsm.reverse_mode == REVERSE_TRAILER_DEPLOY
         self._trailer_status = None
 
         self._odom_xy = None
+        self._odom_yaw = None
         self._estimate = None
         self._vision_done = False
         self._vision_on = None          # last state we set
@@ -186,6 +194,11 @@ class DeploySupervisor(object):
                       math.degrees(f.max_arrival_heading_error))
         rospy.loginfo("return to the drop-off point: %s",
                       "yes" if f.return_enabled else "no")
+        if f.home_align:
+            rospy.loginfo("at home: turn in place to the drop-off heading, "
+                          "within %.1f deg (max %d turns)",
+                          float(f._aligner_args["tolerance_deg"]),
+                          f._aligner_args["max_attempts"])
         rospy.loginfo("goal tolerance: entrance %.2f m / %.1f deg, home %.2f m / "
                       "%.1f deg", self._tol_transit[0],
                       math.degrees(self._tol_transit[1]), self._tol_return[0],
@@ -201,6 +214,7 @@ class DeploySupervisor(object):
 
     def _odom_cb(self, msg):
         self._odom_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+        self._odom_yaw = yaw_of(msg.pose.pose.orientation)
 
     def _amcl_cb(self, msg):
         p, cov = msg.pose.pose, msg.pose.covariance
@@ -261,7 +275,8 @@ class DeploySupervisor(object):
                                 estimate=self._estimate,
                                 nav_state=self._nav_state(),
                                 vision_done=self._vision_done,
-                                trailer_status=self._trailer_status)
+                                trailer_status=self._trailer_status,
+                                odom_yaw=self._odom_yaw)
         self._apply(tick)
 
     def _apply(self, tick):
@@ -277,7 +292,14 @@ class DeploySupervisor(object):
                 cross, heading = self._fsm.arrival
                 rospy.loginfo("arrived %.3f m off the corridor axis, %+.1f deg "
                               "off its bearing (AMCL)", cross, math.degrees(heading))
-            if self._last_state == "REVERSE_OFF":
+            if self._last_state == STATE_ALIGN_HOME:
+                err = self._fsm.home_heading_error
+                a = self._fsm.aligner
+                (rospy.loginfo if a.converged else rospy.logwarn)(
+                    "home heading %s deg off the drop-off heading after %d "
+                    "turn(s)%s", "?" if err is None else "%+.1f" % math.degrees(err),
+                    a.attempts, "" if a.converged else " -- NOT within tolerance")
+            if self._last_state in ("REVERSE_OFF", STATE_ALIGN_HOME):
                 self._cmd_pub.publish(Twist())       # one stop, then silent
             self._last_state = tick.state
 
@@ -309,6 +331,7 @@ class DeploySupervisor(object):
         if tick.commander == COMMANDER_SUPERVISOR:
             cmd = Twist()
             cmd.linear.x = tick.reverse_speed
+            cmd.angular.z = tick.angular_speed
             self._cmd_pub.publish(cmd)
 
         if tick.request_localize_update:
