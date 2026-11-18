@@ -223,14 +223,16 @@ removed, RTK fixed, ~1 Hz:
 | REACQUIRE | duration | 4.0 s / 27.9 s (no 3rd row) | 5.0 s | 2.5 s |
 | heading into corridor 2 (AMCL) | | −3.9° | −0.6° | −3.3° |
 
-- **The turn coast-down is now measured, on this grass: 1.1–1.8° in
+- **The turn coast-down is now measured, on concrete: 1.1–1.8° in
   0.13–0.27 s.** CLAUDE.md asks for this number before anyone touches
   `yaw_tolerance_deg`. The 5° band stops at 85.5° and the coast brings it to
   86.5–87.4°, so each turn ends ~3° short. Treat it as a measurement for the
   sim-vs-field decision, not as a reason to retune. It comes from 7 clean
   turns on one surface at 0.27 rad/s.
 - **Actual yaw rate is 0.27–0.29 rad/s against 0.40 commanded** (~70%):
-  skid-steer on grass. A 90° turn takes 5.5–6 s, not 3.9 s.
+  skid-steer tyre scrub (the test was on **concrete**, not grass). A 90° turn
+  takes 5.5–6 s, not 3.9 s. At low commands it is worse: 0.20 commanded
+  gave ~0.10 rad/s on the home spot.
 - The exit leg ran to its 1.5 m ceiling in 5 of 6 exits; the rear camera
   confirmed "open" only once. That leaves the tail ~0.4–0.6 m past the `FAR`
   point before it turns, with no harm done. The rear-steered leg drifted
@@ -258,16 +260,39 @@ three runs. **0 interventions over 42.6 m** (vision logger: 14.8 + 13.9 +
 - That spot is 0.28 m from the `START` mark, because the robot was put down
   12–24 cm off the mark at the start of each run. The home goal is wherever
   AMCL said the robot was at LOCALIZE, not the mark.
-- ⚠ **Run 3 spun on the spot.** It reached the position in 24 s, then
-  rotated for ~50 s, more than a full turn (68° → 172° → −101° → 169° → 6° →
-  84°), before landing inside `yaw_goal_tolerance` 0.08 rad (4.6°). The
-  two "Clearing both costmaps" warnings are move_base's recovery for that
-  oscillation. Run 2 needed one 4 s turn. With the yaw rate measured above
-  (commands below ~0.3 rad/s barely turn the robot on grass, then it lurches),
-  DWA's `min_vel_theta` 0.2 is too small to stop inside a ±4.6° window.
-  Suggested: give the RETURN goal a looser yaw tolerance (~0.2 rad). Home
-  heading doesn't matter for anything that comes after. Or raise
-  `min_vel_theta` to ~0.4.
+- ⚠ **Run 3 spun on the spot for ~50 s, because it was 1–3 cm outside the
+  12 cm position tolerance.** *(Corrected 2026-11-18. The first version of
+  this note blamed the 4.6° yaw window and the turn rate. The bag shows
+  otherwise.)* What happened:
+  - At t = 24 s it was **8.6 cm** from the home goal: inside
+    `xy_goal_tolerance` 0.12 m. DWA latched "position reached" and began
+    turning to the goal heading.
+  - A skid-steer turn in place does not pivot exactly on `base_link`, so the
+    turn moved base_link out to **11.8 → 13.3 → 14.7 cm** from the goal.
+  - `planner_frequency: 1.0` hands DWA a new global plan every second, and
+    every new plan **resets DWA's latch** (`setPlan` → `resetLatching`). From
+    then on DWA was back in "reach the position" mode, 1–3 cm short, with the
+    robot facing the wrong way. It can't drive 2 cm (`min_vel_trans` 0.05,
+    1.7 s sim time), so the best-scoring command was turning in place, and it
+    kept turning straight **through** the goal heading (82→92° at t = 30–32 s
+    with +0.2 rad/s still commanded).
+  - The two "Clearing both costmaps" warnings are `oscillation_timeout` (20 s
+    without moving 0.3 m) firing at t ≈ 42 and 62 s.
+  - At t ≈ 66 s a recovery burst nudged it to 11.3 cm. It latched again and
+    finished at 76 s.
+  - Run 2 stayed at **8.7–9.5 cm** through its turn, so the latch held and it
+    finished in 5 s.
+
+  **Not a heading or IMU problem:** the commands and the measured rotation
+  agree throughout, and AMCL's `map→odom` yaw stayed within 149–153° for the
+  whole spin.
+
+  **Fix:** a looser position tolerance for the home goal only (e.g.
+  `xy_goal_tolerance` 0.25 and `yaw_goal_tolerance` 0.3 rad, set through
+  dynamic_reconfigure by the supervisor before it sends RETURN). The transit
+  goal keeps 0.12, because the handoff gate depends on it. Alternative:
+  `planner_frequency: 0.0`, so the latch is never reset; that also stops
+  replanning during transit.
 
 ## 5. RTK / Reach link
 
@@ -310,7 +335,7 @@ journalctl -u NetworkManager --since "10 min ago" | grep -i enx
 | | item | state |
 |---|---|---|
 | fix | supervisor arrival heading from stale `/amcl_pose` | read TF `map→base_link` at the check (§4.2) |
-| fix | RETURN spin on the home spot | looser yaw tolerance for the home goal, or `min_vel_theta` ~0.4 (§4.6) |
+| fix | RETURN spin on the home spot | home goal 1–3 cm outside `xy_goal_tolerance`, latch reset by the 1 Hz replan: looser xy/yaw tolerance for RETURN only (§4.6) |
 | fix | Reach USB-Ethernet drops | run the `dmesg` / `nmcli` checks; static NM profile (§5) |
 | field | map the whole operating area | mapping lap ≥ 10 m span and covering every later drive (§3.3) |
 | field | a real transit | start mark 8–15 m out, as in the runbook |
