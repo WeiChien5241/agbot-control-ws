@@ -287,12 +287,31 @@ three runs. **0 interventions over 42.6 m** (vision logger: 14.8 + 13.9 +
   agree throughout, and AMCL's `map→odom` yaw stayed within 149–153° for the
   whole spin.
 
-  **Fix:** a looser position tolerance for the home goal only (e.g.
-  `xy_goal_tolerance` 0.25 and `yaw_goal_tolerance` 0.3 rad, set through
-  dynamic_reconfigure by the supervisor before it sends RETURN). The transit
-  goal keeps 0.12, because the handoff gate depends on it. Alternative:
-  `planner_frequency: 0.0`, so the latch is never reset; that also stops
-  replanning during transit.
+  **Fix (2026-11-18, sim-tested):** the home goal accepts **any heading**
+  (`return_yaw_goal_tolerance` 3.14, `return_xy_goal_tolerance` 0.12), set
+  through dynamic_reconfigure by the supervisor before it sends RETURN. Every
+  other goal is set back to move_base.yaml's 0.12 m / 0.08 rad, because the
+  handoff gate depends on it. With no turn at the end, nothing can push the
+  robot back out of the circle. It now ends home facing the way it drove in.
+
+  Sim A/B, field world, out 2.7 m and back, the home goal 90° from the
+  arrival direction:
+
+  | home tolerance | runs | rotation after first inside | inside → done | worst push-out |
+  |---|---|---|---|---|
+  | 0.12 m / 0.08 rad (old) | 4 | 53–107° | 1.9–3.1 s | 12 cm |
+  | 0.25 m / 0.30 rad | 4 | 63–**412°** | 1.4–7.8 s | **34 cm** |
+  | 0.12 m / 0.30 rad, no replan | 6 | 78–**441°** | 1.9–9.1 s | 19 cm |
+  | **0.12 m / any heading** | 6 | **0–1°** | **0.1–0.2 s** | 12 cm |
+
+  - A looser circle does not help. The robot drives until it is just
+    inside, so it stops at the edge of any circle, and the turn pushes it out
+    just as easily.
+  - `planner_frequency: 0` does not help either. The home legs logged no
+    replans and still spun. Something else in DWA also clears the latch;
+    this was not traced further.
+  - The sim did not reproduce a 50 s spin with the old setting (the sim
+    wheels scrub less), but it did reproduce a full-turn spin.
 
 ## 5. RTK / Reach link
 
@@ -335,7 +354,7 @@ journalctl -u NetworkManager --since "10 min ago" | grep -i enx
 | | item | state |
 |---|---|---|
 | fix | supervisor arrival heading from stale `/amcl_pose` | read TF `map→base_link` at the check (§4.2) |
-| fix | RETURN spin on the home spot | home goal 1–3 cm outside `xy_goal_tolerance`, latch reset by the 1 Hz replan: looser xy/yaw tolerance for RETURN only (§4.6) |
+| done (sim) | RETURN spin on the home spot | home goal accepts any heading; confirm on the robot (§4.6) |
 | fix | Reach USB-Ethernet drops | run the `dmesg` / `nmcli` checks; static NM profile (§5) |
 | field | map the whole operating area | mapping lap ≥ 10 m span and covering every later drive (§3.3) |
 | field | a real transit | start mark 8–15 m out, as in the runbook |
