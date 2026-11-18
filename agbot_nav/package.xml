@@ -11,6 +11,7 @@
   <exec_depend>rospy</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>actionlib</exec_depend>
+  <exec_depend>dynamic_reconfigure</exec_depend>
   <exec_depend>move_base_msgs</exec_depend>
   <exec_depend>pointcloud_to_laserscan</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>

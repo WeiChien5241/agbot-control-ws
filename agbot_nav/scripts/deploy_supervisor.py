@@ -27,6 +27,7 @@ import os
 import sys
 
 import actionlib
+import dynamic_reconfigure.client
 import rospy
 from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
@@ -39,7 +40,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from agbot_nav.deploy_fsm import (  # noqa: E402
     COMMANDER_SUPERVISOR, NAV_ACTIVE, NAV_FAILED, NAV_SUCCEEDED,
-    REVERSE_TRAILER_DEPLOY, STATE_ROW_MISSION, STATE_WAIT_GOAL, DeployFSM,
+    REVERSE_TRAILER_DEPLOY, STATE_RETURN, STATE_ROW_MISSION, STATE_WAIT_GOAL,
+    DeployFSM,
     Estimate,
 )
 
@@ -124,6 +126,28 @@ class DeploySupervisor(object):
         self._vision_enable = rospy.ServiceProxy("/vision_nav_node/set_enabled", SetBool)
         self._nomotion = rospy.ServiceProxy("/request_nomotion_update", Empty)
 
+        # ⚠ Goal tolerances per leg (field 2026-11-17, GPS_testing_11-17.md
+        # §4.6). The row entrance keeps move_base.yaml's tight 0.12 m /
+        # 0.08 rad because the handoff gate depends on it. The way HOME gets
+        # a loose one: a skid-steer turn in place does not pivot on
+        # base_link, so the final turn walked the robot from 8.6 to ~14 cm
+        # off the goal, the 1 Hz replan reset DWA's "position reached"
+        # latch, and it spun for 50 s trying to close 1-3 cm. Nothing after
+        # RETURN depends on the exact home pose.
+        dwa = "/move_base/DWAPlannerROS/"
+        self._tol_transit = (p(dwa + "xy_goal_tolerance", 0.12),
+                             p(dwa + "yaw_goal_tolerance", 0.08))
+        self._tol_return = (p("~return_xy_goal_tolerance", 0.25),
+                            p("~return_yaw_goal_tolerance", 0.30))
+        self._tol_set = None
+        try:
+            self._dwa_cfg = dynamic_reconfigure.client.Client(
+                "/move_base/DWAPlannerROS", timeout=10.0)
+        except rospy.ROSException as exc:
+            self._dwa_cfg = None
+            rospy.logwarn("no dynamic_reconfigure on DWAPlannerROS (%s): every "
+                          "goal uses move_base.yaml's tolerances", exc)
+
         rospy.on_shutdown(self._on_shutdown)
         f = self._fsm
         rospy.loginfo("---- deploy supervisor ----")
@@ -159,6 +183,10 @@ class DeploySupervisor(object):
                       math.degrees(f.max_arrival_heading_error))
         rospy.loginfo("return to the drop-off point: %s",
                       "yes" if f.return_enabled else "no")
+        rospy.loginfo("goal tolerance: entrance %.2f m / %.1f deg, home %.2f m / "
+                      "%.1f deg", self._tol_transit[0],
+                      math.degrees(self._tol_transit[1]), self._tol_return[0],
+                      math.degrees(self._tol_return[1]))
         rospy.loginfo("---------------------------")
 
         rospy.Subscriber("/move_base_simple/goal", PoseStamped, self._goal_cb,
@@ -267,6 +295,7 @@ class DeploySupervisor(object):
         if not tick.vision_enabled:
             self._set_vision(False)
         if tick.nav_goal is not None:
+            self._set_goal_tolerance(tick.state == STATE_RETURN)
             self._send_goal(tick.nav_goal)
         if tick.vision_enabled:
             if self._goal_active:                  # belt and braces
@@ -322,6 +351,20 @@ class DeploySupervisor(object):
         msg.pose.orientation.z = math.sin(e.yaw / 2.0)
         msg.pose.orientation.w = math.cos(e.yaw / 2.0)
         self._entrance_pub.publish(msg)
+
+    def _set_goal_tolerance(self, home):
+        """Before each goal: loose for the way home, tight otherwise."""
+        xy, yaw = self._tol_return if home else self._tol_transit
+        if self._dwa_cfg is None or self._tol_set == (xy, yaw):
+            return
+        try:
+            self._dwa_cfg.update_configuration(
+                {"xy_goal_tolerance": xy, "yaw_goal_tolerance": yaw})
+            self._tol_set = (xy, yaw)
+            rospy.loginfo("goal tolerance for this leg: %.2f m / %.1f deg",
+                          xy, math.degrees(yaw))
+        except Exception as exc:                    # keep driving regardless
+            rospy.logwarn("could not set goal tolerance: %s", exc)
 
     def _send_goal(self, pose):
         goal = MoveBaseGoal()
