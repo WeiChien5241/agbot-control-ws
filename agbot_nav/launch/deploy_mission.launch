@@ -34,7 +34,7 @@
        (build_field_world.py prints that pose and the wheel travel: 3.10 m =
        31.0 s at 0.1 m/s. ⚠ 26.7, not 31.0: even with ramp_traction the sim
        robot slides a repeatable 0.43 m on the ramp, so 31.0 s ended at
-       y=-1.73 with its bumper 0.25 m from pen_south -- inside the wall's
+       y=-1.73 with its bumper 0.25 m from pen_south: inside the wall's
        inflation, and move_base spun in recovery for ~30 s before leaving.
        26.7 s (the trailer team's own calibration rule, duration x target /
        actual) ends 0.02 m from the spawn. Measured 2026-11-16.)
