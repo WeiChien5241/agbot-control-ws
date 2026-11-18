@@ -128,17 +128,20 @@ class DeploySupervisor(object):
 
         # ⚠ Goal tolerances per leg (field 2026-11-17, GPS_testing_11-17.md
         # §4.6). The row entrance keeps move_base.yaml's tight 0.12 m /
-        # 0.08 rad because the handoff gate depends on it. The way HOME gets
-        # a loose one: a skid-steer turn in place does not pivot on
-        # base_link, so the final turn walked the robot from 8.6 to ~14 cm
-        # off the goal, the 1 Hz replan reset DWA's "position reached"
-        # latch, and it spun for 50 s trying to close 1-3 cm. Nothing after
-        # RETURN depends on the exact home pose.
+        # 0.08 rad because the handoff gate depends on it. The way HOME
+        # accepts ANY heading: the final turn in place is what spun the
+        # robot. A skid-steer turn does not pivot on base_link, so it walked
+        # the robot back out of the xy tolerance, DWA lost "position
+        # reached", and it kept turning (50 s on the robot). Sim A/B
+        # 2026-11-18: a looser 0.25 m / 0.3 rad still spun 412 deg once
+        # (it stops at the EDGE of whatever circle it is given), and so
+        # did turning replanning off; any heading gave 0 deg of spin in
+        # 6/6. Nothing after RETURN depends on the home heading.
         dwa = "/move_base/DWAPlannerROS/"
         self._tol_transit = (p(dwa + "xy_goal_tolerance", 0.12),
                              p(dwa + "yaw_goal_tolerance", 0.08))
-        self._tol_return = (p("~return_xy_goal_tolerance", 0.25),
-                            p("~return_yaw_goal_tolerance", 0.30))
+        self._tol_return = (p("~return_xy_goal_tolerance", 0.12),
+                            p("~return_yaw_goal_tolerance", 3.14))
         self._tol_set = None
         try:
             self._dwa_cfg = dynamic_reconfigure.client.Client(

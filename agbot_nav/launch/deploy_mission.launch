@@ -88,10 +88,12 @@
   <arg name="rviz"             default="false"/>
   <arg name="return_enabled"   default="true"/>
   <!-- Goal tolerance for the way home only (the row entrance keeps
-       move_base.yaml's 0.12 m / 0.08 rad). Loose on purpose: a tight one
-       made the robot spin on the home spot for 50 s (field 2026-11-17). -->
-  <arg name="return_xy_goal_tolerance"  default="0.25"/>
-  <arg name="return_yaw_goal_tolerance" default="0.30"/>
+       move_base.yaml's 0.12 m / 0.08 rad). 3.14 rad = any heading: the
+       final turn in place made the robot spin on the home spot for 50 s
+       (field 2026-11-17), and a looser 0.25 m / 0.3 rad still spun in sim.
+       The robot ends home facing the way it drove in. -->
+  <arg name="return_xy_goal_tolerance"  default="0.12"/>
+  <arg name="return_yaw_goal_tolerance" default="3.14"/>
   <!-- move_base top speed (m/s) on the way to the row and back; blank =
        move_base.yaml (0.5). Indoors on the robot: 0.3. -->
   <arg name="transit_speed"    default=""/>
