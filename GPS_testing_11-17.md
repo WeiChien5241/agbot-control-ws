@@ -287,22 +287,29 @@ three runs. **0 interventions over 42.6 m** (vision logger: 14.8 + 13.9 +
   agree throughout, and AMCL's `map→odom` yaw stayed within 149–153° for the
   whole spin.
 
-  **Fix (2026-11-18, sim-tested):** the home goal accepts **any heading**
-  (`return_yaw_goal_tolerance` 3.14, `return_xy_goal_tolerance` 0.12), set
-  through dynamic_reconfigure by the supervisor before it sends RETURN. Every
-  other goal is set back to move_base.yaml's 0.12 m / 0.08 rad, because the
-  handoff gate depends on it. With no turn at the end, nothing can push the
-  robot back out of the circle. It now ends home facing the way it drove in.
+  **Fix (2026-11-18, sim-tested): reach home first, then turn.**
+  1. RETURN: move_base drives home with **any heading**
+     (`return_yaw_goal_tolerance` 3.14, xy 0.12, set by the supervisor
+     through dynamic_reconfigure for this goal only; the row entrance keeps
+     0.12 m / 0.08 rad for the handoff gate).
+  2. New state **ALIGN_HOME** (`HomeAligner` in `deploy_fsm.py`): the
+     supervisor turns in place to the drop-off heading, so the trailer's
+     ArUco marker is in view for the marker follower's drive up the ramp.
+     Settle 1 s with a no-motion AMCL update → if within
+     `home_align_tolerance_deg` (5°) done → else turn by the error, measured
+     on odometry yaw, at 0.3–0.4 rad/s, stopping 1.5° early for the coast →
+     settle again. Max 3 turns, then it finishes with a warning. **Position
+     is never re-checked during the turn**, so the turn cannot trap it.
 
-  Sim A/B, field world, out 2.7 m and back, the home goal 90° from the
-  arrival direction:
+  Why not a looser move_base tolerance. Sim A/B, field world, out 2.7 m and
+  back, the home goal 90° from the arrival direction:
 
   | home tolerance | runs | rotation after first inside | inside → done | worst push-out |
   |---|---|---|---|---|
   | 0.12 m / 0.08 rad (old) | 4 | 53–107° | 1.9–3.1 s | 12 cm |
   | 0.25 m / 0.30 rad | 4 | 63–**412°** | 1.4–7.8 s | **34 cm** |
   | 0.12 m / 0.30 rad, no replan | 6 | 78–**441°** | 1.9–9.1 s | 19 cm |
-  | **0.12 m / any heading** | 6 | **0–1°** | **0.1–0.2 s** | 12 cm |
+  | 0.12 m / any heading | 6 | **0–1°** | **0.1–0.2 s** | 12 cm |
 
   - A looser circle does not help. The robot drives until it is just
     inside, so it stops at the edge of any circle, and the turn pushes it out
@@ -310,8 +317,28 @@ three runs. **0 interventions over 42.6 m** (vision logger: 14.8 + 13.9 +
   - `planner_frequency: 0` does not help either. The home legs logged no
     replans and still spun. Something else in DWA also clears the latch;
     this was not traced further.
-  - The sim did not reproduce a 50 s spin with the old setting (the sim
-    wheels scrub less), but it did reproduce a full-turn spin.
+
+  Reach-then-turn, sim, 9 arrivals (3 home headings × 3), using the real
+  `HomeAligner` fed the same AMCL/odometry inputs as the supervisor:
+
+  | | result |
+  |---|---|
+  | finished | **9/9**, no spin, 1 turn in 7, 2 turns in 2 |
+  | heading turned at home | 20–170° |
+  | ALIGN time | 3.4–19.5 s (a 170° turn ≈ 13–20 s) |
+  | final heading error, AMCL | −1.2 to +4.9° |
+  | final heading error, **Gazebo truth** | −0.1 to **+6.7°** |
+  | slid during the turn | 0.00–0.21 m |
+  | final distance from home (truth) | 0.00–0.15 m |
+
+  - Truth error exceeded 5° in 3 of 9 because **AMCL itself** was 1–5° off
+    at the drop-off (weak features there, see LOCALIZE). A tighter
+    tolerance cannot fix that; a better heading reference at the trailer
+    can, e.g. the marker itself.
+  - Not yet run on the robot, and not yet run through the full
+    `deploy_mission.launch` (which needs vision nav to drive rows). On
+    concrete, check: the turn rate (0.3 commanded) actually turns it, the
+    coast stays near 1.5°, and the marker is in view at ±7°.
 
 ## 5. RTK / Reach link
 
@@ -354,7 +381,7 @@ journalctl -u NetworkManager --since "10 min ago" | grep -i enx
 | | item | state |
 |---|---|---|
 | fix | supervisor arrival heading from stale `/amcl_pose` | read TF `map→base_link` at the check (§4.2) |
-| done (sim) | RETURN spin on the home spot | home goal accepts any heading; confirm on the robot (§4.6) |
+| done (sim) | RETURN spin on the home spot | reach home with any heading, then ALIGN_HOME turns to the ramp; confirm on the robot (§4.6) |
 | fix | Reach USB-Ethernet drops | run the `dmesg` / `nmcli` checks; static NM profile (§5) |
 | field | map the whole operating area | mapping lap ≥ 10 m span and covering every later drive (§3.3) |
 | field | a real transit | start mark 8–15 m out, as in the runbook |
